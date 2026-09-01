@@ -1,0 +1,1567 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>tarocut · editor</title>
+<style>
+/* Paleta Monokai, a do Sublime Text. Escolhida porque este editor e uma
+   transcricao com marcacao: o mesmo problema de um editor de codigo. */
+:root{
+  --bg:#272822; --bg2:#2e2f28; --bg3:#1e1f1c; --linha:#3e3f38;
+  --fg:#f8f8f2; --fraco:#75715e; --rosa:#f92672; --verde:#a6e22e;
+  --azul:#66d9ef; --roxo:#ae81ff; --laranja:#fd971f; --amarelo:#e6db74;
+  /* cortado: tem que sair do primeiro plano sem ficar ilegivel */
+  --apagado:#5c5d52;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{
+  background:var(--bg3); color:var(--fg);
+  font:13px/1.5 Consolas,"Cascadia Mono","DejaVu Sans Mono",monospace;
+  display:flex; flex-direction:column; overflow:hidden;
+}
+
+/* ------------------------------------------------------------- topo */
+/* Uma barra so, sem hierarquia falsa: o que se usa a toda hora fica
+   visivel, o que se usa uma vez por video mora no menu. */
+#topo{
+  display:flex; align-items:center; gap:10px;
+  padding:6px 14px; background:var(--bg3);
+  border-bottom:1px solid var(--linha);
+}
+#nome{color:var(--azul)}
+#num{color:var(--fraco); font-size:12px}
+#num b{color:var(--fg); font-weight:normal}
+/* diz o que esta tocando quando nao e o video inteiro */
+#modo{color:var(--roxo); font-size:11px; min-width:9ch}
+#num .corta{color:#c4776a}
+button{
+  background:none; color:#b0b2a2; border:1px solid transparent;
+  border-radius:3px; padding:3px 9px; font:inherit; cursor:pointer;
+}
+button:hover{background:#33342d; color:var(--fg)}
+button:disabled{opacity:.4; cursor:default}
+button.on{color:var(--azul)}
+#bTocar{background:#31322b; border-color:var(--linha); min-width:34px}
+#menu{position:relative; display:inline-block}
+#menuLista{
+  position:absolute; right:0; top:26px; z-index:12; min-width:190px;
+  background:#2b2c25; border:1px solid var(--linha); border-radius:4px;
+  padding:4px; display:none;
+}
+#menu.on #menuLista{display:block}
+#menuLista button{display:block; width:100%; text-align:left}
+#salvo{margin-left:auto; color:#54554c; font-size:11px; cursor:pointer}
+#salvo.sujo{color:var(--laranja)}
+
+/* ------------------------------------------------------------- fita */
+/* Orientacao no tempo custava 190px de painel permanente. Agora custa 7:
+   so mantido x cortado x onde a cabeca de leitura esta. Cresce e ganha a
+   forma de onda quando a gaveta abre. */
+#mapa{display:block; width:100%; height:7px; cursor:pointer;
+      background:var(--bg3); border-bottom:1px solid var(--linha)}
+body.onda #mapa{height:30px}
+
+/* ------------------------------------------------------ transcricao */
+#texto{flex:1; overflow-y:auto; padding:20px 0 45vh}
+/* coluna com largura de leitura: 13px monoespacada numa tela de 1440
+   dava 170 colunas por linha, e o olho perdia a volta */
+.bloco{max-width:90ch; margin:0 auto; padding:0 26px 20px}
+.ts{color:#4e4f47; font-size:11px; letter-spacing:.4px; cursor:pointer}
+.ts:hover{color:var(--azul)}
+/* selecao propria, nao a do navegador: a do navegador pega meia palavra,
+   pega o timestamp junto e some no primeiro clique. Aqui o que se
+   seleciona sao tokens inteiros, que e a unidade que o corte entende. */
+.corpo{margin-top:4px; line-height:1.8; user-select:none}
+.tok{padding:1px 1px; border-radius:2px; cursor:pointer; white-space:pre-wrap}
+.tok:hover{background:#3d3e36}
+/* cortado: riscado. E a convencao que todo mundo ja sabe ler sem
+   aprender nada - "isto sai" - e ela e o unico jeito de a transcricao
+   continuar LITERAL: o texto que saiu segue ali, legivel, no lugar onde
+   estava. So apagar deixava ambiguo se a palavra tinha sumido ou se era
+   pausa. */
+.tok.cut{color:var(--apagado); text-decoration:line-through;
+         text-decoration-color:#8a4a48}
+/* o corte que o painel esta editando agora */
+.tok.foco{background:#3c3a2a}
+.tok.cut.foco{background:#43342e}
+/* o que VOCE escolheu. Ganha de tudo: e o unico estado da tela que veio
+   de um gesto seu, e e sobre ele que os botoes do painel falam. */
+.tok.sel,.tok.cut.sel,.tok.foco.sel{background:#31586b; color:var(--fg)}
+.tok.cut.sel{color:#9fb6c0}
+/* pausa e hesitacao: existem, mas nao sao texto. O padding e alvo de
+   clique: o rotulo encolheu para um caractere, mas continua clicavel
+   como qualquer palavra. */
+.tok.marca{color:#565749; font-style:italic; font-size:11.5px;
+           padding:1px 5px}
+.tok.marca.cut{color:#46473d}
+/* o que a pessoa decidiu, contra o que a analise propos - raro no
+   comeco, entao uma linha de 1px chega */
+.tok.meu{border-bottom:1px solid #7d5c24}
+/* fantasma: a palavra esta mantida no texto mas o ajuste fino na onda
+   comeu o audio dela. Unico alarme que sobrou no texto. */
+.tok.fantasma{outline:1px dotted var(--rosa); outline-offset:1px}
+.tok.now{background:#4b4c3c; color:var(--fg)}
+/* O MOTIVO NAO ENTRA NO TEXTO, E NAO PULA NA FRENTE DELE. Ja foi borda
+   roxa em cada palavra anotada, depois nota escrita no meio da
+   transcricao, depois cartao que abria sob o mouse - os tres atrapalham
+   quem so quer ler. Ele mora no painel, que e um lugar fixo que nunca
+   cobre o texto, e fala do que estiver selecionado ou em foco. */
+
+/* ----------------------------------------------------------- painel
+   O lugar unico onde se edita milissegundo. Substitui o gesto de
+   arrastar borda na onda: as duas bordas do corte sao numeros, e as
+   setas andam com elas de um passo escolhido. Nada aqui depende de
+   acertar um pixel. */
+#painel{
+  background:#232419; border-top:1px solid var(--linha);
+  padding:8px 14px; font-size:12px;
+}
+#painel.vazio .pcorpo{opacity:.35; pointer-events:none}
+.pcab{display:flex; align-items:center; gap:10px; margin-bottom:7px}
+#pQual{color:var(--fg)}
+#pResumo{color:var(--fraco); font-size:11px}
+#pResumo b{color:var(--amarelo); font-weight:normal}
+/* a linha da selecao so existe quando ha selecao: em repouso o painel
+   continua do tamanho de antes */
+#pSel{
+  display:none; align-items:center; gap:9px; margin-bottom:8px;
+  padding-bottom:8px; border-bottom:1px solid #33342b;
+}
+#painel.sel #pSel{display:flex}
+#pSelQue{color:var(--fg); max-width:46%; overflow:hidden;
+         text-overflow:ellipsis; white-space:nowrap}
+#pSelQue b{color:var(--fraco); font-weight:normal; font-size:11px}
+#pSel button{border:1px solid var(--linha); background:#31322b}
+#pCortar:hover{background:#5a2f2c; border-color:#8a4a48}
+#pDevolver:hover{background:#3d4a2a; border-color:#6b7d3c}
+.pdim{color:#4e4f47; font-size:11px}
+/* o porque, no rodape: fixo, nunca por cima do texto, duas linhas.
+   Clique abre o resto. */
+#pPor{
+  margin-top:7px; color:#6f6a56; font-size:11px; line-height:1.5;
+  cursor:pointer; display:-webkit-box; -webkit-line-clamp:2;
+  -webkit-box-orient:vertical; overflow:hidden; min-height:1.5em;
+}
+#pPor:hover{color:#8d8770}
+#pPor.aberto{-webkit-line-clamp:99}
+#pPor b{color:#8a72c4; font-weight:normal}
+.pcorpo{display:flex; align-items:center; gap:22px; flex-wrap:wrap}
+.pl{display:flex; align-items:center; gap:7px}
+.pl.ativo .prot{color:var(--azul)}
+.prot{color:var(--fraco); min-width:13ch}
+/* o numero e o objeto da edicao: e o maior texto da barra de proposito */
+.pnum{color:var(--fg); font-size:14px; min-width:9ch; text-align:right}
+.pl button{
+  background:#33342d; border:1px solid var(--linha); padding:2px 10px;
+  font-size:13px; line-height:1.2;
+}
+.pl button:hover{background:#4a4b41; color:var(--fg)}
+#pPasso{display:flex; align-items:center; gap:3px; color:var(--fraco)}
+#pPasso button{padding:2px 7px; font-size:11px; border:1px solid transparent}
+#pPasso button.on{color:var(--azul); border-color:#3f5560; background:#252a2c}
+.pacoes{display:flex; align-items:center; gap:14px; margin-top:8px}
+.pacoes button{border:1px solid var(--linha); background:#31322b}
+.pacoes label{color:var(--fraco); cursor:pointer; font-size:11px}
+.pacoes input{vertical-align:-1px; margin-right:3px}
+
+/* ------------------------------------------------- gaveta da onda */
+#onda{
+  display:none; background:var(--bg3); border-top:1px solid var(--linha);
+  padding:6px 12px 8px; user-select:none;
+}
+body.onda #onda{display:block}
+#barra{display:flex; align-items:center; gap:8px; margin-bottom:5px}
+#barra .info{color:var(--fraco); font-size:11px}
+#barra .info b{color:var(--amarelo); font-weight:normal}
+canvas{display:block; width:100%}
+#zoom{height:150px; cursor:text}
+
+/* ------------------------------------------------------------ ajuda */
+/* Oito linhas de atalho fixas na tela sao lidas no primeiro dia e
+   ignoradas nos 33 videos seguintes. Aqui elas moram atras do `?`. */
+#ajuda{
+  position:fixed; inset:0; z-index:20; background:#0f100db8;
+  display:none; align-items:center; justify-content:center;
+}
+body.ajuda #ajuda{display:flex}
+#ajudaCx{
+  background:var(--bg); border:1px solid var(--linha); border-radius:5px;
+  padding:18px 24px; max-width:660px; max-height:86vh; overflow:auto;
+  font-size:12px;
+}
+#ajudaCx h3{margin:14px 0 6px; font-size:11px; font-weight:normal;
+            color:var(--azul); letter-spacing:1px; text-transform:uppercase}
+#ajudaCx h3:first-child{margin-top:0}
+#ajudaCx dl{display:grid; grid-template-columns:max-content 1fr;
+            gap:3px 16px; margin:0}
+#ajudaCx dt{text-align:right; white-space:nowrap}
+#ajudaCx dd{margin:0; color:var(--fraco)}
+kbd{
+  background:#33342d; border:1px solid var(--linha); border-radius:3px;
+  padding:0 4px; color:#9a9b8c;
+}
+#log{
+  display:none; background:#141511; color:#c9caba; padding:8px 12px;
+  max-height:150px; overflow:auto; white-space:pre-wrap; font-size:11px;
+  border-top:1px solid var(--linha);
+}
+#log.on{display:block}
+#carregando{
+  position:fixed; inset:0; background:var(--bg3); display:flex;
+  align-items:center; justify-content:center; color:var(--fraco); z-index:9;
+}
+</style>
+</head>
+<body>
+
+<div id="topo">
+  <span id="nome">…</span>
+  <span id="num"></span>
+  <button id="bTocar" title="tocar/pausar (espaço) — com trecho em foco, toca só ele">▶</button>
+  <span id="modo"></span>
+  <button id="bOnda" title="gaveta da onda (o)">onda</button>
+  <span id="menu">
+    <button id="bMenu" title="mais">⋯</button>
+    <div id="menuLista">
+      <button id="bSeguir">seguir: on</button>
+      <button id="bDry">quanto sai (dry-run)</button>
+      <button id="bAudio">ouvir m4a</button>
+      <button id="bMpv">ver no mpv</button>
+      <button id="bRender">renderizar</button>
+    </div>
+  </span>
+  <button id="bAjuda" title="atalhos (?)">?</button>
+  <span id="salvo" title="clique para salvar agora">salvo</span>
+</div>
+
+<canvas id="mapa" title="clique para ir"></canvas>
+
+<div id="texto"></div>
+
+<div id="painel" class="vazio">
+  <div id="pSel">
+    <span id="pSelQue">—</span>
+    <button id="pCortar">✂ cortar</button>
+    <button id="pDevolver">↩ devolver</button>
+    <button id="pOuvirSel">▶ ouvir</button>
+    <span class="pdim">esc limpa</span>
+  </div>
+  <div class="pcab">
+    <button id="pAnt" title="corte anterior (,)">◀</button>
+    <span id="pQual">nenhum corte em foco</span>
+    <button id="pProx" title="próximo corte (.)">▶</button>
+    <span id="pResumo"></span>
+  </div>
+  <div class="pcorpo">
+    <div class="pl" data-lado="0">
+      <span class="prot">corte começa</span>
+      <button class="pmenos" title="mais cedo — corta mais">◀</button>
+      <b class="pnum">—</b>
+      <button class="pmais" title="mais tarde — corta menos">▶</button>
+    </div>
+    <div class="pl" data-lado="1">
+      <span class="prot">corte termina</span>
+      <button class="pmenos" title="mais cedo — corta menos">◀</button>
+      <b class="pnum">—</b>
+      <button class="pmais" title="mais tarde — corta mais">▶</button>
+    </div>
+    <div id="pPasso">passo
+      <button data-p="1">1 ms</button><button data-p="10">10 ms</button>
+      <button data-p="50">50 ms</button><button data-p="200">200 ms</button>
+    </div>
+  </div>
+  <div class="pacoes">
+    <button id="pOuvir">▶ como vai ficar</button>
+    <button id="pBruto">▶ o que sai</button>
+    <label><input type="checkbox" id="pAuto" checked>ouvir a cada ajuste</label>
+  </div>
+  <div id="pPor"></div>
+</div>
+
+<div id="onda">
+  <div id="barra">
+    <button id="bMenos">−</button><button id="bMais">+</button>
+    <button id="bTudo">tudo</button>
+    <span class="info" id="infoOnda"></span>
+  </div>
+  <canvas id="zoom"></canvas>
+</div>
+
+<div id="log"></div>
+
+<div id="ajuda"><div id="ajudaCx">
+  <h3>o texto: escolher primeiro, decidir depois</h3>
+  <dl>
+    <dt>palavra <span style="text-decoration:line-through;text-decoration-color:#8a4a48;color:#5c5d52">riscada</span></dt><dd>sai do vídeo. O resto fica.</dd>
+    <dt><kbd>clique</kbd></dt><dd><b>seleciona</b> a palavra — não muda nada ainda</dd>
+    <dt>arrastar</dt><dd>seleciona o trecho inteiro</dd>
+    <dt><kbd>shift</kbd>+<kbd>clique</kbd></dt><dd>estende a seleção até aqui</dd>
+    <dt><kbd>del</kbd> / <kbd>r</kbd></dt><dd>corta / devolve o que está selecionado (ou os botões do painel)</dd>
+    <dt><kbd>esc</kbd></dt><dd>solta a seleção</dd>
+    <dt><kbd>alt</kbd>+<kbd>clique</kbd></dt><dd>toca dali em diante</dd>
+  </dl>
+  <h3>o painel: milímetro de milissegundo, sem arrastar nada</h3>
+  <dl>
+    <dt><kbd>,</kbd> <kbd>.</kbd></dt><dd>corte anterior / próximo — o texto rola até lá e você já ouve</dd>
+    <dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>anda com a borda em foco, do passo escolhido (<kbd>shift</kbd> = 10×)</dd>
+    <dt><kbd>tab</kbd></dt><dd>troca a borda: começo ↔ fim do corte</dd>
+    <dt>passo</dt><dd>1, 10, 50 ou 200 ms — clique para escolher</dd>
+    <dt>◀ / ▶ no painel</dt><dd>a mesma coisa, no mouse</dd>
+    <dt>rodapé do painel</dt><dd>por que aquilo sai — clique para ler inteiro</dd>
+  </dl>
+  <h3>ouvir</h3>
+  <dl>
+    <dt><kbd>espaço</kbd></dt><dd>toca <b>só o corte em foco</b>: 1,5s do que sobra de cada lado da emenda, e para</dd>
+    <dt><kbd>shift</kbd>+<kbd>espaço</kbd></dt><dd>toca <b>o que sai</b>, como foi gravado — para conferir se merecia sair</dd>
+    <dt>com algo selecionado</dt><dd>o <kbd>espaço</kbd> toca só a seleção (e <kbd>shift</kbd> toca ela no bruto)</dd>
+    <dt>ouvir a cada ajuste</dt><dd>ligado, toca sozinho depois de cada passo da borda</dd>
+  </dl>
+  <h3>o resto</h3>
+  <dl>
+    <dt><kbd>ctrl</kbd>+<kbd>z</kbd></dt><dd>desfaz (<kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>z</kbd> refaz)</dd>
+    <dt><kbd>ctrl</kbd>+<kbd>s</kbd></dt><dd>salva — mas salva sozinho a cada mudança</dd>
+    <dt><kbd>o</kbd></dt><dd>abre a onda, se você quiser ver o desenho do som (opcional)</dd>
+    <dt><kbd>f</kbd></dt><dd>seguir a reprodução · <kbd>esc</kbd> fecha o que estiver aberto</dd>
+  </dl>
+</div></div>
+
+<div id="carregando">carregando áudio…</div>
+
+<script>
+"use strict";
+
+// =====================================================================
+// estado
+//
+// `cut` e a decisao de PALAVRA (o que o transcript.md expressa). `cortes`
+// e `restauros` sao a decisao de TEMPO, em segundos da fonte, que so a
+// onda expressa. `iv` e o resultado - e nao e calculado aqui: vem do
+// servidor, da mesma funcao que o render usa.
+// =====================================================================
+let D=null;                 // documento vindo de /api/doc
+let buf=null, ac=null, mestre=null;
+let cut=[], cortes=[], restauros=[];
+let iv=[], total=0;
+let pilha=[], refaz=[];
+let cursor=0, sel=null, view=[0,30];
+let tocando=false, startCtx=0, agIdx=0, fontes=[];
+// o que esta na fila para tocar (ver "motor de audio")
+let plano=[], pAcc=[], pTotal=0, modoBruto=false, trecho=null;
+let playFrom=0, seguir=true, sujo=false, pedidos=0;
+// o corte em foco no painel, e por onde reencontra-lo depois que a
+// analise recalcula (as bordas andam: snap, minimo, fusao de ilhas)
+let corte=null, ancora=null, lado=0, passo=10, pedeOuvir=false;
+// a selecao de tokens, em indices inclusivos. -1 = nada selecionado
+let selA=-1, selB=-1, arrastaTexto=false;
+// so os cortes com fala dentro, que sao os que pedem julgamento
+let soFala=true;
+let picos=null, PB=64;      // pirâmide de picos: PB amostras por balde
+let ganhoOnda=1;            // só de exibição; não toca no áudio
+let toks=[], spans=[];      // DOM dos tokens, por índice
+
+const $=s=>document.querySelector(s);
+const MS=0.001;
+
+function hhmmss(t){
+  t=Math.max(0,Math.floor(t));
+  const h=Math.floor(t/3600), m=Math.floor(t%3600/60), s=t%60;
+  return (h?String(h).padStart(2,"0")+":":"")+
+         String(m).padStart(2,"0")+":"+String(s).padStart(2,"0");
+}
+function tempo(t){                       // com milissegundos, para a onda
+  const m=Math.floor(t/60), s=t%60;
+  return m+":"+s.toFixed(3).padStart(6,"0");
+}
+
+// =====================================================================
+// carregamento
+// =====================================================================
+async function inicia(){
+  D=await (await fetch("/api/doc")).json();
+  if(D.erro){ $("#carregando").textContent="erro: "+D.erro; return; }
+  $("#nome").textContent=D.arquivo;
+  if(D.aviso){ $("#log").className="on"; $("#log").textContent="[editor] "+D.aviso; }
+  document.title="tarocut · "+D.nome;
+
+  cut=D.tokens.map(t=>t.cut);
+  // o edicao.json salvo entra por cima da proposta automatica, do mesmo
+  // jeito que entra no render
+  for(const [k,v] of Object.entries(D.edicao.tokens||{})){
+    const i=+k; if(i>=0 && i<cut.length) cut[i]=(v==="cortar");
+  }
+  cortes=(D.edicao.cortes||[]).map(x=>[x[0],x[1]]);
+  restauros=(D.edicao.restauros||[]).map(x=>[x[0],x[1]]);
+  view=[0,Math.min(D.dur,30)];
+
+  montaTexto();
+  try{ if(localStorage.getItem("tarocut.onda")==="1") poeOnda(true); }catch(e){}
+  await carregaAudio();
+  $("#carregando").remove();
+  await recalcula();
+  vaiCorteInicial();
+  desenhaTudo();
+}
+
+// abrir o editor ja em cima do primeiro corte: e o painel ensinando o
+// que ele faz, sem precisar de instrucao
+function vaiCorteInicial(){
+  const bs=buracos();
+  if(!bs.length) return;
+  ancora=(bs[0][0]+bs[0][1])/2;
+  atualizaPainel(); pinta(); poePorque(); mostraCorte();
+}
+
+async function carregaAudio(){
+  // AudioContext no sample rate do proprio wav: o decodeAudioData
+  // reamostraria 16 kHz para 48 kHz, triplicando a memoria de um buffer
+  // que so serve para ouvir fala.
+  try{ ac=new AudioContext({sampleRate:D.sr}); }catch(e){ ac=new AudioContext(); }
+  mestre=ac.createGain(); mestre.connect(ac.destination);
+  const dados=await (await fetch("/audio.wav")).arrayBuffer();
+  buf=await ac.decodeAudioData(dados);
+  const ch=buf.getChannelData(0), n=Math.ceil(ch.length/PB);
+  picos={min:new Float32Array(n), max:new Float32Array(n)};
+  for(let i=0;i<n;i++){
+    let lo=1, hi=-1;
+    const a=i*PB, b=Math.min(ch.length,a+PB);
+    for(let j=a;j<b;j++){ const v=ch[j]; if(v<lo)lo=v; if(v>hi)hi=v; }
+    picos.min[i]=lo; picos.max[i]=hi;
+  }
+  // percentil 99, e nao o maximo: um estalo isolado achataria o resto da
+  // onda e o que se quer enxergar aqui e a fronteira entre fala e silencio
+  const am=[];
+  for(let i=0;i<n;i+=37) am.push(Math.max(-picos.min[i],picos.max[i]));
+  am.sort((a,b)=>a-b);
+  const p99=am[Math.floor(am.length*0.99)]||0.5;
+  ganhoOnda=Math.max(1,Math.min(10,0.92/p99));
+}
+
+// =====================================================================
+// historico
+//
+// Um instantaneo por gesto. Guarda as tres camadas juntas porque desfazer
+// so faz sentido sobre o conjunto: cortar uma palavra e cortar 1 ms sao o
+// mesmo tipo de arrependimento.
+// =====================================================================
+function foto(){
+  return {cut:cut.slice(),
+          cortes:cortes.map(x=>x.slice()),
+          restauros:restauros.map(x=>x.slice())};
+}
+function restaura(f){
+  cut=f.cut.slice();
+  cortes=f.cortes.map(x=>x.slice());
+  restauros=f.restauros.map(x=>x.slice());
+}
+function mexe(fn){
+  pilha.push(foto()); if(pilha.length>300) pilha.shift();
+  refaz.length=0;
+  fn();
+  marcaSujo();
+  recalcula();
+}
+function desfazer(){
+  if(!pilha.length) return;
+  refaz.push(foto()); restaura(pilha.pop()); marcaSujo(); recalcula();
+}
+function refazer(){
+  if(!refaz.length) return;
+  pilha.push(foto()); restaura(refaz.pop()); marcaSujo(); recalcula();
+}
+
+// =====================================================================
+// camada de tempo: cortar e devolver trechos com precisao de amostra
+// =====================================================================
+function funde(l){
+  l=l.filter(x=>x[1]>x[0]+1e-9).sort((a,b)=>a[0]-b[0]);
+  const o=[];
+  for(const [a,b] of l){
+    if(o.length && a<=o[o.length-1][1]+1e-9)
+      o[o.length-1][1]=Math.max(o[o.length-1][1],b);
+    else o.push([a,b]);
+  }
+  return o;
+}
+function subtrai(l,ca,cb){
+  const o=[];
+  for(const [a,b] of l){
+    if(cb<=a||ca>=b){ o.push([a,b]); continue; }
+    if(a<ca) o.push([a,ca]);
+    if(cb<b) o.push([cb,b]);
+  }
+  return o;
+}
+// cortar e devolver sao simetricos: cada gesto entra numa lista e sai da
+// outra. Sem isso, devolver 1 ms sobre um corte de 1 ms deixaria os dois
+// no arquivo, e o corte venceria para sempre.
+function corta(a,b){
+  a=Math.max(0,a); b=Math.min(D.dur,b); if(b<=a) return;
+  restauros=subtrai(restauros,a,b);
+  cortes=funde(cortes.concat([[a,b]]));
+}
+function devolve(a,b){
+  a=Math.max(0,a); b=Math.min(D.dur,b); if(b<=a) return;
+  cortes=subtrai(cortes,a,b);
+  restauros=funde(restauros.concat([[a,b]]));
+}
+
+// =====================================================================
+// recalculo: o servidor e quem sabe onde ficam as emendas
+// =====================================================================
+let emVoo=false, pendente=false;
+async function recalcula(){
+  if(emVoo){ pendente=true; return; }
+  emVoo=true;
+  try{ await pedeIntervalos(); }
+  finally{
+    emVoo=false;
+    if(pendente){ pendente=false; recalcula(); }
+  }
+}
+async function pedeIntervalos(){
+  const meu=++pedidos;
+  const r=await fetch("/api/intervalos",{
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({cut:cut.map(c=>c?"1":"0").join(""),
+                         cortes, restauros})});
+  const j=await r.json();
+  if(meu!==pedidos) return;              // chegou uma resposta mais nova
+  const antes=tocando?{t:posSrc(),bruto:modoBruto,tr:trecho}:null;
+  iv=j.iv; total=j.mantido;
+
+  $("#num").innerHTML=
+    `original <b>${hhmmss(j.dur)}</b> · final <b>${hhmmss(total)}</b> · `+
+    `<span class="corta">corta ${Math.round(100*(1-total/j.dur))}%</span> · `+
+    `<b>${j.emendas}</b> emendas`;
+  atualizaPainel();
+  pinta();
+  poePorque();
+  fundoSujo=true;
+  desenhaTudo();
+  if(pedeOuvir){ pedeOuvir=false; talvezOuvir(); }
+  // tocando: retoma do mesmo ponto da FONTE, nao do mesmo ponto da
+  // edicao - o ponto da edicao acabou de mudar de lugar. E retoma do
+  // mesmo JEITO: quem estava conferindo um trecho no bruto continua no
+  // bruto, senao a edicao arrancaria o material justo enquanto se ouve.
+  if(antes) antes.bruto ? tocaBruto(antes.t, antes.tr?antes.tr[1]:D.dur)
+          : antes.tr    ? toca(antes.t, antes.tr[1])
+          :               toca(antes.t);
+}
+function vivo(t){                        // este instante sobrevive ao corte?
+  for(const [a,b] of cortes) if(t>=a&&t<b) return false;
+  for(const [a,b] of restauros) if(t>=a&&t<b) return true;
+  for(const [a,b] of iv){ if(t>=a&&t<b) return true; if(t<a) return false; }
+  return false;
+}
+function emendas(){                      // pontos de emenda, na fonte
+  const p=[];
+  for(let i=0;i<iv.length;i++){
+    if(i>0||iv[i][0]>0.001) p.push(iv[i][0]);
+    if(i<iv.length-1||iv[i][1]<D.dur-0.001) p.push(iv[i][1]);
+  }
+  return p;
+}
+
+// =====================================================================
+// painel do corte
+//
+// Aqui mora a edicao de milissegundo. Ela ja existiu so na onda, onde
+// depender de arrastar uma borda com o mouse: acertar 10 ms num canvas e
+// mira, nao decisao. Aqui as duas bordas do corte sao NUMEROS e as setas
+// andam com elas de um passo escolhido - o julgamento continua sendo do
+// ouvido, mas a mao para de errar.
+//
+// O corte, e nao a emenda, e a unidade: e o buraco entre dois trechos
+// mantidos, tem duas bordas e um tamanho, e e disso que a pessoa fala
+// quando diz "cortou demais aqui".
+// =====================================================================
+// Cada buraco vira [ini, fim, temFala]. A terceira casa e o que separa
+// as duas coisas completamente diferentes que estavam na mesma lista:
+//
+//   corte de fala - ela disse alguma coisa e aquilo sai. E decisao, e
+//     tem o que ler na transcricao. No IMG_0247 sao 22.
+//   apara de pausa - o detector encurtou um silencio. Nao ha decisao
+//     nenhuma, nem nada para ver. No IMG_0247 sao 51, de 0,34s.
+//
+// Misturados, andar de um ao outro parece aleatorio: dois em cada tres
+// paradas nao tem nada na tela para justificar a parada.
+let _bur=null, _burIv=null;
+function buracos(){
+  if(_burIv===iv && _bur) return _bur;
+  const b=[];
+  if(!iv.length){ _burIv=iv; _bur=[[0,D.dur,true]]; return _bur; }
+  if(iv[0][0]>0.001) b.push([0,iv[0][0]]);
+  for(let i=0;i<iv.length-1;i++) b.push([iv[i][1],iv[i+1][0]]);
+  if(iv[iv.length-1][1]<D.dur-0.001) b.push([iv[iv.length-1][1],D.dur]);
+  // uma varredura so para os 73 buracos, em vez de uma por buraco
+  let j=0;
+  for(const h of b){
+    while(j<toks.length && toks[j].e<=h[0]+0.01) j++;
+    let fala=false;
+    for(let x=j;x<toks.length && toks[x].s<h[1]-0.01;x++)
+      if(toks[x].k==="palavra"){ fala=true; break; }
+    h.push(fala);
+  }
+  _burIv=iv; _bur=b;
+  return b;
+}
+function listaCortes(){
+  const bs=buracos();
+  const f=bs.filter(h=>h[2]);
+  return (soFala && f.length) ? f : bs;
+}
+function idxPerto(bs,t){
+  let melhor=0, dist=Infinity;
+  for(let i=0;i<bs.length;i++){
+    const d=t<bs[i][0]?bs[i][0]-t:t>bs[i][1]?t-bs[i][1]:0;
+    if(d<dist){ dist=d; melhor=i; }
+    if(!d) break;
+  }
+  return melhor;
+}
+function atualizaPainel(){
+  const bs=buracos(), el=$("#painel"), ns=document.querySelectorAll(".pnum");
+  if(!bs.length){
+    corte=null; el.classList.add("vazio");
+    $("#pQual").textContent="nada cortado";
+    $("#pResumo").textContent="";
+    ns[0].textContent=ns[1].textContent="—";
+    return;
+  }
+  el.classList.remove("vazio");
+  const i=idxPerto(bs, ancora!==null ? ancora
+                     : corte ? (corte[0]+corte[1])/2 : 0);
+  corte=bs[i]; ancora=null;
+  const lista=listaCortes(), pos=lista.indexOf(corte);
+  $("#pQual").innerHTML= corte[2]
+    ? `corte <b>${pos+1}</b> de ${lista.length}`
+    : `<span class="apara">apara de pausa</span>`+
+      (pos>=0?` <b>${pos+1}</b> de ${lista.length}`:"");
+  $("#pResumo").innerHTML=`sai <b>${dur1(corte[1]-corte[0])}</b> · `+
+                          `${hhmmss(corte[0])} → ${hhmmss(corte[1])}`;
+  ns[0].textContent=tempo(corte[0]);
+  ns[1].textContent=tempo(corte[1]);
+  for(const el2 of document.querySelectorAll(".pl"))
+    el2.classList.toggle("ativo", +el2.dataset.lado===lado);
+}
+// mover uma borda e sempre cortar ou devolver um pedacinho - as mesmas
+// duas operacoes de sempre, so que sem precisar posicionar cursor
+function mexeBorda(l,dir,grande){
+  if(!corte) return;
+  const d=(passo*(grande?10:1))/1000*dir, [a,b]=corte;
+  mexe(()=>{
+    if(l===0) dir<0 ? corta(a+d,a) : devolve(a,a+d);
+    else      dir<0 ? devolve(b+d,b) : corta(b,b+d);
+  });
+  ancora=l===0 ? (a+d+b)/2 : (a+b+d)/2;
+  pedeOuvir=true;
+}
+// anda por TEMPO, e nao por indice: assim continua funcionando quando o
+// corte em foco nao esta na lista filtrada (voce chegou nele clicando no
+// texto), e a ordem e sempre a do video, do comeco para o fim
+function vaiCorte(dir){
+  const lista=listaCortes(); if(!lista.length) return;
+  const m=corte?(corte[0]+corte[1])/2:-1;
+  let alvo = dir>0 ? lista.find(h=>h[0]>m+0.001)
+                   : [...lista].reverse().find(h=>h[1]<m-0.001);
+  if(!alvo) alvo = dir>0 ? lista[lista.length-1] : lista[0];
+  ancora=(alvo[0]+alvo[1])/2;
+  limpaSel();
+  atualizaPainel(); pinta(); poePorque(); mostraCorte();
+  if($("#pAuto").checked) tocaCorte();
+}
+// traz o corte para a vista - no texto, que e onde se le, e na onda, se
+// ela estiver aberta
+function mostraCorte(){
+  if(!corte) return;
+  for(let i=0;i<toks.length;i++)
+    if(toks[i].e>corte[0]&&toks[i].s<corte[1]){
+      spans[i].scrollIntoView({block:"center",behavior:"smooth"});
+      break;
+    }
+  cursor=corte[0];
+  if(view[1]-view[0]>4 || corte[0]<view[0] || corte[1]>view[1])
+    poeView(corte[0]-1.2, corte[1]+1.2);
+  else desenhaTudo();
+}
+function tocaCorte(){ if(corte) tocaEmenda(corte[0],corte[1]); }
+let tAuto=null;
+function talvezOuvir(){
+  if(!$("#pAuto").checked) return;
+  clearTimeout(tAuto);                   // segurando a seta, so o fim vale
+  tAuto=setTimeout(tocaCorte,260);
+}
+function poeLado(l){
+  lado=l;
+  for(const el of document.querySelectorAll(".pl"))
+    el.classList.toggle("ativo", +el.dataset.lado===lado);
+}
+function poePasso(v){
+  passo=v;
+  for(const b of document.querySelectorAll("#pPasso button"))
+    b.classList.toggle("on", +b.dataset.p===v);
+}
+
+// =====================================================================
+// transcricao
+// =====================================================================
+function montaTexto(){
+  const box=$("#texto"); box.innerHTML="";
+  toks=D.tokens; spans=new Array(toks.length);
+  for(const b of D.blocos){
+    const div=document.createElement("div");
+    div.className="bloco"; div.dataset.b=b.id;
+    const ts=document.createElement("span");
+    ts.className="ts";
+    ts.textContent=`b${String(b.id).padStart(3,"0")}  ${hhmmss(b.ini)}`;
+    ts.title="ouvir daqui";
+    ts.onclick=()=>toca(b.ini);
+    div.appendChild(ts);
+    const corpo=document.createElement("div");
+    corpo.className="corpo";
+    for(let i=b.i0;i<b.i1;i++){
+      const t=toks[i];
+      const s=document.createElement("span");
+      s.className="tok"+(t.k==="palavra"?"":" marca");
+      s.textContent=rotulo(t);
+      s.dataset.i=i;
+      corpo.appendChild(s);
+      corpo.appendChild(document.createTextNode(" "));
+      spans[i]=s;
+    }
+    div.appendChild(corpo);
+    box.appendChild(div);
+  }
+  // clicar seleciona; arrastar seleciona o trecho; shift estende. Nada
+  // aqui muda o corte - isso e decisao dos botoes do painel.
+  box.onmousedown=ev=>{
+    const s=ev.target.closest(".tok");
+    if(!s){ limpaSel(); return; }
+    const i=+s.dataset.i;
+    if(ev.altKey){ toca(toks[i].s); return; }
+    ev.preventDefault();
+    if(ev.shiftKey && ultimo>=0) poeSel(ultimo,i);
+    else { ultimo=i; poeSel(i,i); }
+    arrastaTexto=true;
+  };
+  box.onmousemove=ev=>{
+    if(!arrastaTexto) return;
+    const s=ev.target.closest(".tok"); if(!s) return;
+    poeSel(ultimo,+s.dataset.i);
+  };
+}
+window.addEventListener("mouseup",()=>{ arrastaTexto=false; });
+let ultimo=-1;
+
+// =====================================================================
+// selecao no texto
+//
+// Clicar SELECIONA. Ja apagou a palavra direto, e era o gesto errado:
+// clicar e como se aponta para uma coisa, nao como se decide sobre ela -
+// e num paredao de 900 palavras a mao erra o alvo o tempo todo, com
+// desfazer como unica saida. Escolher primeiro, decidir depois: os
+// botoes do painel e o del/r agem sobre o que estiver selecionado.
+// =====================================================================
+function temSel(){ return selA>=0 && selB>=selA; }
+function poeSel(a,b){
+  selA=Math.min(a,b); selB=Math.max(a,b);
+  atualizaSel();
+}
+function limpaSel(){
+  if(!temSel()) return;
+  selA=selB=-1;
+  atualizaSel();
+}
+function atualizaSel(){
+  const el=$("#painel");
+  el.classList.toggle("sel",temSel());
+  if(temSel()){
+    // o painel repete em palavras o que voce escolheu: sem isso, a
+    // selecao de 40 palavras que rolou para fora da tela vira um botao
+    // "cortar" apontando para lugar nenhum
+    const n=selB-selA+1, d=toks[selB].e-toks[selA].s;
+    let txt="";
+    for(let i=selA;i<=selB && txt.length<70;i++)
+      if(toks[i].k==="palavra") txt+=(txt?" ":"")+toks[i].t;
+    const pal=[...Array(selB-selA+1).keys()]
+              .filter(i=>toks[selA+i].k==="palavra").length;
+    $("#pSelQue").innerHTML=
+      (txt?`“${txt.length>68?txt.slice(0,68)+"…":txt}” `:"")+
+      `<b>${pal||n} ${pal===1?"palavra":"palavras"} · ${dur1(d)}</b>`;
+    // selecionou dentro de um corte: o painel passa a falar DESSE corte,
+    // sem rolar a tela - voce ja esta olhando para ele
+    const m=(toks[selA].s+toks[selB].e)/2;
+    if(buracos().some(([x,y])=>y>toks[selA].s&&x<toks[selB].e)){
+      ancora=m; atualizaPainel();
+    }
+  }
+  pinta();
+  poePorque();
+}
+// o que o del e o r fazem, e o que os botoes do painel fazem: a mesma
+// coisa, sobre a mesma selecao
+function marcaSel(corta){
+  if(!temSel()) return;
+  const a=toks[selA].s, b=toks[selB].e;
+  ancora=(a+b)/2;
+  mexe(()=>{ for(let i=selA;i<=selB;i++) cut[i]=corta; });
+  foco(a,b);
+}
+// o porque, no rodape do painel: da selecao se houver, senao do corte em
+// foco. Nunca por cima do texto.
+function poePorque(){
+  const el=$("#pPor");
+  let cab="", why="";
+  if(temSel()){
+    for(let i=selA;i<=selB && !why;i++) if(toks[i].why) why=toks[i].why;
+    cab="a seleção";
+  }else if(corte){
+    const a=(D.anot||[]).find(x=>x.ini<corte[1]&&x.fim>corte[0]);
+    if(a) why=a.motivo;
+    else if(!corte[2]){
+      // sem isto, cair numa apara parece bug: a transcricao nao muda,
+      // nao ha nada riscado de novo, e a explicacao fica em branco
+      $("#pPor").classList.remove("aberto");
+      $("#pPor").innerHTML='<b>apara de pausa:</b> aqui só havia '+
+        'silêncio. O detector encurtou a respiração — não há fala '+
+        'nenhuma saindo. Em geral não há o que decidir.';
+      return;
+    }
+    cab="este corte";
+  }
+  why=(why||"").replace(/^anotado:\s*/,"");
+  el.classList.remove("aberto");
+  el.innerHTML=why ? `<b>por que ${cab} sai:</b> ${why.replace(/[<>&]/g,
+                      c=>({"<":"&lt;",">":"&gt;","&":"&amp;"}[c]))}` : "";
+}
+
+// Superficie de um token que nao e palavra. Antes: ⟦pausa 12.8s⟧ e
+// ⟦hesitação · 0.6s⟧ - cem marcadores desses no IMG_0247, cada um mais
+// largo que a palavra que interrompe. A duração so aparece quando ela
+// muda a decisao: uma pausa de 63s e estrutura, uma de 0.8s e respiro.
+function rotulo(t){
+  const d=t.e-t.s;
+  if(t.k==="palavra") return t.t;
+  if(t.k==="silencio") return d>=2 ? "· "+d.toFixed(0)+"s" : "·";
+  // 40 dos 74 tokens de hesitação deste video sao so o rotulo generico
+  // ou "?? 1.8s" (voz sem texto): nao ha texto para ler ali
+  if(!t.t||/^hesita|^\?\?/.test(t.t)) return "~";
+  return t.t;
+}
+
+
+let pintado=[];
+function pinta(){
+  for(let i=0;i<toks.length;i++){
+    const s=spans[i], t=toks[i];
+    const meu=cut[i]!==D.base[i];
+    const fantasma=!cut[i]&&t.k==="palavra"&&audivel(t.s,t.e)<0.25*(t.e-t.s);
+    const foc=!!corte&&t.e>corte[0]&&t.s<corte[1];
+    const es=temSel()&&i>=selA&&i<=selB;
+    const est=(cut[i]?1:0)|(meu?2:0)|(fantasma?4:0)|(foc?8:0)|(es?16:0);
+    if(pintado[i]===est) continue;        // 900 elementos por recalculo:
+    pintado[i]=est;                       // mexer so no que mudou
+    s.classList.toggle("cut",cut[i]);
+    s.classList.toggle("meu",meu);
+    s.classList.toggle("fantasma",fantasma);
+    s.classList.toggle("foco",foc);
+    s.classList.toggle("sel",es);
+    // o que saiu da tela mora aqui: tipo, duração e o porquê da analise
+    const tipo=t.k==="palavra" ? "" :
+      (t.k==="silencio"?"pausa ":"hesitação ")+(t.e-t.s).toFixed(1)+"s · ";
+    s.title=tipo+(t.why?t.why+" · ":"")+`${tempo(t.s)}–${tempo(t.e)}`+
+            (meu?" · decisão sua":"");
+  }
+}
+function audivel(a,b){
+  let s=0;
+  for(const [x,y] of iv){ if(y<=a) continue; if(x>=b) break;
+                          s+=Math.min(b,y)-Math.max(a,x); }
+  return s;
+}
+
+// O trecho em foco: a selecao da onda ou o que estiver pintado na
+// transcricao. Os dois gestos dizem a mesma coisa - "e deste pedaco que
+// eu estou falando" - entao tocar responde aos dois.
+function trechoFoco(){
+  if(sel) return [sel[0],sel[1]];
+  if(temSel()) return [toks[selA].s, toks[selB].e];
+  return null;
+}
+
+function tokEm(t){
+  for(let i=0;i<toks.length;i++) if(t>=toks[i].s&&t<toks[i].e) return i;
+  return -1;
+}
+
+// =====================================================================
+// onda
+// =====================================================================
+const cMapa=$("#mapa"), cZoom=$("#zoom");
+let fundo=document.createElement("canvas"), fundoSujo=true, fundoView=null;
+
+function dim(c){
+  const r=window.devicePixelRatio||1, w=c.clientWidth, h=c.clientHeight;
+  if(c.width!==Math.round(w*r)||c.height!==Math.round(h*r)){
+    c.width=Math.round(w*r); c.height=Math.round(h*r); fundoSujo=true;
+  }
+  return {w,h,r};
+}
+const x2t=x=>view[0]+(x/cZoom.clientWidth)*(view[1]-view[0]);
+const t2x=t=>(t-view[0])/(view[1]-view[0])*cZoom.clientWidth;
+
+function faixaPicos(g,x0,x1,h,mid,amp,spp){
+  // o ganho de exibicao pode jogar a onda para fora da caixa; presa nas
+  // bordas ela vira uma barra cheia, que ainda diz "aqui tem fala"
+  const trava=y=>Math.max(17,Math.min(h-1,y));
+  // acima de PB amostras por pixel usa a piramide; abaixo, as amostras
+  // cruas - e o que deixa a onda continuar legivel com 1 ms na tela
+  const ch=buf.getChannelData(0), sr=buf.sampleRate;
+  g.beginPath();
+  if(spp>=PB){
+    for(let x=x0;x<x1;x++){
+      const a=Math.floor(x2t(x)*sr/PB), b=Math.max(a+1,Math.floor(x2t(x+1)*sr/PB));
+      let lo=1,hi=-1;
+      for(let i=Math.max(0,a);i<Math.min(picos.min.length,b);i++){
+        if(picos.min[i]<lo)lo=picos.min[i]; if(picos.max[i]>hi)hi=picos.max[i];
+      }
+      if(hi<lo) continue;
+      g.moveTo(x+.5,trava(mid-hi*amp)); g.lineTo(x+.5,trava(mid-lo*amp));
+    }
+    g.stroke();
+  }else{
+    let primeiro=true;
+    const i0=Math.max(0,Math.floor(x2t(x0)*sr)), i1=Math.min(ch.length,Math.ceil(x2t(x1)*sr)+1);
+    for(let i=i0;i<i1;i++){
+      const x=t2x(i/sr), y=trava(mid-ch[i]*amp);
+      if(primeiro){ g.moveTo(x,y); primeiro=false; } else g.lineTo(x,y);
+    }
+    g.stroke();
+  }
+}
+
+function desenhaFundo(){
+  const {w,h,r}=dim(cZoom);
+  if(!w||!h) return;
+  fundo.width=cZoom.width; fundo.height=cZoom.height;
+  const g=fundo.getContext("2d");
+  g.setTransform(r,0,0,r,0,0);
+  g.clearRect(0,0,w,h);
+
+  const mid=h/2+8, amp=(h/2-14)*ganhoOnda;
+  // 1. fundo: mantido x cortado. E a informacao principal da tela.
+  g.fillStyle="#272822"; g.fillRect(0,0,w,h);
+  g.fillStyle="#3b2321";
+  g.fillRect(0,16,w,h-16);
+  g.fillStyle="#1f2019";
+  for(const [a,b] of iv){
+    const x0=Math.max(0,t2x(a)), x1=Math.min(w,t2x(b));
+    if(x1>x0) g.fillRect(x0,16,x1-x0,h-16);
+  }
+  // 2. anotacoes do passe de julgamento, em cima
+  for(const a of (D.anot||[])){
+    const x0=t2x(a.ini), x1=t2x(a.fim);
+    if(x1<0||x0>w) continue;
+    g.fillStyle="#ae81ff44"; g.fillRect(x0,16,x1-x0,4);
+  }
+  // 3. onda: viva em verde, morta em vermelho apagado
+  g.lineWidth=1;
+  g.strokeStyle="#8a4a48";
+  faixaPicos(g,0,w,h,mid,amp,(view[1]-view[0])*buf.sampleRate/w);
+  g.save();
+  g.beginPath();
+  for(const [a,b] of iv){
+    const x0=Math.max(0,t2x(a)), x1=Math.min(w,t2x(b));
+    if(x1>x0) g.rect(x0,0,x1-x0,h);
+  }
+  g.clip();
+  g.strokeStyle="#a6e22e";
+  faixaPicos(g,0,w,h,mid,amp,(view[1]-view[0])*buf.sampleRate/w);
+  g.restore();
+  // 4. emendas
+  g.strokeStyle="#f92672"; g.lineWidth=1;
+  for(const p of emendas()){
+    const x=t2x(p); if(x<-2||x>w+2) continue;
+    g.beginPath(); g.moveTo(x+.5,16); g.lineTo(x+.5,h); g.stroke();
+  }
+  // 5. regua e, se couber, as palavras
+  g.fillStyle="#2b2c25"; g.fillRect(0,0,w,16);
+  g.font="10px Consolas,monospace"; g.textBaseline="middle";
+  const passo=escala(view[1]-view[0],w);
+  g.strokeStyle="#3e3f38"; g.fillStyle="#75715e";
+  for(let t=Math.ceil(view[0]/passo)*passo;t<view[1];t+=passo){
+    const x=t2x(t);
+    g.beginPath(); g.moveTo(x+.5,0); g.lineTo(x+.5,16); g.stroke();
+    g.fillText(passo<1?t.toFixed(3):tempo(t),x+3,8);
+  }
+  for(let i=0;i<toks.length;i++){
+    const t=toks[i];
+    if(t.e<view[0]||t.s>view[1]||t.k!=="palavra") continue;
+    const x0=t2x(t.s), lw=t2x(t.e)-x0;
+    if(lw<18) continue;
+    g.fillStyle=cut[i]?"#6b6a5c":"#e6db74";
+    g.fillText(t.t,x0+3,h-9);
+    g.strokeStyle="#3e3f3855";
+    g.beginPath(); g.moveTo(x0+.5,16); g.lineTo(x0+.5,h); g.stroke();
+  }
+  fundoView=view.slice();
+}
+function escala(dur,w){
+  const alvo=dur/(w/90);
+  for(const p of [0.001,0.002,0.005,0.01,0.02,0.05,0.1,0.25,0.5,1,2,5,10,
+                  15,30,60,120,300,600])
+    if(p>=alvo) return p;
+  return 600;
+}
+
+function desenhaZoom(){
+  if(!buf) return;
+  const {w,h,r}=dim(cZoom);
+  if(!w||!h) return;
+  if(fundoSujo||!fundoView||fundoView[0]!==view[0]||fundoView[1]!==view[1]){
+    desenhaFundo(); fundoSujo=false;
+  }
+  if(!fundo.width||!fundo.height) return;
+  const g=cZoom.getContext("2d");
+  g.setTransform(1,0,0,1,0,0);
+  g.clearRect(0,0,cZoom.width,cZoom.height);
+  g.drawImage(fundo,0,0);
+  g.setTransform(r,0,0,r,0,0);
+  if(sel){
+    const x0=t2x(sel[0]), x1=t2x(sel[1]);
+    g.fillStyle="#66d9ef22"; g.fillRect(x0,16,x1-x0,h-16);
+    g.strokeStyle="#66d9ef"; g.lineWidth=1;
+    g.beginPath(); g.moveTo(x0+.5,16); g.lineTo(x0+.5,h);
+    g.moveTo(x1+.5,16); g.lineTo(x1+.5,h); g.stroke();
+  }
+  linha(g,cursor,"#fd971f",h);
+  // roxo no bruto: e o aviso de que o que se ouve agora inclui material
+  // que o corte tira. Branco seria a mesma cabeca de leitura de sempre.
+  if(tocando) linha(g,posSrc(),modoBruto?"#ae81ff":"#f8f8f2",h);
+}
+function linha(g,t,cor,h){
+  const x=t2x(t);
+  if(x<-1||x>cZoom.clientWidth+1) return;
+  g.strokeStyle=cor; g.lineWidth=1;
+  g.beginPath(); g.moveTo(x+.5,0); g.lineTo(x+.5,h); g.stroke();
+}
+
+function desenhaMapa(){
+  if(!buf) return;
+  const {w,h,r}=dim(cMapa), g=cMapa.getContext("2d");
+  if(!w||!h) return;
+  g.setTransform(r,0,0,r,0,0);
+  g.fillStyle="#3b2321"; g.fillRect(0,0,w,h);
+  const k=w/D.dur;
+  g.fillStyle="#1f2019";
+  for(const [a,b] of iv) g.fillRect(a*k,0,Math.max(1,(b-a)*k),h);
+  // fita fechada: 7px de altura, so mantido x cortado x onde eu estou. A
+  // forma de onda em 7px nao diz nada e ainda custa uma varredura da
+  // piramide inteira por quadro enquanto toca.
+  if(h<14){
+    g.strokeStyle=tocando&&modoBruto?"#ae81ff":"#f8f8f2";
+    g.lineWidth=1; g.beginPath();
+    const xf=(tocando?posSrc():cursor)*k;
+    g.moveTo(xf+.5,0); g.lineTo(xf+.5,h); g.stroke();
+    return;
+  }
+  // onda inteira, muito reduzida: serve so para reconhecer o formato do
+  // video de relance
+  const n=picos.min.length, sr=buf.sampleRate;
+  const onda=(cor,so)=>{
+  g.strokeStyle=cor; g.lineWidth=1; g.beginPath();
+  for(let x=0;x<w;x++){
+    if(so!==null && vivo((x+0.5)/k)!==so) continue;
+    const a=Math.floor(x/k*sr/PB), b=Math.max(a+1,Math.floor((x+1)/k*sr/PB));
+    let lo=1,hi=-1;
+    for(let i=a;i<Math.min(n,b);i++){
+      if(picos.min[i]<lo)lo=picos.min[i]; if(picos.max[i]>hi)hi=picos.max[i];
+    }
+    if(hi<lo) continue;
+    g.moveTo(x+.5,h/2-Math.max(-1,Math.min(1,hi*ganhoOnda))*h/2);
+    g.lineTo(x+.5,h/2-Math.max(-1,Math.min(1,lo*ganhoOnda))*h/2);
+  }
+  g.stroke();
+  };
+  onda("#7a3f3d",false);
+  onda("#6d8a2a",true);
+  g.strokeStyle="#66d9ef"; g.lineWidth=1;
+  g.strokeRect(view[0]*k+.5,.5,Math.max(2,(view[1]-view[0])*k),h-1);
+  g.strokeStyle=tocando&&modoBruto?"#ae81ff":"#f8f8f2"; g.beginPath();
+  const x=(tocando?posSrc():cursor)*k;
+  g.moveTo(x+.5,0); g.lineTo(x+.5,h); g.stroke();
+}
+
+function desenhaTudo(){ desenhaMapa(); desenhaZoom(); atualizaInfo(); }
+
+function atualizaInfo(){
+  const i=tokEm(cursor);
+  const dentro=vivo(cursor);
+  $("#infoOnda").innerHTML=
+    `cursor <b>${tempo(cursor)}</b> ${dentro?"(mantido)":"(cortado)"} · `+
+    `janela <b>${(view[1]-view[0]).toFixed(3)}s</b>`+
+    (sel?` · seleção <b>${((sel[1]-sel[0])*1000).toFixed(0)} ms</b>`:"")+
+    (i>=0?` · <b>${toks[i].k==="palavra"?toks[i].t:toks[i].k}</b>`+
+          (toks[i].why?` — ${toks[i].why.slice(0,70)}`:""):"");
+}
+
+// ------------------------------------------------------------ navegacao
+function foco(a,b){                       // traz um trecho para a janela
+  const larg=view[1]-view[0], meio=(a+b)/2;
+  if(a>=view[0]&&b<=view[1]) return;
+  const nova=Math.max(larg,(b-a)*3);
+  poeView(meio-nova/2,meio+nova/2);
+}
+function poeView(a,b){
+  let larg=Math.max(0.02,Math.min(D.dur,b-a));
+  a=Math.max(0,Math.min(D.dur-larg,a));
+  view=[a,a+larg]; fundoSujo=true; desenhaTudo();
+}
+function poeCursor(t,centraliza){
+  cursor=Math.max(0,Math.min(D.dur,t));
+  if(centraliza||cursor<view[0]||cursor>view[1]){
+    const larg=view[1]-view[0];
+    poeView(cursor-larg/2,cursor+larg/2);
+  }
+  desenhaTudo();
+}
+
+// =====================================================================
+// motor de audio
+//
+// Cada trecho mantido vira um AudioBufferSourceNode agendado no relogio
+// de amostra do AudioContext. E isso que da a emenda sem lacuna: o
+// navegador nao "toca e depois procura o proximo", ele ja sabe de
+// antemao a que instante cada trecho comeca.
+//
+// O PLANO e a lista de trechos da FONTE que estao na fila. Ele deixou de
+// ser sempre o `iv` inteiro no dia em que passou a existir "toca so
+// isto": ouvir a selecao ate o fim dela, ouvir a selecao NO BRUTO (com o
+// que o corte tira, que e a unica forma de conferir uma anotacao) e
+// ouvir o video todo sao o mesmo motor com planos diferentes. Sem isso,
+// julgar uma anotacao era acreditar nela: o material que ela manda fora
+// nao existia em lugar nenhum da tela onde se pudesse ouvir.
+// =====================================================================
+function paraFontes(){
+  for(const f of fontes){ try{ f.stop(); }catch(e){} }
+  fontes=[];
+}
+function recorta(spans,a,b){             // spans da fonte dentro de [a,b]
+  const o=[];
+  for(const [x,y] of spans){
+    const i=Math.max(x,a), f=Math.min(y,b);
+    if(f>i+0.0005) o.push([i,f]);
+  }
+  return o;
+}
+// como vai ficar: so o que sobrevive ao corte. Sem `ate`, segue ate o
+// fim do video - e o tocar de sempre.
+function toca(deSrc,ate){
+  const fim=ate===undefined?D.dur:ate;
+  let spans=recorta(iv,deSrc,fim);
+  if(!spans.length&&ate===undefined) spans=iv.slice();   // acabou: recomeca
+  arranca(spans,false,ate===undefined?null:[deSrc,fim]);
+}
+// como foi gravado: o buffer inteiro, sem tirar nada. E o que responde
+// "o que exatamente eu estou jogando fora aqui?"
+function tocaBruto(a,b){
+  arranca([[Math.max(0,a),Math.min(D.dur,b)]],true,[a,b],"bruto");
+}
+// a emenda que sobra quando [a,b] sai: um tanto do que SOBREVIVE de cada
+// lado. O contexto e medido no resultado, nao no relogio da fonte -
+// medido na fonte, uma anotacao que mora dentro de um corte maior
+// devolvia silencio, e a emenda que se queria julgar ficava fora da
+// janela (aconteceu com a anotacao 79.5-86.5 do IMG_0247).
+function ladosDaEmenda(a,b,ctx){
+  const antes=[], depois=[];
+  let g=0;
+  for(let i=iv.length-1;i>=0&&g<ctx-1e-4;i--){
+    const f=Math.min(iv[i][1],a);
+    if(f<=iv[i][0]) continue;
+    const x=Math.max(iv[i][0],f-(ctx-g));
+    antes.unshift([x,f]); g+=f-x;
+  }
+  g=0;
+  for(let i=0;i<iv.length&&g<ctx-1e-4;i++){
+    const x=Math.max(iv[i][0],b);
+    if(iv[i][1]<=x) continue;
+    const f=Math.min(iv[i][1],x+(ctx-g));
+    depois.push([x,f]); g+=f-x;
+  }
+  return antes.concat(depois);
+}
+// 2,5s de cada lado, e nao 1,5: com 1,5 a emenda chegava sem contexto
+// suficiente para se reconhecer onde se esta no assunto
+function tocaEmenda(a,b){
+  arranca(ladosDaEmenda(a,b,2.5),false,[a,b],"emenda");
+}
+function arranca(spans,bruto,tr,rot){
+  if(!ac) return;
+  if(ac.state==="suspended") ac.resume();
+  paraFontes();
+  plano=spans; pAcc=[]; pTotal=0;
+  for(const [a,b] of plano){ pAcc.push(pTotal); pTotal+=b-a; }
+  if(!pTotal){
+    // selecao inteiramente dentro do corte: nao e falha, e resposta
+    tocando=false; mostraModo("nada sobra aqui — shift+espaço ouve o bruto",4000);
+    $("#bTocar").textContent="▶";
+    return;
+  }
+  modoBruto=bruto; trecho=tr;
+  playFrom=plano[0][0];
+  startCtx=ac.currentTime+0.05;
+  agIdx=0; tocando=true;
+  agenda();
+  $("#bTocar").textContent="⏸";
+  // pTotal, e nao a largura da janela: no modo "como vai ficar" o que
+  // se vai ouvir e so o que sobrou dentro dela
+  mostraModo(tr?(rot||(bruto?"bruto":"trecho"))+" "+dur1(pTotal):"");
+}
+function dur1(d){ return d<60?d.toFixed(1)+"s":hhmmss(d); }
+function mostraModo(txt,ms){
+  const m=$("#modo"); m.textContent=txt;
+  clearTimeout(mostraModo.t);
+  if(ms) mostraModo.t=setTimeout(()=>{ if(m.textContent===txt) m.textContent=""; },ms);
+}
+function para(){
+  if(tocando) playFrom=posSrc();
+  tocando=false; modoBruto=false; trecho=null; paraFontes();
+  $("#bTocar").textContent="▶";
+  mostraModo("");
+  desenhaTudo();
+}
+function agenda(){
+  if(!tocando) return;
+  const limite=ac.currentTime+5;
+  while(agIdx<plano.length){
+    const [a,b]=plano[agIdx];
+    const quando=startCtx+pAcc[agIdx];
+    if(quando>limite) break;
+    if(b-a>0.0005) fonte(Math.max(quando,ac.currentTime),a,b-a);
+    agIdx++;
+  }
+  if(agIdx>=plano.length && posEd()>=pTotal-0.02) para();
+}
+function fonte(quando,off,dur){
+  const s=ac.createBufferSource(), g=ac.createGain();
+  s.buffer=buf;
+  // o mesmo micro-fade que o render aplica em cada emenda (config.toml,
+  // [audio] fade). Sem ele a emenda estala, e o estalo se confunde com
+  // corte mal feito - a previa mentiria justamente sobre o que se julga.
+  const f=Math.min(D.fade,dur/2);
+  g.gain.setValueAtTime(0,quando);
+  g.gain.linearRampToValueAtTime(1,quando+f);
+  g.gain.setValueAtTime(1,quando+dur-f);
+  g.gain.linearRampToValueAtTime(0,quando+dur);
+  s.connect(g); g.connect(mestre);
+  s.start(quando,off,dur);
+  s.onended=()=>{ const i=fontes.indexOf(s); if(i>=0) fontes.splice(i,1); };
+  fontes.push(s);
+}
+function posEd(){                        // andado dentro do plano
+  if(!tocando) return 0;
+  return Math.max(0,Math.min(pTotal,ac.currentTime-startCtx));
+}
+function posSrc(){                       // ... e onde isso cai na fonte
+  if(!tocando) return playFrom;
+  const e=posEd();
+  for(let i=0;i<plano.length;i++){
+    const d=plano[i][1]-plano[i][0];
+    if(e<=pAcc[i]+d) return plano[i][0]+Math.max(0,e-pAcc[i]);
+  }
+  return plano.length?plano[plano.length-1][1]:0;
+}
+
+let ultimoTok=-1;
+function quadro(){
+  if(tocando){
+    agenda();
+    const t=posSrc();
+    if(seguir){
+      if(t<view[0]||t>view[1]-(view[1]-view[0])*0.15){
+        const larg=view[1]-view[0];
+        poeView(t-larg*0.3,t+larg*0.7);
+      }
+    }
+    const i=tokEm(t);
+    if(i!==ultimoTok){
+      if(spans[ultimoTok]) spans[ultimoTok].classList.remove("now");
+      if(spans[i]){
+        spans[i].classList.add("now");
+        if(seguir) spans[i].scrollIntoView({block:"center",behavior:"smooth"});
+      }
+      ultimoTok=i;
+    }
+    desenhaZoom(); desenhaMapa();
+  }
+  requestAnimationFrame(quadro);
+}
+requestAnimationFrame(quadro);
+
+// =====================================================================
+// mouse na onda
+// =====================================================================
+let arrastando=false, origem=0;
+cZoom.addEventListener("mousedown",ev=>{
+  const t=x2t(ev.offsetX);
+  arrastando=true; origem=t; sel=null; poeCursor(t);
+});
+window.addEventListener("mousemove",ev=>{
+  if(!arrastando) return;
+  const r=cZoom.getBoundingClientRect();
+  const t=x2t(ev.clientX-r.left);
+  sel=Math.abs(t-origem)<0.0005?null:[Math.min(origem,t),Math.max(origem,t)];
+  cursor=t; desenhaTudo();
+});
+window.addEventListener("mouseup",()=>{
+  if(!arrastando) return;
+  arrastando=false;
+  if(sel) cursor=sel[0];
+  desenhaTudo();
+});
+cZoom.addEventListener("wheel",ev=>{
+  ev.preventDefault();
+  if(ev.ctrlKey||ev.shiftKey){
+    const c=x2t(ev.offsetX), f=ev.deltaY>0?1.35:1/1.35;
+    const larg=Math.max(0.02,Math.min(D.dur,(view[1]-view[0])*f));
+    const p=(c-view[0])/(view[1]-view[0]);
+    poeView(c-larg*p,c-larg*p+larg);
+  }else{
+    const d=(view[1]-view[0])*(ev.deltaY>0?0.25:-0.25);
+    poeView(view[0]+d,view[1]+d);
+  }
+},{passive:false});
+cMapa.addEventListener("mousedown",ev=>{
+  const t=ev.offsetX/cMapa.clientWidth*D.dur, larg=view[1]-view[0];
+  poeView(t-larg/2,t+larg/2); poeCursor(t);
+});
+
+// =====================================================================
+// teclado
+// =====================================================================
+window.addEventListener("keydown",ev=>{
+  if(ev.target.tagName==="INPUT"||ev.target.tagName==="TEXTAREA") return;
+  const k=ev.key;
+  if(ev.ctrlKey&&(k==="z"||k==="Z")){
+    ev.preventDefault(); ev.shiftKey?refazer():desfazer(); return;
+  }
+  if(ev.ctrlKey&&(k==="y"||k==="Y")){ ev.preventDefault(); refazer(); return; }
+  if(ev.ctrlKey&&(k==="s"||k==="S")){ ev.preventDefault(); salva(); return; }
+  if(ev.ctrlKey) return;
+
+  // selecao no texto vence o cursor da onda: quem acabou de escolher um
+  // trecho esta falando dele, nao do milissegundo embaixo
+  const alvo=temSel()?[selA,selB]:null;
+  if(alvo){
+    if(k==="Delete"||k==="Backspace"||k==="-"||k==="_"){
+      ev.preventDefault(); marcaSel(true); return;
+    }
+    if(k==="="||k==="+"||k==="r"||k==="R"){
+      ev.preventDefault(); marcaSel(false); return;
+    }
+    if(k==="Escape"){ ev.preventDefault(); limpaSel(); return; }
+  }
+
+  const passo=ev.shiftKey?10*MS:MS;
+  switch(k){
+    case " ":{
+      ev.preventDefault();
+      if(tocando){ para(); return; }
+      // com trecho em foco, espaco toca SO ele e para no fim: conferir e
+      // ouvir o pedaco, nao o resto do video atras dele
+      const f=trechoFoco();
+      if(f){ ev.shiftKey?tocaBruto(f[0],f[1]):toca(f[0],f[1]); return; }
+      // sem trecho pintado, espaco e o corte do painel: e esse o pedaco
+      // que se esta editando. Ouvir o video inteiro e o caso raro.
+      if(corte){ ev.shiftKey?tocaBruto(corte[0],corte[1]):tocaCorte(); return; }
+      ev.shiftKey?tocaBruto(cursor,D.dur):toca(cursor);
+      return;
+    }
+    // as setas andam com a BORDA do corte, nao com um cursor. Era o
+    // gesto que faltava: ate aqui, mexer 10 ms exigia por o cursor no
+    // lugar certo da onda antes - duas miras para uma decisao so.
+    case "ArrowLeft": case "ArrowRight":{
+      ev.preventDefault();
+      if(corte){ mexeBorda(lado,k==="ArrowLeft"?-1:1,ev.shiftKey); return; }
+      const p=ev.shiftKey?10*MS:MS;
+      poeCursor(cursor+(k==="ArrowLeft"?-p:p));
+      sel=null; return;
+    }
+    case "Tab":
+      ev.preventDefault(); poeLado(1-lado); return;
+    case ",": case "<":
+      ev.preventDefault(); vaiCorte(-1); return;
+    case ".": case ">":
+      ev.preventDefault(); vaiCorte(1); return;
+    case "-": case "_":
+      ev.preventDefault();
+      if(sel){ const s=sel; mexe(()=>corta(s[0],s[1])); sel=null; }
+      else ajuste(tiraMs,passo);
+      return;
+    case "=": case "+":
+      ev.preventDefault();
+      if(sel){ const s=sel; mexe(()=>devolve(s[0],s[1])); sel=null; }
+      else ajuste(poeMs,passo);
+      return;
+    case "Delete":
+      ev.preventDefault();
+      if(sel){ const s=sel; mexe(()=>corta(s[0],s[1])); sel=null; }
+      else ajuste(()=>{ corta(cursor,cursor+passo); return passo; },passo);
+      return;
+    case "Backspace":
+      ev.preventDefault();
+      if(sel){ const s=sel; mexe(()=>corta(s[0],s[1])); sel=null; }
+      else ajuste(()=>{ corta(cursor-passo,cursor); return -passo; },passo);
+      return;
+    case "r": case "R":
+      ev.preventDefault();
+      if(sel){ const s=sel; mexe(()=>devolve(s[0],s[1])); sel=null; }
+      return;
+    case "f": case "F":
+      ev.preventDefault(); alternaSeguir(); return;
+    case "o": case "O":
+      ev.preventDefault(); alternaOnda(); return;
+    case "?":
+      ev.preventDefault(); alternaAjuda(); return;
+    case "Escape":
+      if(document.body.classList.contains("ajuda")){ alternaAjuda(false); return; }
+      fechaMenu();
+      if($("#log").className==="on"){ $("#log").className=""; return; }
+      if(temSel()){ limpaSel(); return; }
+      sel=null; desenhaTudo(); return;
+  }
+});
+// Aparar uma emenda e sempre comer para o lado que AINDA TEM audio: no
+// ponto de emenda so um dos lados tem, e e esse que sobrou grande demais.
+// Sem essa escolha, metade das teclas seria um nada silencioso.
+function tiraMs(p){
+  const d=(!vivo(cursor+p/2) && vivo(cursor-p/2))?-1:1;
+  if(d>0) corta(cursor,cursor+p); else corta(cursor-p,cursor);
+  return d*p;
+}
+function poeMs(p){
+  const d=(vivo(cursor+p/2) && !vivo(cursor-p/2))?-1:1;
+  if(d>0) devolve(cursor,cursor+p); else devolve(cursor-p,cursor);
+  return d*p;
+}
+// o cursor anda junto: e o que faz segurar a tecla comer milissegundo
+// atras de milissegundo, em vez de reescrever sempre o mesmo
+function ajuste(fn,p){
+  abreOnda();                            // comer 1 ms as cegas nao e edicao
+  let d=0;
+  mexe(()=>{ d=fn(p); });
+  poeCursor(cursor+d);
+}
+
+// =====================================================================
+// salvar e rodar o tarocut
+// =====================================================================
+function marcaSujo(){
+  sujo=true; $("#salvo").textContent="não salvo"; $("#salvo").className="sujo";
+  clearTimeout(marcaSujo.t);
+  marcaSujo.t=setTimeout(salva,1500);      // grava sozinho: o render le o
+                                           // arquivo, nao a tela
+}
+async function salva(){
+  clearTimeout(marcaSujo.t);
+  const r=await (await fetch("/api/salvar",{
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({cut:cut.map(c=>c?"1":"0").join(""),
+                         cortes, restauros})})).json();
+  sujo=false;
+  $("#salvo").className="";
+  $("#salvo").textContent=
+    `salvo · ${r.tokens} palavras, ${r.cortes} cortes finos`;
+}
+async function roda(cmd){
+  if(sujo) await salva();
+  $("#log").className="on";
+  $("#log").textContent="…";
+  await fetch("/api/rodar",{method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({cmd})});
+  segueLog();
+}
+async function segueLog(){
+  const j=await (await fetch("/api/log")).json();
+  const el=$("#log");
+  el.textContent=j.linhas.join("\n");
+  el.scrollTop=el.scrollHeight;
+  if(j.rodando) setTimeout(segueLog,600);
+}
+function alternaSeguir(){
+  seguir=!seguir; $("#bSeguir").textContent="seguir: "+(seguir?"on":"off");
+}
+
+// =====================================================================
+// gavetas
+//
+// A onda e a ajuda ocupavam um terco da tela o tempo todo para um
+// trabalho que e minoria: no fluxo normal se le e se clica palavra. Elas
+// aparecem quando o gesto e delas - inclusive sozinhas, quando a tecla
+// pedida so faz sentido com a onda na frente.
+// =====================================================================
+function ondaAberta(){ return document.body.classList.contains("onda"); }
+function poeOnda(v){
+  document.body.classList.toggle("onda",v);
+  $("#bOnda").classList.toggle("on",v);
+  try{ localStorage.setItem("tarocut.onda",v?"1":"0"); }catch(e){}
+  fundoSujo=true; desenhaTudo();
+}
+function abreOnda(){ if(!ondaAberta()) poeOnda(true); }
+function alternaOnda(){ poeOnda(!ondaAberta()); }
+function alternaAjuda(v){
+  document.body.classList.toggle("ajuda",
+    v===undefined?!document.body.classList.contains("ajuda"):v);
+}
+function fechaMenu(){ $("#menu").classList.remove("on"); }
+
+for(const el of document.querySelectorAll(".pl")){
+  const l=+el.dataset.lado;
+  el.onclick=()=>poeLado(l);
+  el.querySelector(".pmenos").onclick=ev=>{ ev.stopPropagation(); poeLado(l); mexeBorda(l,-1); };
+  el.querySelector(".pmais").onclick =ev=>{ ev.stopPropagation(); poeLado(l); mexeBorda(l, 1); };
+}
+for(const b of document.querySelectorAll("#pPasso button"))
+  b.onclick=()=>poePasso(+b.dataset.p);
+$("#pAnt").onclick=()=>vaiCorte(-1);
+$("#pProx").onclick=()=>vaiCorte(1);
+$("#pOuvir").onclick=tocaCorte;
+$("#pCortar").onclick=()=>marcaSel(true);
+$("#pDevolver").onclick=()=>marcaSel(false);
+$("#pOuvirSel").onclick=()=>{ if(temSel()) toca(toks[selA].s,toks[selB].e); };
+$("#pPor").onclick=()=>$("#pPor").classList.toggle("aberto");
+$("#pBruto").onclick=()=>{ if(corte) tocaBruto(corte[0],corte[1]); };
+poePasso(10); poeLado(0);
+
+$("#bTocar").onclick=()=>{
+  if(tocando) return para();
+  const f=trechoFoco();
+  f ? toca(f[0],f[1]) : toca(cursor);
+};
+$("#bOnda").onclick=alternaOnda;
+$("#bAjuda").onclick=()=>alternaAjuda();
+$("#ajuda").onclick=ev=>{ if(ev.target.id==="ajuda") alternaAjuda(false); };
+$("#salvo").onclick=salva;
+$("#bMenu").onclick=ev=>{ ev.stopPropagation(); $("#menu").classList.toggle("on"); };
+$("#menuLista").onclick=ev=>{ if(ev.target.tagName==="BUTTON") fechaMenu(); };
+document.addEventListener("click",fechaMenu);
+$("#log").onclick=()=>{ $("#log").className=""; };
+$("#bSeguir").onclick=alternaSeguir;
+$("#bDry").onclick=()=>roda("dry");
+$("#bAudio").onclick=()=>roda("audio");
+$("#bMpv").onclick=()=>roda("previa");
+$("#bRender").onclick=()=>roda("render");
+$("#bMenos").onclick=()=>{const l=(view[1]-view[0])*2;poeView(cursor-l/2,cursor+l/2);};
+$("#bMais").onclick=()=>{const l=(view[1]-view[0])/2;poeView(cursor-l/2,cursor+l/2);};
+$("#bTudo").onclick=()=>poeView(0,D.dur);
+window.addEventListener("resize",()=>{fundoSujo=true;desenhaTudo();});
+window.addEventListener("beforeunload",ev=>{
+  if(sujo){ ev.preventDefault(); ev.returnValue=""; }
+});
+
+inicia();
+</script>
+</body>
+</html>

@@ -1,0 +1,26 @@
+# Cache Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Arquivos de backup e rascunho
+*.bak
+*.bak*
+*~
+
+# Estado local dos vídeos
+work/
+
+# Editores
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
+
+# Dependências (se usar venv local)
+venv/

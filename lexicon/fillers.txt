@@ -1,0 +1,66 @@
+# Cacoetes e maneirismos. Um por linha. '#' comenta.
+# Rafael: edite livremente, o arquivo e lido a cada rodada.
+#
+# DUAS CATEGORIAS:
+#
+#   linha simples  -> SEMPRE corta. So coloque aqui o que nunca
+#                     e palavra de verdade em portugues.
+#
+#   ~com til       -> so corta QUANDO ISOLADO, isto e, cercado por
+#                     pausa/hesitacao. Protege a palavra no uso
+#                     legitimo: a conjuncao "e" em "cavaleiros e
+#                     cavaleiras" fica; o "e..." solto some.
+#
+# ACENTOS IMPORTAM aqui. "e" (conjuncao) e "é" (verbo/cacoete)
+# sao tratados como coisas diferentes.
+
+# --- hesitacoes puras: nunca sao palavra real ---
+ahn
+ahm
+ahh
+aah
+ah
+hum
+hmm
+hm
+uhm
+uhn
+un
+ih
+eh
+eeh
+ehh
+né?né
+
+# --- alongamentos ancorados (o detector automatico pega o resto) ---
+ééé
+éééé
+eee
+eeee
+queee
+queeee
+aaah
+aaaah
+entãão
+nãão
+
+# --- ambiguos: so cortam se estiverem ILHADOS entre pausas ---
+#
+# MEDIDO em 31/08: "é, e, que, a, o, então" foram testados aqui e NAO
+# servem. Num video de 4min houve 44 ocorrencias e NENHUMA era cacoete:
+# eram "que" relativo, artigos, a conjuncao "e" em "cavaleiros e
+# cavaleiras", e o "Então," estrutural com que ela abre raciocinio.
+# So a regra estrita evitou destruir o texto. Manter essas palavras aqui
+# e risco puro, sem ganho: o cacoete de verdade aparece ou como
+# ALONGAMENTO ("ééé", "queee"), que o detector automatico pega, ou como
+# hesitacao sem texto, que a analise de energia pega. Nao recoloque.
+~tipo
+~né
+~assim
+~sabe
+~entendeu
+~enfim
+~digamos
+~quer dizer
+~ou seja
+~vamos dizer

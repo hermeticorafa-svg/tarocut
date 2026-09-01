@@ -1,0 +1,45 @@
+# MARCADORES VERBAIS DE CORTE
+#
+# Frases com que a Mariana marca o proprio corte enquanto grava. Quando
+# uma delas aparece, o programa descarta a tentativa abandonada que vem
+# ANTES dela, mais a propria frase.
+#
+# Achado no IMG_0248, duas vezes em 10 minutos:
+#   0:10  "As metodologias... nao, CORTA ESSA PARTE, é... como eu posso
+#          falar isso?"
+#   1:11  "...por assim dizer. nao... CORTO ESSA PARTE, ESPERE, DEIXA EU
+#          PENSAR."
+#
+# E o sinal mais confiavel que existe no material: ela esta dizendo
+# literalmente o que quer que saia. Vale mais que qualquer heuristica.
+#
+# Uma frase por linha, sem acento obrigatorio (a comparacao ignora
+# acentos e maiusculas). Va acrescentando conforme aparecerem.
+
+corta essa parte
+corta essa
+corto essa parte
+corto essa
+corta isso
+corta esse trecho
+corta aqui
+cortar essa parte
+deixa eu pensar
+deixa eu começar de novo
+deixa eu refazer
+deixa eu repetir
+deixa eu tentar de novo
+vou refazer
+vou repetir
+vou começar de novo
+esquece isso
+esquece essa parte
+não, esquece
+apaga isso
+peraí, deixa eu
+espere, deixa eu
+como eu posso falar isso
+como é que eu falo isso
+que que eu ia dizer
+perdi a linha
+me perdi

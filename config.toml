@@ -1,0 +1,223 @@
+# tarocut - configuracao. Editavel; lida a cada rodada.
+
+[whisper]
+model         = "small"      # tiny|base|small|medium|large-v3
+compute_type  = "int8"
+beam_size     = 5
+language      = "pt"
+
+[silencio]
+# lacuna minima entre palavras para virar candidata
+gap_min             = 0.25
+# quanto acima do piso de ruido conta como fala (dB)
+limiar_fala_db      = 12.0
+# fracao de frames com voz para classificar a lacuna
+frac_voz_fala       = 0.45   # acima disso: FALA sem texto (cacoete)
+frac_voz_silencio   = 0.15   # abaixo disso: silencio puro
+# CALIBRADO contra os videos que o Rafael editou a mao:
+#   editados: pausas>0.6s ocupam 5-12% do tempo, a maior tem 1.1-2.2s
+#   brutos:   pausas>0.6s ocupam 25-33% do tempo, a maior tem 5.5-11.5s
+# Valores mais curtos que estes cortam mais que o gosto dele.
+# silencio nao e eliminado, e ENCURTADO para este valor
+pausa_alvo          = 0.45
+# nunca toca em pausa menor que isto (respiracao natural)
+pausa_intocavel     = 0.75
+# (aqui morava `margem = 0.06`, "margem deixada em volta de cada corte".
+#  Nunca foi lida por linha nenhuma do programa - era a unica chave morta do
+#  arquivo. O valor estava certo e o lugar errado: virou [corte].folga_palavra,
+#  que e quem de fato deixa margem em volta do corte.)
+
+[arrastada]
+# Palavra ARRASTADA. O Whisper normaliza "queeeee" para "que" e "ééé" para
+# "e", entao o texto nao denuncia o alongamento - mas a DURACAO denuncia.
+# Compara-se cada palavra com o ritmo mediano de fala do proprio video.
+# Medido no IMG_0246: mediana 0,077 s/caractere; o "aaah" que sobrou na
+# edicao anterior era um 'a' de 0,52s, 6,8x o normal.
+fator   = 4.0    # quantas vezes acima do esperado conta como arrastada
+# 0,30 e proposital: nao para cortar (corte tao curto nao passa no minimo),
+# mas para SINALIZAR na transcricao. Um 'a' de 0,32s costuma ser o "é" da
+# hesitacao que o Whisper grudou na palavra seguinte - o passe de julgamento
+# consegue resolver o que o alinhamento automatico nao resolve.
+min_dur = 0.30
+manter  = 1.6    # ao cortar a cauda, preserva este tanto do esperado
+# Acima deste excesso a palavra nao esta "arrastada": o Whisper deixou de
+# transcrever alguma coisa e o alinhador absorveu na palavra vizinha. Medido:
+# 'principalmente' com 4,67s escondia um "nessas cartas" repetido. Nesses
+# casos o analyze re-transcreve o trecho antes de decidir, em vez de cortar
+# uma cauda no escuro.
+excesso_suspeito = 1.2
+
+[instrucao]
+# Marcadores verbais ("corta essa parte", "deixa eu pensar"). Ao achar um,
+# o programa volta descartando ate encontrar um SILENCIO maior que isto -
+# ali comecou a tentativa abandonada. Hesitacao nao serve de fronteira: ela
+# faz parte da bagunca. Foi por parar numa hesitacao de 0,5s que sobrou um
+# "As" orfao no comeco do IMG_0248, virando "as met--".
+respiro = 0.8
+
+[hesitacao]
+# Caracteres falados por segundo abaixo do qual o trecho NAO e fala: e
+# vocalizacao, hesitacao arrastada ou ruido. Fala normal da ~13; fala lenta
+# com pausa dentro cai para 4-6; "Ous!" em 2,1s deu 1,4. Vale para TODOS os
+# caminhos que recuperam texto (ver `classifica_fala`).
+densidade_minima = 2.5
+# abaixo desta duracao nao vale re-transcrever (o Whisper alucina)
+isolar_min          = 0.85
+# GUARDA CONTRA APAGAR FRASE. Um trecho de que o transcritor nao tirou texto
+# vinha sendo cortado como se fosse silencio - e nao era. Em IMG_0247 isso
+# apagou quatro frases: "outros tendem, muitas vezes, a seguir essa...",
+# "e a leitura", "tem algo que a gente pode extrair", "nao tem nem as vezes
+# um...". Duas delas o Rafael ouviu na previa (01:14 e 01:47); as outras
+# duas passaram. Batendo estes tres numeros, o trecho NAO e cortado: fica e
+# vira [?? N.Ns] no revisao.txt, para o passe de julgamento decidir.
+#
+# MEDIDO relendo com contexto todo trecho "sem texto" de IMG_0247 e
+# IMG_0248: as 5 frases reais dao 1,10-1,77s, 57-93% de voz e pico 37-45 dB
+# acima do limiar. O que continua sendo cortado (cacoete, "eeee" arrastado,
+# folheio de carta) da 32-53% de voz, ou menos de 0,9s.
+#
+# A faixa 55-61% e ambigua DE VERDADE: um "É" arrastado de 1,2s mede igual
+# a uma frase curta. Por isso a regra e frouxa de proposito - em IMG_0248
+# ela segura dois trechos (63,4s e 88,5s) que provavelmente sao cacoete.
+# Preferido assim: cacoete que sobra se resolve com uma anotacao; frase
+# apagada nao se resolve, porque ninguem fica sabendo que existiu.
+guarda_dur          = 0.9    # segundos
+guarda_voz          = 0.55   # fracao de quadros acima do limiar de fala
+guarda_db           = 25.0   # pico, em dB acima do limiar de fala
+# rejeita re-transcricao com mais que isto de palavras por segundo
+max_palavras_seg    = 5.0
+# rejeita re-transcricao com log-prob medio pior que isto
+min_logprob         = -1.10
+
+[contagem]
+# A contagem corrida de cartas ("As, dois, tres... dez") tem que correr
+# inteira: encurtar as pausas entre os numeros quebra o ritmo. Estes dois
+# numeros dizem o que E uma contagem - e, principalmente, o que NAO e.
+#
+# MEDIDO nos tres videos de calibracao. A contagem de verdade (IMG_0246,
+# 192,4-195,4s: "As, dois, tres... dez") tem 9 numeros inequivocos, com
+# 0,02s entre eles. As 6 sequencias falsas do IMG_0247 tinham no maximo 1
+# numero ("as vezes um", "uma acao, uma") e uma delas atravessava 5,58s de
+# silencio - "As figuras" as 80,0s emendada no "as" de 86,0s, porque a
+# varredura nao ve silencio. As duas marginais do IMG_0246 ("de 0 a 21",
+# "de as a dez e quatro") tem 2 numeros e deixam de ser protegidas: nada
+# dentro delas estava sendo cortado.
+#
+# O que a protecao larga custava: no total dos tres videos ela salvou de
+# corte UM token, o "Hum!" de 238,8s do IMG_0247 - cacoete que devia sair -,
+# e cancelou a poda da cauda do "Aaas" de 80,0s, que era o defeito ouvido
+# aos 00:20 da previa.
+fortes_min = 3     # numeros inequivocos exigidos na sequencia
+gap_max    = 1.5   # segundos tolerados entre um numero e o proximo
+
+[corte]
+# Geometria da emenda. Estes valores existem porque cortar "certo" no papel
+# produz glitch na tela: cada emenda e um pulo na posicao da cabeca dela.
+# A regra e: MENOS emendas, e cada uma no ponto mais silencioso possivel.
+
+# Nenhum corte menor que isto. Economizar 0,2s nao compensa um pulo visivel.
+# Nao baixe muito: cacoete curto some, mas emenda demais volta o glitch.
+minimo          = 0.28
+# Recuo quando uma emenda ameaca encostar em palavra preservada.
+#
+# Aqui houve DOIS parametros ("protecao_fim" e "protecao_inicio"), grandes
+# (0,08 / 0,05), para compensar o Whisper marcar o fim da palavra cedo por
+# sistema. Depois do `align` viraram um valor so, com o nome do que
+# realmente fazem.
+#
+# Ficou em 0,02 porque a medicao dizia que "as invasoes ja eram zero em
+# qualquer valor". Essa medicao estava se enganando: contava invasao contra
+# os tempos do ALINHADOR, os mesmos com que o corte foi calculado - nunca
+# poderia dar outra coisa. O ouvido dizia o contrario ("...eitura" em 1:47,
+# "de" raspado em 189,9s): o erro esta no proprio tempo, e 0,02 nao cobre
+# erro nenhum.
+#
+# 0,06 e o erro MEDIDO de fronteira: 72% dos fins de palavra do Whisper caem
+# tarde (mediana +27 ms) e o inicio de "leitura" em 271,94s estava 60 ms
+# adiante do real. E o mesmo 0,06 que morava em [silencio].margem, chave que
+# nunca foi lida por ninguem e foi apagada.
+#
+# CUSTO MEDIDO nos tres videos de calibracao, contra 0,02:
+#   IMG_0246 +0,5s, 22 -> 22 emendas
+#   IMG_0247 +3,6s, 74 -> 71 emendas
+#   IMG_0248 +2,4s, 71 -> 69 emendas
+# ~1% mais material e MENOS emendas - melhora nos dois eixos. Acima disso
+# comeca a devolver fala cortada de proposito: 0,12 traz 12s no IMG_0247.
+#
+# Testada tambem uma folga maior so nas palavras com `align_rejeitado`
+# ("deriva"/"ordem", 4% delas): de 0,06 para 0,30 rendeu 1-2s e uma emenda
+# nos tres videos somados. Nao paga um segundo botao - ficou de fora.
+folga_palavra   = 0.06
+# Trecho mantido menor que isto e uma piscada: absorvido pelo corte vizinho
+# (so quando nao ha fala aproveitavel dentro dele).
+ilha_minima     = 0.55
+# Raio de busca do ponto mais silencioso para pousar a emenda.
+#
+# A funcao dele MUDOU. Era 0,18 quando precisava PROCURAR a fronteira que o
+# Whisper errava; hoje o alinhamento ja da a fronteira, e o snap so serve
+# para a emenda cair num instante silencioso e nao estalar no audio. Raio
+# grande virou risco puro: foi um snap de 0,18 que engoliu "na" e entrou em
+# "primeira". Se algum dia estalo nao for problema, pode ir a zero - medido,
+# o efeito no corte e marginal.
+snap            = 0.06
+
+[audio]
+lufs_alvo    = -16.0
+true_peak    = -1.5
+lra          = 11.0
+highpass_hz  = 80
+# micro-fade em cada emenda, contra estalo (segundos)
+fade         = 0.010
+
+[render]
+# "igual" preserva codec, resolucao, fps e cor do original (HEVC 10-bit
+# HLG). E o que entra no CapCut do jeito que voce ja esta acostumado.
+# "1080p30" reduz para 1080p/30fps: ~4x mais rapido, arquivo bem menor.
+perfil       = "igual"
+qualidade    = 24          # menor = melhor. 20-26 e a faixa util.
+# decode e encode na GPU Intel. Se der problema, ponha false.
+gpu          = true
+
+[revisao]
+# Aviso de fala rarefeita no revisao.txt. Nao corta nada: so marca
+# [!Ns/N palavras] para o passe de julgamento olhar aquele trecho.
+#
+# Existe porque o detector de pausas mede `proxima.s - atual.e`, e quando o
+# alinhador embaralha a ordem dos tempos essa lacuna fica NEGATIVA: a parada
+# longa nao vira pausa e sai como texto comum. Foi o que aconteceu no
+# IMG_0247 em 575-598s - 23s para 16 palavras, ouvido como ar morto no corte
+# final. A densidade nao depende da lacuna: conta ponto medio de palavra
+# dentro de uma janela.
+janela          = 18.0   # tamanho da janela deslizante (s)
+passo           = 1.0    # de quanto em quanto a janela anda (s)
+# MEDIDO nos tres videos ja julgados (IMG_0246/0247/0248), janela de 18s
+# sobre o que sobra do corte: mediana 2,3-2,5 palavras/s, e a janela mais
+# rarefeita de todas elas deu 1,10. O trecho ruim do IMG_0247 deu 0,70.
+# 0,85 fica no meio dos dois: nenhum trecho normal desses videos e marcado,
+# e ainda ha folga antes de comecar a pegar folheio de carta e respiro.
+palavras_seg    = 0.85
+duracao_minima  = 5.0    # trecho mais curto que isto nao vale marcar
+
+[alinhamento]
+# Quanto o alinhador (wav2vec2) pode discordar do Whisper sobre ONDE a
+# palavra comeca, em segundos, antes de perder a razao.
+#
+# O score do CTC nao serve de guarda. MEDIDO nos tres videos: as palavras
+# pior colocadas - "que" jogada 5,8s para a frente, "de" 11,4s - saem com
+# score -0,00, o melhor possivel. O modelo achou a mesma palavra curta
+# ("que", "essa", "de", "e") noutro ponto do bloco e encaixou ali com toda a
+# confianca. Quem denuncia isso e o Whisper: a diferenca entre os dois tem
+# mediana de 0,09s e p90 de 0,5s, entao qualquer coisa acima de 1,5s nao e
+# imprecisao, e a palavra noutro lugar.
+#
+# Em 1,5s: 1-3% das palavras voltam ao tempo do Whisper (grosseiro, porem no
+# lugar certo) e as inversoes de ordem caem a ZERO nos tres videos. Baixar
+# muito joga fora fronteira boa; subir deixa passar o erro que fez o corte
+# do IMG_0247 comer "que muitas".
+deriva_max = 1.5
+# Quao fundo dentro de um corte uma palavra "que era para ficar" precisa
+# estar para virar aviso na hora de gerar audio/video (ver
+# `confere_pelo_whisper`). Abaixo disso e a palavra RASPANDO na emenda, que
+# e rotina; acima, ela esta enterrada e alguem errou de lugar. MEDIDO no
+# IMG_0247 quebrado: raspadas ate 0,54s, enterradas a partir de 0,71s.
+enterrada_min = 0.6

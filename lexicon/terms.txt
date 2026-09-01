@@ -1,0 +1,130 @@
+# GERADO por lexico.py a partir de material/.
+# Nao edite a mao: rode 'python lexico.py' de novo.
+# Formato:  CORRETO | erro1 | erro2
+#
+# Alimenta o initial_prompt do Whisper (os primeiros ~30 termos)
+# e o corretor de transcricao (a lista toda).
+
+# --- vocabulario do curso (prioridade no prompt) ---
+Tarô de Yala | tarot de ala | Tarot de Alas | Tarou Diálamas | taro de iala | tarô de ala | tarot de yala | Tarô de Alas | tarodiala
+Mariana Pio | Mariana Pião
+Rafael Trabasso | Rafael Trabaço | Rafael Trabasse
+Arcanos Maiores
+Arcanos Menores
+arcano | arcanho
+naipes | snipes | knipe | snipers | nipes | knipes
+Copas
+Espadas
+Ouros
+Paus
+Bastões
+Pentáculos
+Rainha
+Rei
+Cavaleiro
+Cavaleira
+Pajem
+pajens | páginos | pages | paginos | pajés | páginas
+cartas da corte
+cartas numeradas
+Ás
+Tarô de Marselha | Tarot de Marcellia | Tarou de Marçélia | Taro de Marcelia | Tarot de Marselha | Tarô de Marçélia
+Waite-Smith | Wait Smith | Waite Smith | Uêit Smith | Weit Smith
+Rider-Waite
+tiragem
+baralho
+deck | DEC | deque
+oráculo
+tradição ocultista
+Tarô | tarot
+tarôs | tarots
+arcanos | arcanus | arcamos
+filosofia ocultista | filosofia cultista
+não presta | no presta
+se propor | se propô
+
+# --- arcanos maiores (22) ---
+A Estrela
+A Força
+A Imperatriz
+A Justiça
+A Louca
+A Lua
+A Maga
+A Morte
+A Roda da Fortuna
+A Sacerdotisa
+A Temperança
+A Torre
+Amantes
+O Carro
+O Diabo
+O Enforcado
+O Eremita
+O Hierofante
+O Imperador
+O Julgamento
+O Mundo
+O Sol
+
+# --- cartas da corte (16) ---
+Cavaleira de Espadas
+Cavaleira de Ouros
+Cavaleira de Paus
+Cavaleiro de Copas
+Pajens de Copas
+Pajens de Espadas
+Pajens de Ouros
+Pajens de Paus
+Rainha de Copas
+Rainha de Espadas
+Rainha de Ouros
+Rainha de Paus
+Rei de Copas
+Rei de Espadas
+Rei de Ouros
+Rei de Paus
+
+# --- cartas numeradas (40) ---
+10 de Copas
+10 de Espadas
+10 de Ouros
+10 de Paus
+2 de Copas
+2 de Espadas
+2 de Ouros
+2 de Paus
+3 de Copas
+3 de Espadas
+3 de Ouros
+3 de Paus
+4 de Copas
+4 de Espadas
+4 de Ouros
+4 de Paus
+5 de Copas
+5 de Espadas
+5 de Ouros
+5 de Paus
+6 de Copas
+6 de Espadas
+6 de Ouros
+6 de Paus
+7 de Copas
+7 de Espadas
+7 de Ouros
+7 de Paus
+8 de Copas
+8 de Espadas
+8 de Ouros
+8 de Paus
+9 de Copas
+9 de Espadas
+9 de Ouros
+9 de Paus
+As de Copas
+As de Espadas
+As de Ouros
+As de Paus
+
+# guia: 64289 caracteres lidos de guia-taro-de-yala.md
