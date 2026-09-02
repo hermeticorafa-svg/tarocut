@@ -56,6 +56,8 @@ body{padding-right:330px}
 .tok{border-radius:2px;padding:1px 0}
 .tok.sel{background:var(--sel)}
 .tok.toca{background:var(--toca)}
+.tok.editando{background:#fff;outline:1px solid var(--tinta);
+              padding:0 3px;cursor:text}
 .f{color:var(--fora);text-decoration:line-through;text-decoration-thickness:1px}
 
 /* Vao: silencio, ou hesitacao de que o transcritor nao tirou texto. Nao
@@ -101,7 +103,14 @@ body{padding-right:330px}
   font:12px/1.5 system-ui,"Segoe UI",sans-serif;color:#4a463f;
   box-shadow:0 2px 10px rgba(0,0,0,.07);
 }
+#cabecalho{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
 #painel h1{font:600 12px/1.4 inherit;margin:0 0 6px;color:var(--tinta)}
+#btAbrir{
+  flex:none;border:1px solid var(--linha);background:#fff;border-radius:4px;
+  padding:3px 7px;font:11px/1 system-ui,"Segoe UI",sans-serif;cursor:pointer;
+  color:#4a463f;
+}
+#btAbrir:hover{background:var(--tinta);color:var(--papel);border-color:var(--tinta)}
 #painel .bloco{margin:9px 0 0;padding-top:9px;border-top:1px solid var(--linha)}
 #painel b{color:var(--tinta);font-weight:600}
 .unid{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}
@@ -144,6 +153,34 @@ body{padding-right:330px}
 #menu button:hover:not(:disabled){background:#e2dfd8}
 #menu button:disabled{opacity:.35;cursor:default}
 #menu hr{border:0;border-top:1px solid var(--linha);margin:4px 2px}
+
+/* ------------------------------------------------------------- abrir */
+#abrirVeu{
+  position:fixed;inset:0;background:rgba(33,31,28,.35);z-index:40;
+  display:flex;align-items:center;justify-content:center;
+}
+#abrirVeu[hidden]{display:none}
+#abrirCaixa{
+  width:380px;max-height:70vh;overflow:auto;background:var(--painel);
+  border:1px solid var(--linha);border-radius:8px;padding:12px 14px;
+  box-shadow:0 8px 30px rgba(0,0,0,.25);
+  font:13px/1.5 system-ui,"Segoe UI",sans-serif;color:#4a463f;
+}
+#abrirTopo{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+#abrirTopo b{color:var(--tinta);font-size:14px}
+#abrirFechar{
+  border:0;background:none;font:20px/1 inherit;cursor:pointer;
+  color:#7d786f;padding:0 4px;
+}
+#abrirFechar:hover{color:var(--tinta)}
+.abrirItem{
+  display:flex;justify-content:space-between;gap:10px;padding:8px 6px;
+  border-radius:5px;cursor:pointer;
+}
+.abrirItem:hover{background:#e2dfd8}
+.abrirItem.atual{opacity:.45;cursor:default}
+.abrirItem span:last-child{color:#7d786f;white-space:nowrap}
+#abrirLista .vazio{color:#7d786f;padding:8px 6px}
 </style>
 </head>
 <body>
@@ -163,7 +200,10 @@ body{padding-right:330px}
 </div>
 
 <aside id="painel">
-  <h1 id="tit">carregando...</h1>
+  <div id="cabecalho">
+    <h1 id="tit">carregando...</h1>
+    <button id="btAbrir" title="abrir outro vídeo já analisado">Abrir…</button>
+  </div>
   <div id="resumo"></div>
 
   <div class="bloco">
@@ -208,6 +248,16 @@ body{padding-right:330px}
 </aside>
 
 <div id="menu"></div>
+
+<div id="abrirVeu" hidden>
+  <div id="abrirCaixa">
+    <div id="abrirTopo">
+      <b>Abrir vídeo</b>
+      <button id="abrirFechar" aria-label="fechar" title="fechar">&times;</button>
+    </div>
+    <div id="abrirLista"></div>
+  </div>
+</div>
 
 <script>
 "use strict";
@@ -375,7 +425,7 @@ function pinta() {
   if (!S.els.length) monta();
   for (let i = 0; i < pc.tokens.length; i++) {
     const p = pc.tokens[i];
-    const sig = p.ocultoAntes + "|" + JSON.stringify(p.vivo);
+    const sig = p.txt + "|" + p.ocultoAntes + "|" + JSON.stringify(p.vivo);
     if (S.sig[i] !== sig) { S.sig[i] = sig; pintaToken(i, p); }
   }
   marcaVao($("vaoFim"), pc.fim);
@@ -553,24 +603,106 @@ function tokenDe(alvo) {
   return el && el.dataset.i !== undefined ? +el.dataset.i : null;
 }
 
+/* ==================================================================== */
+/*  corrigir transcrição                                                */
+/* ==================================================================== */
+
+/* So o TEXTO da palavra, nunca quando ela comeca/termina nem se ela sai
+   do video - por isso isto nunca chama acao("menos"/"mais"/"alterna"),
+   so o novo tipo "corrigir", que so troca t["t"] no servidor. */
+let edicaoAtual = null;   // {i, acabar} enquanto uma palavra esta em edicao
+
+function iniciaCorrecao(i) {
+  if (edicaoAtual) edicaoAtual.acabar(true);
+  const el = S.els[i];
+  if (!el) return;
+  const atual = S.est.pecas.tokens[i].txt;
+  let terminado = false;
+
+  const aoTeclar = (ev) => {
+    ev.stopPropagation();   // senao setas/backspace/espaço globais agem
+    if (ev.key === "Enter") { ev.preventDefault(); acabar(true); }
+    else if (ev.key === "Escape") { ev.preventDefault(); acabar(false); }
+  };
+  const aoSair = () => acabar(true);   // clicar fora tambem grava
+
+  function acabar(salvar) {
+    if (terminado) return;
+    terminado = true;
+    edicaoAtual = null;
+    el.contentEditable = "false";
+    el.classList.remove("editando");
+    el.removeEventListener("keydown", aoTeclar);
+    el.removeEventListener("blur", aoSair);
+    const novo = el.textContent.trim();
+    if (salvar && novo && novo !== atual) {
+      // o DOM ja mudou por fora do pinta() (o contentEditable). Se o
+      // servidor recusar (por exemplo, a selecao nao assentou a tempo),
+      // a assinatura em S.sig[i] continuaria igual a de antes e o
+      // pinta() pularia o repintar - o texto digitado ficaria na tela
+      // parecendo salvo sem ter sido. Invalidar aqui forca o repaint
+      // nos dois casos: aceito (mostra o novo) ou recusado (volta ao
+      // salvo).
+      S.sig[i] = null;
+      // `i` explicito, nunca a selecao da tela: ver o comentario em
+      // editor.py sobre a corrida do clique com botao direito. Devolve
+      // a promise: quem chamou `acabar` fora de um evento de teclado
+      // (mousedown/contextmenu clicando em outra palavra) precisa
+      // esperar ela terminar antes de mandar o proprio gesto - senao os
+      // dois pedidos correm e o `vez` descarta sempre o do "corrigir",
+      // ficando com a resposta do outro gesto, de ANTES da correcao.
+      return acao("corrigir", { i, texto: novo });
+    } else {
+      pintaToken(i, S.est.pecas.tokens[i]);   // desiste: volta ao salvo
+    }
+  }
+
+  edicaoAtual = { i, acabar };
+  el.contentEditable = "true";
+  el.spellcheck = false;
+  el.classList.add("editando");
+  el.textContent = atual;             // texto puro: sem riscado enquanto edita
+  el.addEventListener("keydown", aoTeclar);
+  el.addEventListener("blur", aoSair);
+  el.focus();
+  const r = document.createRange();
+  r.selectNodeContents(el);
+  const s = window.getSelection();
+  s.removeAllRanges();
+  s.addRange(r);
+}
+
 folha.addEventListener("mousedown", (ev) => {
   if (ev.button !== 0) return;
   const i = tokenDe(ev.target);
-  if (i === null) { S.sel = null; acao("nada"); return; }
-  if (ev.ctrlKey) {
-    const el = S.els[i], n = (S.est.pecas.tokens[i].txt || "").length;
-    let melhor = 0, dist = Infinity;
-    for (let k = 0; k <= n; k++) {
-      const d = Math.abs(retLetra(el, k).left - ev.clientX);
-      if (d < dist) { dist = d; melhor = k; }
+  if (edicaoAtual && i === edicaoAtual.i) return;   // clique DENTRO do
+    // campo em edicao: deixa o navegador posicionar o cursor, sem
+    // entrar na logica de selecao de token.
+  // decide e previne JA, antes de qualquer espera: preventDefault()
+  // depois de um await pode chegar tarde demais para o navegador
+  // respeitar.
+  if (i !== null && !ev.ctrlKey) ev.preventDefault();
+  (async () => {
+    if (edicaoAtual) await edicaoAtual.acabar(true);   // clicou fora
+      // durante uma edicao: fecha salvando ANTES de mandar o proximo
+      // gesto - se os dois pedidos corressem juntos, o `vez` sempre
+      // descartaria a resposta do "corrigir" a favor da do gesto
+      // seguinte, que reflete o estado de ANTES da correcao.
+    if (i === null) { S.sel = null; acao("nada"); return; }
+    if (ev.ctrlKey) {
+      const el = S.els[i], n = (S.est.pecas.tokens[i].txt || "").length;
+      let melhor = 0, dist = Infinity;
+      for (let k = 0; k <= n; k++) {
+        const d = Math.abs(retLetra(el, k).left - ev.clientX);
+        if (d < dist) { dist = d; melhor = k; }
+      }
+      selecionaCaret(i, melhor);
+      return;
     }
-    selecionaCaret(i, melhor);
-    return;
-  }
-  S.ancora = i;
-  S.arrastando = true;
-  selecionaFaixa(i, i + 1);
-  ev.preventDefault();
+    S.ancora = i;
+    S.arrastando = true;
+    selecionaFaixa(i, i + 1);
+  })();
 });
 
 folha.addEventListener("mousemove", (ev) => {
@@ -621,6 +753,10 @@ function andaToken(passo, estende) {
 }
 
 document.addEventListener("keydown", (ev) => {
+  if (!$("abrirVeu").hidden) {
+    if (ev.key === "Escape") { fechaVeu(); ev.preventDefault(); }
+    return;
+  }
   if (menu.style.display === "block" && ev.key === "Escape") {
     fechaMenu(); return;
   }
@@ -804,9 +940,14 @@ function abreMenu(x, y, itens) {
     + window.scrollY + "px";
 }
 
-document.addEventListener("contextmenu", (ev) => {
+document.addEventListener("contextmenu", async (ev) => {
   ev.preventDefault();
   if (!S.est) return;
+  // espera a edicao em curso terminar de salvar ANTES de ler S.est/S.sel
+  // pra montar o menu - mesma razao do mousedown: um "corrigir" e o
+  // gesto seguinte disparados juntos deixam o "vez" descartar sempre a
+  // resposta do "corrigir".
+  if (edicaoAtual) await edicaoAtual.acabar(true);
   const i = tokenDe(ev.target);
   if (i !== null) {
     const dentro = S.sel && S.sel.tipo === "faixa" &&
@@ -820,11 +961,16 @@ document.addEventListener("contextmenu", (ev) => {
       return v / Math.max(1, b - a) < 0.5;
     };
     const a = dentro ? S.sel.i0 : i, b = dentro ? S.sel.i1 : i + 1;
+    // so uma palavra por vez: um trecho de varias nao tem como virar
+    // texto novo sem inventar uma correspondencia com os tokens
+    // originais que a geometria de risco depois teria de respeitar.
+    const podeCorrigir = (b - a === 1) && !!toks[a].txt;
     abreMenu(ev.clientX, ev.clientY, [
       ["tocar", () => tocaSelecao(false)],
       ["tocar a partir daqui", () => tocaSelecao(true)],
       "-",
       [oculto(a, b) ? "restaurar" : "ocultar", () => acao("alterna", {})],
+      ["corrigir transcrição", () => iniciaCorrecao(a), !podeCorrigir],
     ]);
     return;
   }
@@ -866,6 +1012,61 @@ async function roda(cmd) {
     }
   }, 700);
 }
+
+/* ==================================================================== */
+/*  abrir outro vídeo                                                   */
+/* ==================================================================== */
+
+/* Nunca oferece um caminho de arquivo pra digitar: so lista o que o
+   servidor ja confirmou que passou pelo pipeline (mesmo `stream.json` +
+   `audio.wav` que a Sessao exige pra abrir) e manda so o nome de volta -
+   o navegador escolhe DENTRO do que foi oferecido, nunca inventa. */
+
+function fechaVeu() { $("abrirVeu").hidden = true; }
+
+async function abreVeu() {
+  $("abrirVeu").hidden = false;
+  const lista = $("abrirLista");
+  lista.textContent = "carregando...";
+  const r = await (await fetch("/videos")).json();
+  lista.textContent = "";
+  if (!r.videos.length) {
+    const d = document.createElement("div");
+    d.className = "vazio";
+    d.textContent = "nenhum outro vídeo pronto encontrado em work/.";
+    lista.appendChild(d);
+    return;
+  }
+  for (const v of r.videos) {
+    const d = document.createElement("div");
+    d.className = "abrirItem" + (v.atual ? " atual" : "");
+    const nome = document.createElement("span");
+    nome.textContent = v.arquivo && v.arquivo !== v.video
+      ? v.video + "  ·  " + v.arquivo : v.video;
+    const info = document.createElement("span");
+    info.textContent = v.atual ? "aberto agora" : (v.dur ? rel(v.dur) : "");
+    d.append(nome, info);
+    if (!v.atual) d.onclick = () => escolheVideo(v.video);
+    lista.appendChild(d);
+  }
+}
+
+async function escolheVideo(nome) {
+  const lista = $("abrirLista");
+  lista.textContent = "abrindo " + nome + "...";
+  const r = await (await fetch("/abrir", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ video: nome }),
+  })).json();
+  if (r.ok) { location.reload(); return; }
+  lista.textContent = "não consegui abrir: " + (r.erro || "erro desconhecido");
+}
+
+$("btAbrir").onclick = abreVeu;
+$("abrirFechar").onclick = fechaVeu;
+$("abrirVeu").addEventListener("click", (ev) => {
+  if (ev.target.id === "abrirVeu") fechaVeu();
+});
 
 /* ==================================================================== */
 /*  partida                                                             */

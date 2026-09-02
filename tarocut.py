@@ -1464,6 +1464,65 @@ def aplica_montagem(stream, m, rotulo):
     return n
 
 
+def carrega_correcoes(d):
+    """work/<video>/correcoes.json - o que a pessoa corrigiu no TEXTO de
+    uma palavra, no editor, para a legenda que uma etapa futura vai gerar.
+
+    Nao e o `montagem.json`: aquele decide se a palavra sai do video; isto
+    decide o que ela DIZ. Sao perguntas diferentes, e por isso e um arquivo
+    a parte - misturar as duas faria o mesmo campo responder duas coisas,
+    que e como uma das duas comeca a ficar esquecida."""
+    p = d / "correcoes.json"
+    if not p.exists():
+        return None
+    try:
+        c = jload(p)
+    except Exception as e:
+        print(f"[correcoes] correcoes.json ilegivel ({e}); ignorando")
+        return None
+    if not isinstance(c, dict):
+        return None
+    c["itens"] = [x for x in (c.get("itens") or []) if isinstance(x, dict)]
+    return c
+
+
+def confere_correcoes(stream, c):
+    """As correcoes de texto ainda apontam para a palavra em que foram
+    tomadas? Mesma pergunta do `confere_montagem`, pela mesma razao:
+    indice de token caduca quando a analise roda de novo; `s`/`e` do
+    token em que a correcao foi feita, nao."""
+    ruins = []
+    for dec in (c or {}).get("itens") or []:
+        i = dec.get("i")
+        t = stream[i] if isinstance(i, int) and 0 <= i < len(stream) else None
+        if t is None:
+            ruins.append(f"token {i} nao existe mais "
+                         f"({dec.get('orig','')!r} -> {dec.get('novo','')!r})")
+        elif (abs(t["s"] - dec.get("s", -9)) > 0.01
+              or abs(t["e"] - dec.get("e", -9)) > 0.01):
+            ruins.append(f"token {i} mudou de lugar: a correcao era de "
+                         f"{dec.get('orig','')!r} em {dec.get('s', 0):.2f}s, "
+                         f"hoje ai esta {t['t']!r} em {t['s']:.2f}s")
+    return ruins
+
+
+def aplica_correcoes(stream, c, rotulo):
+    """So troca `t["t"]`. Nunca `cut`, nunca `s`/`e` - texto corrigido nao
+    e decisao de corte, e misturar as duas faria uma correcao de
+    ortografia acender os alarmes que existem para julgamento de
+    conteudo."""
+    ruins = confere_correcoes(stream, c)
+    if ruins:
+        print(f"[{rotulo}] o correcoes.json e de outra analise:")
+        for r in ruins[:6]:
+            print(f"    {r}")
+        sys.exit(f"[{rotulo}] abortado: as correcoes de texto do editor "
+                 f"cairiam na palavra errada. Abra o editor e decida de "
+                 f"novo, ou apague o correcoes.json.")
+    for dec in c.get("itens") or []:
+        stream[dec["i"]]["t"] = dec["novo"]
+
+
 def spans_da_mao(stream, m, folga=0.0):
     """Os trechos que a PESSOA mandou ficar no editor: os restauros de
     milissegundo mais o tempo das palavras marcadas para manter.
@@ -1850,7 +1909,8 @@ def grafo(iv, C, escala=None, fps=None):
     return "\n".join(L)
 
 
-def _base(video, rotulo, ignorar_transcript=False, aplicar_mont=True):
+def _base(video, rotulo, ignorar_transcript=False, aplicar_mont=True,
+          aplicar_corr=True):
     """Tudo o que precede o calculo dos trechos: le o fluxo analisado e
     empilha por cima dele as decisoes humanas.
 
@@ -1858,12 +1918,16 @@ def _base(video, rotulo, ignorar_transcript=False, aplicar_mont=True):
     `conferir` precisa do fluxo E dos trechos para dizer o que ficou de
     fora do que se mandou cortar, e o editor recalcula a cada clique com o
     estado que esta na tela e ainda nao foi salvo - por isso ele chama com
-    `aplicar_mont=False` e aplica a camada de palavra ele mesmo.
+    `aplicar_mont=False`/`aplicar_corr=False` e aplica as duas camadas ele
+    mesmo, com a validacao mais branda que cabe a uma tela interativa (ver
+    `Sessao._carrega`/`_carrega_correcoes`).
 
     A ordem em que as decisoes humanas se empilham e a ordem em que foram
     tomadas: transcript.md, depois anotacoes.json, depois montagem.json. A
     ultima e a mais explicita - no editor a pessoa clicou naquela
-    palavra."""
+    palavra. `correcoes.json` fica fora dessa pilha de proposito: nao e
+    decisao de corte, e sim de texto, e nao interfere em nenhuma delas -
+    so troca `t["t"]` depois que todo o resto ja decidiu quem fica."""
     C = cfg()
     d = wdir(video)
     S = jload(d / "stream.json")
@@ -1896,7 +1960,11 @@ def _base(video, rotulo, ignorar_transcript=False, aplicar_mont=True):
               f"decididas a mao ({n} mudam a proposta), "
               f"{len(mont['cortes'])} cortes e "
               f"{len(mont['restauros'])} restauros de milissegundo")
-    return C, d, stream, dur, db, hop or 0.02, anot, mont
+    corr = carrega_correcoes(d)
+    if corr and aplicar_corr:
+        aplica_correcoes(stream, corr, rotulo)
+
+    return C, d, stream, dur, db, hop or 0.02, anot, mont, corr
 
 
 def anotacoes_desobedecidas(anot, iv, tol=0.15, mao=None):
@@ -2011,7 +2079,7 @@ def confere_pelo_whisper(d, C, stream, iv, rotulo):
 def _plano(a, rotulo):
     """Etapas comuns a render, audio e previa: aplica as decisoes humanas e
     calcula os trechos a manter."""
-    C, d, stream, dur, db, hop, anot, mont = _base(
+    C, d, stream, dur, db, hop, anot, mont, corr = _base(
         a.video, rotulo, getattr(a, "ignorar_transcript", False))
     iv = intervalos(stream, C, dur, db, hop, anot, mont)
     # O `conferir` ja fazia esta pergunta, e so quem lembrava de roda-lo
@@ -2326,8 +2394,8 @@ def cmd_conferir(a):
     Alarme que dispara em 70% das emendas e papel de parede. O que aquele
     teste queria pegar - silaba comida - virou a folga de 0,06 no
     config.toml, que ataca a causa em vez do sintoma."""
-    C, d, stream, dur, db, hop, anot, mont = _base(a.video, "conferir",
-                                                   a.ignorar_transcript)
+    C, d, stream, dur, db, hop, anot, mont, corr = _base(a.video, "conferir",
+                                                         a.ignorar_transcript)
     iv = intervalos(stream, C, dur, db, hop, anot, mont)
     para_fonte, para_previa = _mapa_previa(iv)
     mantido = sum(b - x for x, b in iv)

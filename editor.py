@@ -66,7 +66,9 @@ class Sessao:
             sys.exit(f"[editor] {Path(video).stem} ainda nao foi analisado. "
                      f"Rode 'tarocut.py run' antes.")
         (self.C, self.d, self.stream, self.dur, self.db, self.hop,
-         self.anot, mont) = tc._base(str(video), "editor", aplicar_mont=False)
+         self.anot, mont, corr) = tc._base(str(video), "editor",
+                                           aplicar_mont=False,
+                                           aplicar_corr=False)
         self.meta = tc.jload(self.d / "meta.json")
         self.src = Path(self.meta["src"])
         self.video = self.src if self.src.exists() else Path(video)
@@ -94,6 +96,17 @@ class Sessao:
         self.aviso = ""
         if mont:
             self._carrega(mont)
+
+        # o texto ANTES de qualquer correcao. Nada mais neste programa
+        # escreve em t["t"], entao capturar aqui - logo depois do _base,
+        # antes de aplicar correcoes.json - e o unico lugar onde isso e
+        # garantidamente o texto original.
+        self._t_orig = [t["t"] for t in self.stream]
+        self.correcoes = {}
+        if corr:
+            self._carrega_correcoes(corr)
+        self._aplica_correcoes()
+
         self.pilha = []
         # RLock, e nao Lock: `acao` segura a tranca e chama `estado`,
         # que chama `intervalos`. E ela e necessaria porque o
@@ -129,6 +142,37 @@ class Sessao:
         for r in ruins[:6]:
             print(f"    {r}")
 
+    def _carrega_correcoes(self, doc):
+        """correcoes.json do disco. Mesma regra do `_carrega`, pela mesma
+        razao: indice de token caduca quando a analise roda de novo, e
+        descartar em silencio e o mesmo defeito de sempre - so que aqui a
+        anotacao que sumiria e uma correcao de ortografia, nao um corte, o
+        que a torna mais facil ainda de ninguem notar que sumiu."""
+        ruins = tc.confere_correcoes(self.stream, doc)
+        if not ruins:
+            for item in doc["itens"]:
+                self.correcoes[item["i"]] = {
+                    "s": item["s"], "e": item["e"],
+                    "orig": item["orig"], "novo": item["novo"]}
+            return
+        copia = self.d / "correcoes-anterior.json"
+        copia.write_bytes((self.d / "correcoes.json").read_bytes())
+        aviso = (f"o correcoes.json era de outra analise: "
+                 f"{len(doc['itens'])} correcoes de texto foram "
+                 f"descartadas. Copia em {copia.name}")
+        self.aviso = f"{self.aviso} {aviso}" if self.aviso else aviso
+        print(f"[editor] {aviso}")
+        for r in ruins[:6]:
+            print(f"    {r}")
+
+    def _aplica_correcoes(self):
+        """Poe o texto corrigido em `t["t"]`, ou devolve o original onde
+        nao ha correcao. So mexe em texto - geometria e cut nunca passam
+        por aqui."""
+        for i, t in enumerate(self.stream):
+            dec = self.correcoes.get(i)
+            t["t"] = dec["novo"] if dec else self._t_orig[i]
+
     # ------------------------------------------------------------- calculo
 
     def _aplica(self):
@@ -152,6 +196,30 @@ class Sessao:
         return {"versao": 1, "video": self.src.name, "selo": self.selo,
                 "tokens": toks, "cortes": self.cortes,
                 "restauros": self.restauros}
+
+    def correcoes_doc(self):
+        itens = []
+        for i in sorted(self.correcoes):
+            c = self.correcoes[i]
+            itens.append({"i": i, "s": c["s"], "e": c["e"],
+                          "orig": c["orig"], "novo": c["novo"]})
+        return {"versao": 1, "video": self.src.name, "itens": itens}
+
+    def _corrige(self, i, novo):
+        """Corrige o texto do token `i`. Preserva o `orig` de uma
+        correcao anterior no mesmo token - senao corrigir duas vezes
+        esqueceria o erro que o Whisper cometeu de verdade e passaria a
+        registrar a propria correcao anterior como se fosse o erro."""
+        t = self.stream[i]
+        orig = self._t_orig[i]
+        if novo == orig:
+            self.correcoes.pop(i, None)
+        else:
+            prev = self.correcoes.get(i)
+            self.correcoes[i] = {"s": round(t["s"], 3), "e": round(t["e"], 3),
+                                 "orig": prev["orig"] if prev else orig,
+                                 "novo": novo}
+        self._aplica_correcoes()
 
     def intervalos(self):
         """A unica fonte de verdade do corte, para a tela e para o render."""
@@ -308,7 +376,8 @@ class Sessao:
     def _empilha(self):
         self.pilha.append((dict(self.tokens),
                            [list(c) for c in self.cortes],
-                           [list(r) for r in self.restauros]))
+                           [list(r) for r in self.restauros],
+                           {i: dict(c) for i, c in self.correcoes.items()}))
         del self.pilha[:-200]
 
     def _corta(self, span):
@@ -366,9 +435,34 @@ class Sessao:
 
             if tipo == "desfazer":
                 if self.pilha:
-                    self.tokens, self.cortes, self.restauros = self.pilha.pop()
+                    (self.tokens, self.cortes, self.restauros,
+                     self.correcoes) = self.pilha.pop()
+                    self._aplica_correcoes()
                 else:
                     mudou = False
+            elif tipo == "corrigir":
+                # `i` vem direto do payload, NUNCA de `sel`: a pre-selecao
+                # do clique com botao direito e assincrona (POST "nada"
+                # separado), e mandar o indice explicito evita a corrida
+                # de quem chega primeiro - medido de verdade, um "corrigir"
+                # disparado logo depois do menu chegou a sair ANTES da
+                # selecao assentar, com sel vazio, e o servidor recusou em
+                # silencio (i0=i1=0) enquanto a tela, otimista, continuava
+                # mostrando o texto digitado como se tivesse sido salvo.
+                i = b.get("i")
+                if not isinstance(i, int) or not (0 <= i < len(self.stream)):
+                    mudou = False
+                else:
+                    t = self.stream[i]
+                    eh_texto = (t["k"] == "palavra"
+                               or (t["k"] == "hesitacao"
+                                   and self._t_orig[i] != "hesitação"))
+                    txt = (b.get("texto") or "").strip()
+                    if not eh_texto or not txt or txt == t["t"]:
+                        mudou = False
+                    else:
+                        self._empilha()
+                        self._corrige(i, txt)
             elif tipo in ("ocultar", "restaurar", "alterna"):
                 if i1 <= i0:
                     mudou = False
@@ -395,6 +489,7 @@ class Sessao:
 
             if mudou:
                 tc.jdump(self.montagem(), self.d / "montagem.json")
+                tc.jdump(self.correcoes_doc(), self.d / "correcoes.json")
             return self.estado(ini, fim, u, mudou,
                                self.vizinhanca(i0, i1))
 
@@ -543,6 +638,33 @@ class Sessao:
         }
 
 
+# ------------------------------------------------------------ trocar de video
+
+def videos_disponiveis(atual):
+    """work/<video>/ que ja passou pelo pipeline o bastante para o editor
+    abrir - os MESMOS dois arquivos que `Sessao.__init__` exige (linhas
+    acima). Nao reimplementa o criterio: so aplica o mesmo, para o botao
+    "Abrir" nunca oferecer um video que a propria Sessao recusaria."""
+    out = []
+    if not tc.WORK.is_dir():
+        return out
+    for d in sorted(tc.WORK.iterdir()):
+        if not d.is_dir():
+            continue
+        if not (d / "stream.json").exists() or not (d / "audio.wav").exists():
+            continue
+        arquivo, dur = d.name, None
+        try:
+            meta = tc.jload(d / "meta.json")
+            arquivo = Path(meta.get("src", d.name)).name
+            dur = meta.get("dur")
+        except Exception:
+            pass
+        out.append({"video": d.name, "arquivo": arquivo, "dur": dur,
+                    "atual": d.name == atual})
+    return out
+
+
 # ------------------------------------------------------------- subprocesso
 
 class Tarefa:
@@ -632,6 +754,8 @@ class Handler(BaseHTTPRequestHandler):
                                     "rotulo": T.rotulo})
             if rota == "/audio.wav":
                 return self._envia(S.wav.read_bytes(), "audio/wav")
+            if rota == "/videos":
+                return self._envia({"videos": videos_disponiveis(S.nome)})
             self._envia({"erro": "nao existe"}, codigo=404)
         except (BrokenPipeError, ConnectionAbortedError):
             pass
@@ -657,6 +781,24 @@ class Handler(BaseHTTPRequestHandler):
                 if T.rodando:
                     subprocess.run(["taskkill", "/F", "/T", "/PID",
                                     str(T.proc.pid)], capture_output=True)
+                return self._envia({"ok": True})
+            if rota == "/abrir":
+                # revalida contra a MESMA lista que o /videos ofereceu: o
+                # navegador nunca decide sozinho o que conta como "ja
+                # passou pelo pipeline", so escolhe dentro do que o
+                # servidor ja aprovou.
+                nome = b.get("video")
+                validos = {v["video"] for v in videos_disponiveis(S.nome)}
+                if not isinstance(nome, str) or nome not in validos:
+                    return self._envia({"erro": "video invalido"}, codigo=400)
+                if T.rodando:
+                    return self._envia(
+                        {"erro": "espere a tarefa em andamento terminar"},
+                        codigo=409)
+                try:
+                    self.server.sessao = Sessao(nome)
+                except SystemExit as e:
+                    return self._envia({"erro": str(e)}, codigo=500)
                 return self._envia({"ok": True})
             self._envia({"erro": "nao existe"}, codigo=404)
         except (BrokenPipeError, ConnectionAbortedError):

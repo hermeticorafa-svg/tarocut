@@ -110,12 +110,23 @@ restaura, se já estiver oculta); `ctrl+clique` põe o cursor entre duas
 letras, para quando o corte tem de cair no meio de uma palavra.
 
 **Botão direito no texto**: tocar a seleção, ou tocar dali em diante —
-sempre o corte, nunca o original, com `espaço` pausando. **Botão direito
-fora do texto**: exportar áudio, exportar vídeo, conferir.
+sempre o corte, nunca o original, com `espaço` pausando; numa palavra só
+(nunca num trecho de várias), também **corrigir transcrição** — o Whisper
+erra o texto às vezes, e essa correção é só ortografia: não muda quando a
+palavra começa/termina nem se ela sai do vídeo, e serve para a legenda que
+uma etapa futura vai gerar. Clique, apague/reescreva, `enter` grava (ou
+clique fora); `esc` desiste. **Botão direito fora do texto**: exportar
+áudio, exportar vídeo, conferir.
 
-O que você faz aqui vai para `work/<video>/montagem.json`, sozinho, a cada
-gesto — não há botão de salvar. O `render` lê esse arquivo, então o corte
-que sai é o que você ouviu. `ctrl+z` desfaz.
+O que você faz aqui vai para `work/<video>/montagem.json` (o corte) e
+`work/<video>/correcoes.json` (o texto), sozinho, a cada gesto — não há
+botão de salvar. O `render` lê o primeiro, então o corte que sai é o que
+você ouviu. `ctrl+z` desfaz os dois.
+
+O botão **Abrir…**, no canto do painel, troca de vídeo sem passar pela
+linha de comando — só lista o que já rodou `run`/`analyze` (tem
+`stream.json` e `audio.wav` em `work/`), então nunca oferece um vídeo pela
+metade.
 
 **3b. Ouvir sem abrir o editor** — duas formas, nenhuma renderiza vídeo:
 

@@ -39,7 +39,7 @@ mesmos comandos.
 
 Estado por vídeo em `work/<video>/`: `meta.json`, `audio.wav`, `words.json`,
 `stream.json` (a fonte da verdade), `transcript.md`, `revisao.txt`,
-`anotacoes.json`, `montagem.json`.
+`anotacoes.json`, `montagem.json`, `correcoes.json`.
 
 As três camadas de decisão humana empilham nesta ordem, que é a ordem em
 que foram tomadas: `transcript.md` (apagar texto) → `anotacoes.json` (o
@@ -111,6 +111,24 @@ do `montagem.json` guarda o `s`/`e` da palavra em que foi tomada, e o
 `confere_montagem` recusa em vez de avisar — mesma regra do selo do
 `transcript.md`, só que por palavra. O editor guarda cópia em
 `montagem-anterior.json` antes de gravar por cima.
+
+**`correcoes.json` é sobre o que a palavra DIZ, nunca sobre se ela sai do
+vídeo.** É a correção de transcrição do editor (botão direito → "corrigir
+transcrição"), para a legenda que uma etapa futura vai gerar a partir do
+`stream`. Só troca `t["t"]`; nunca `cut`, nunca `s`/`e`. Por isso não é
+uma terceira camada de `montagem.json` — misturar "sai ou fica" com "diz
+o quê" no mesmo campo é como o `edicao.json` do editor antigo esquecia
+qual das duas coisas cada campo respondia. Mesma regra de caducidade do
+parágrafo acima, pela mesma razão (índice de token caduca, `s`/`e` não):
+`confere_correcoes` recusa em vez de avisar, e o editor guarda cópia em
+`correcoes-anterior.json` antes de gravar por cima. **Não vira correção
+no `transcript.md`**: aquele arquivo casa token por chave normalizada
+(`chave_token`/`reconcilia`) para decidir cortar/manter, e editar o texto
+ali mudaria a chave — a palavra corrigida ficaria sem par no fluxo
+original e o `reconcilia` a marcaria "apagado no texto", cortando-a em
+silêncio. É a mesma família de defeito que a checagem de selo do
+`confere_atualidade` existe para evitar, só que por um caminho novo:
+julgamento humano (aqui, ortografia) sumindo sem avisar.
 
 **Ocultar palavra curta pode não ocultar nada.** `_respeita_palavras` recua
 a emenda `folga_palavra` (0,06 s) de cada palavra mantida vizinha, então uma

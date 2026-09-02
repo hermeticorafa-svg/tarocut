@@ -9,7 +9,8 @@ ouvido - o corte continua saindo, so que diferente do que se pediu.
     venv\\Scripts\\python.exe teste_editor.py IMG_0247
 
 Sem argumento, roda nos tres videos de calibracao. Ele mexe no
-`montagem.json` do video e devolve o arquivo como estava no fim, inclusive
+`montagem.json` e no `correcoes.json` do video (todo gesto que muda algo
+grava os dois) e devolve os dois arquivos como estavam no fim, inclusive
 quando falha.
 """
 
@@ -26,7 +27,9 @@ CALIBRACAO = ["IMG_0246", "IMG_0247", "IMG_0248"]
 def roda(video):
     d = tc.WORK / video
     mont = d / "montagem.json"
+    corr = d / "correcoes.json"
     guarda = mont.read_bytes() if mont.exists() else None
+    guarda_corr = corr.read_bytes() if corr.exists() else None
     falhas = []
 
     def diz(ok, txt):
@@ -36,6 +39,7 @@ def roda(video):
 
     try:
         mont.unlink(missing_ok=True)
+        corr.unlink(missing_ok=True)
         S = editor.Sessao(video)
         base = json.dumps(S.intervalos())
         toks = S.estado()["pecas"]["tokens"]
@@ -133,7 +137,7 @@ def roda(video):
         #    exatamente o que ele nao pode ser.
         S.acao({"acao": "menos", "lado": "dir", "sel": sel, "unidade": 0.25})
         da_tela = S.intervalos()
-        C, _, stream, dur, db, hop, anot, m = tc._base(video, "teste")
+        C, _, stream, dur, db, hop, anot, m, _ = tc._base(video, "teste")
         diz(json.dumps(da_tela) == json.dumps(
                 tc.intervalos(stream, C, dur, db, hop, anot, m)),
             f"{len(da_tela)} trechos iguais, relidos do disco pelo render")
@@ -142,6 +146,10 @@ def roda(video):
         if guarda is not None:
             mont.write_bytes(guarda)
         (d / "montagem-anterior.json").unlink(missing_ok=True)
+        corr.unlink(missing_ok=True)
+        if guarda_corr is not None:
+            corr.write_bytes(guarda_corr)
+        (d / "correcoes-anterior.json").unlink(missing_ok=True)
     return falhas
 
 
