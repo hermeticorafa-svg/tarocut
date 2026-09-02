@@ -1889,7 +1889,13 @@ def trecho_audio(i, a, b, fade):
             f"afade=t=out:st={max(0, b - a - fade):.3f}:d={fade}[a{i}];")
 
 
-def grafo(iv, C, escala=None, fps=None):
+def _grafo_corte(iv, C):
+    """As linhas de filter_complex que cortam e concatenam - trim de cada
+    trecho mantido, emenda em [vc]/[ao]. Extraida de grafo() para
+    `grafo_cartas()` (ver 'adicionar cartas' no CLAUDE.md) cortar
+    EXATAMENTE igual: as duas nunca podem discordar de onde cai a
+    emenda, e ter dois lugares que montam isso e como ter dois lugares
+    que decidem [corte] - so se descobre desalinhado tarde, ouvindo."""
     fade = C["audio"]["fade"]
     L, vs, as_ = [], [], []
     for i, (a, b) in enumerate(iv):
@@ -1899,6 +1905,11 @@ def grafo(iv, C, escala=None, fps=None):
         as_.append(f"[a{i}]")
     pares = "".join(v + a for v, a in zip(vs, as_))
     L.append(f"{pares}concat=n={len(iv)}:v=1:a=1[vc][ao];")
+    return L
+
+
+def grafo(iv, C, escala=None, fps=None):
+    L = _grafo_corte(iv, C)
     filtros = []
     if escala:
         filtros.append(f"scale=-2:{escala}")
@@ -1906,6 +1917,140 @@ def grafo(iv, C, escala=None, fps=None):
         filtros.append(f"fps={fps}")
     filtros.append("null")
     L.append("[vc]" + ",".join(filtros) + "[vo]")
+    return "\n".join(L)
+
+
+def _janela_layout3(resumo, margem):
+    """Janela de crop (fracao 0-1 do quadro original) que cobre o vaivem
+    MEDIDO do rosto (rosto.json/resumo.cx_min..cy_max) com folga, para o
+    layout 3 (Mariana centralizada, ver overview da feature). Cortar na
+    fracao que o EIXO MAIS largo precisa, nos dois eixos, preserva o
+    aspecto 16:9 sem distorcer ao escalar de volta: quando o crop tem o
+    mesmo aspecto do quadro inteiro, a fracao de largura cortada e igual
+    a fracao de altura cortada."""
+    cx0, cx1 = resumo.get("cx_min", 0.4), resumo.get("cx_max", 0.6)
+    cy0, cy1 = resumo.get("cy_min", 0.3), resumo.get("cy_max", 0.5)
+    l = min(1.0, max(cx1 - cx0, cy1 - cy0) + 2 * margem)
+    x = min(max(0.0, (cx0 + cx1) / 2 - l / 2), 1 - l)
+    y = min(max(0.0, (cy0 + cy1) / 2 - l / 2), 1 - l)
+    return x, y, l, l
+
+
+def grafo_cartas(iv, C, cartas, resumo_rosto, w_fonte, h_fonte,
+                  secundarias_imgs, escala=None, fps=None, hw=False):
+    """Estende _grafo_corte com o overlay das cartas e o reenquadramento
+    da Mariana - so os layouts 1 e 3 (ver escopo combinado no plano:
+    zoom e empilhamento ficam de fora por enquanto).
+
+    Geometria (posicao, tamanho) e a MESMA para toda carta, principal ou
+    secundaria - so O QUE aparece e QUANDO mudam. Inputs do ffmpeg, por
+    convencao de quem chama isto: 0=video, 1=imagem da carta principal,
+    2+=uma por carta secundaria DISTINTA, na ordem de `secundarias_imgs`
+    (lista de (nome, Path), sem repetir carta).
+
+    Reenquadramento: um `crop` so, com w/h/x/y como expressao de `t` (o
+    ffmpeg 9.x reavalia sozinho quadro a quadro - versoes antigas exigiam
+    `eval=frame`, que sumiu da lista de opcoes) que alterna entre o
+    quadro inteiro (layout 1) e a
+    janela de `_janela_layout3` (layout 3) - troca dura, sem pan suave,
+    porque so muda quando uma carta secundaria entra ou sai, e isso ja
+    tem o fade dela para disfarcar o corte.
+
+    Fade: so a carta PRINCIPAL tem fade suave de entrada (`format=yuva420p`
+    + `fade=alpha=1`, uma vez, nunca sai). A secundaria liga/desliga com
+    `overlay=...:enable=` (corte seco) - decisao deliberada do checkpoint
+    4: primeiro provar o mecanismo (aparece a hora certa, some a hora
+    certa), fade macio da secundaria fica para quando isso estiver
+    aprovado, junto com a moldura/sombra/legenda que tambem ficaram de
+    fora (ver escopo combinado no plano).
+
+    `hw=True`: o [0:v] vem de decode QSV (`-hwaccel qsv` na chamada do
+    ffmpeg) e continua em memoria de GPU ate aqui - `crop`/`overlay` nao
+    entendem isso, entao esta funcao baixa para memoria normal ANTES do
+    primeiro filtro que precisar de pixel de verdade. MEDIDO no
+    IMG_0301: sem isto (decode em software) a previa lo-res levava mais
+    de 30 min; com isto, minutos. Chamar com `hw` errado do que a chamada
+    do ffmpeg realmente usa e erro de pixel format, nao resultado errado
+    - por isso `cmd_cartas` gera os dois grafos e usa o que combina com
+    cada tentativa (qsv primeiro, software se aquele falhar)."""
+    cc = C["cartas"]
+    L = _grafo_corte(iv, C)
+
+    # Escalar ANTES do crop/overlay quando for previa: crop+overlay+fade
+    # em 3840x2160 nativo, so para escalar para 480p no final, custa muito
+    # mais filtragem que fazer a mesma conta ja pequena. Recalcular a
+    # geometria da carta e do crop na resolucao de trabalho e a mesma
+    # conta de _janela_layout3, so que sobre w_trab/h_trab em vez de
+    # w_fonte/h_fonte. Sem `escala` (bake em qualidade final), trabalha
+    # direto no nativo, como antes.
+    #
+    # Com `hw`, o download tem que vir DEPOIS do scale, nao antes: baixar
+    # cada quadro em 3840x2160 (p010le, ~24MB/quadro) so para escalar para
+    # 480p em seguida MEDIU quase 14 minutos no IMG_0301 - e so
+    # transferencia de GPU para CPU de pixel que ia ser jogado fora.
+    # `scale_qsv` escala ainda em memoria de GPU; so entao `hwdownload`
+    # baixa o quadro ja pequeno. MEDIDO: um trecho de 20s que levava ~15s
+    # nao mudou de tempo sensivelmente - a diferenca aparece no video
+    # inteiro, onde e a diferenca entre ~14min e ~1min.
+    ult_base = "vc"
+    w_trab, h_trab = w_fonte, h_fonte
+    if escala:
+        h_trab = escala
+        w_trab = round(w_fonte * escala / h_fonte / 2) * 2
+        if hw:
+            L.append(f"[vc]scale_qsv=w={w_trab}:h={h_trab},"
+                      f"hwdownload,format=p010le" +
+                      (f",fps={fps}" if fps else "") + "[vs];")
+        else:
+            L.append(f"[vc]scale={w_trab}:{h_trab}" +
+                      (f",fps={fps}" if fps else "") + "[vs];")
+        ult_base = "vs"
+    elif hw:
+        L.append("[vc]hwdownload,format=p010le[vd];")
+        ult_base = "vd"
+
+    x, y, lw, lh = _janela_layout3(resumo_rosto, cc["crop_margem"])
+    secs = cartas["secundarias"]
+
+    def _janela_ativa(spans):
+        # `between(t\,a\,b)`: a virgula precisa vir escapada mesmo dentro
+        # de aspas - e assim que todo exemplo de expressao condicional do
+        # ffmpeg com mais de um argumento escreve (o parser do filtro
+        # separa por virgula ANTES do eval da expressao entender que ali
+        # e argumento de funcao, nao fim de opcao).
+        return "+".join(f"between(t\\,{s['ini']:.3f}\\,{s['fim']:.3f})"
+                         for s in spans)
+
+    ativo = _janela_ativa(secs) if secs else "0"
+    cw, ch = lw * w_trab, lh * h_trab
+    cx0, cy0 = x * w_trab, y * h_trab
+    L.append(
+        f"[{ult_base}]crop=w='if({ativo},{cw:.1f},{w_trab})':"
+        f"h='if({ativo},{ch:.1f},{h_trab})':"
+        f"x='if({ativo},{cx0:.1f},0)':y='if({ativo},{cy0:.1f},0)'[base];"
+    )
+
+    altura_px = max(2, int(h_trab * cc["carta_altura"]))
+    margem_px = int(w_trab * cc["carta_margem"])
+    y_carta = (h_trab - altura_px) // 2
+    fade = cc["fade"]
+
+    L.append(f"[1:v]scale=-2:{altura_px},format=yuva420p,"
+             f"fade=t=in:st=0:d={fade}:alpha=1[cartaP];")
+    L.append(f"[base][cartaP]overlay=x={margem_px}:y={y_carta}[c0];")
+
+    ult = "c0"
+    for i, (nome, _) in enumerate(secundarias_imgs, start=2):
+        janela = _janela_ativa([s for s in secs if s["carta"] == nome])
+        prox = f"c{i - 1}"
+        L.append(f"[{i}:v]scale=-2:{altura_px}[carta{i}];")
+        L.append(f"[{ult}][carta{i}]overlay=x=W-{margem_px}-w:"
+                  f"y={y_carta}:enable='{janela}'[{prox}];")
+        ult = prox
+
+    # escala/fps ja foram aplicados cedo (antes do crop) quando pedidos -
+    # so falta rotular a saida.
+    L.append(f"[{ult}]null[vo]")
     return "\n".join(L)
 
 
@@ -2604,6 +2749,198 @@ def cmd_audio(a):
           f"{saida.stat().st_size/1e6:.1f} MB)")
 
 
+def _tempo_saida(t, iv):
+    """Converte um instante de tempo de FONTE para tempo de SAIDA (depois
+    do corte), pela mesma `iv` que o render usa (CLAUDE.md: 'o navegador
+    nao calcula corte' - vale aqui do mesmo jeito, so que em vez do
+    editor e o comando `cartas`). Um instante DENTRO de um trecho cortado
+    nao existe na saida; devolve o ponto do trecho mantido mais proximo,
+    porque uma carta nao pode aparecer num tempo que o corte apagou."""
+    acumulado = 0.0
+    for a, b in iv:
+        if t < a:
+            return acumulado
+        if t <= b:
+            return acumulado + (t - a)
+        acumulado += b - a
+    return acumulado
+
+
+def _agrupa_spans_cartas(mencoes, iv, cc):
+    """Mencoes (tempo de FONTE) -> spans de exibicao (tempo de SAIDA).
+    Mapeia cada mencao para a saida ANTES de agrupar - fundir por
+    proximidade so faz sentido no relogio que quem assiste ve, nao no da
+    fonte (o corte pode ter comido o intervalo entre duas falas, ou
+    esticado por causa de outra coisa cortada no meio)."""
+    pontos = sorted(
+        (_tempo_saida(m["s"], iv), _tempo_saida(m["e"], iv), m["carta"])
+        for m in mencoes)
+
+    spans = []
+    for ini, fim, carta in pontos:
+        if (spans and spans[-1]["carta"] == carta
+                and ini - spans[-1]["fim"] <= cc["gap_max"]):
+            spans[-1]["fim"] = max(spans[-1]["fim"], fim)
+        else:
+            spans.append({"carta": carta, "ini": ini, "fim": fim})
+
+    for s in spans:
+        s["ini"] = max(0.0, s["ini"] - cc["antecipa"])
+        if s["fim"] - s["ini"] < cc["duracao_minima"]:
+            s["fim"] = s["ini"] + cc["duracao_minima"]
+
+    # Sem empilhamento (layout 4 ficou de fora por decisao do Rafael - ver
+    # plano): se o minimo de uma carta invade a proxima, a de tras cede -
+    # a carta que comecou depois e a que esta sendo falada agora.
+    for i in range(len(spans) - 1):
+        if spans[i]["fim"] > spans[i + 1]["ini"]:
+            spans[i]["fim"] = spans[i + 1]["ini"]
+
+    return [s for s in spans if s["fim"] > s["ini"]]
+
+
+def _resolve_carta(texto):
+    import baralho
+    alvo = baralho.chave(texto)
+    for c in baralho.catalogo():
+        if baralho.chave(c["nome"]) == alvo:
+            return c["nome"]
+    sys.exit(f"[cartas] '{texto}' nao bate com nenhuma carta do catalogo "
+             f"(veja baralho.py --carta imprime a lista)")
+
+
+def _catalogo_img(nome):
+    import baralho
+    for c in baralho.catalogo():
+        if c["nome"] == nome:
+            return c["img"]
+    sys.exit(f"[cartas] carta '{nome}' sumiu do catalogo entre a deteccao "
+             f"e o render - baralho completo/ mudou no meio do caminho?")
+
+
+def cmd_cartas(a):
+    """Checkpoint 3 + 4 do plano 'adicionar cartas': acha as mencoes de
+    carta na fala, decide a principal, monta a agenda de quando uma
+    secundaria entra em tela (`cartas.json`) e renderiza uma previa
+    barata (baixa resolucao) para aprovar antes do `render` de verdade
+    bakear isso em qualidade final. Video sem carta principal detectavel
+    nao escreve `cartas.json` nem gera previa - fica como generalistico,
+    fora do escopo desta feature por ora."""
+    import baralho
+    C, d, stream, dur, db, hop, anot, mont, corr = _base(a.video, "cartas")
+    iv = intervalos(stream, C, dur, db, hop, anot, mont)
+
+    # Casador so olha token que SOBREVIVE ao corte (stream[i]['cut'] ja
+    # tem transcript.md/anotacoes/montagem aplicados por _base): uma
+    # tentativa de fala cortada nao pode acender uma carta que ninguem
+    # vai ouvir.
+    vivos = [t for t in stream if not t.get("cut")]
+    mencoes = baralho.acha_mencoes(vivos)
+
+    if not mencoes:
+        print(f"[cartas] nenhuma carta reconhecida na fala - "
+              f"parece video generalistico, nada a fazer aqui")
+        (d / "cartas.json").unlink(missing_ok=True)
+        return
+
+    contagem = {}
+    for m in mencoes:
+        contagem[m["carta"]] = contagem.get(m["carta"], 0) + 1
+    principal = _resolve_carta(a.carta) if a.carta \
+        else max(contagem, key=contagem.get)
+
+    print(f"[cartas] carta principal: {principal}"
+          + ("" if a.carta else "  (auto: a mais mencionada)"))
+    for carta, n in sorted(contagem.items(), key=lambda x: -x[1]):
+        print(f"  {n}x  {carta}" + ("  <- principal" if carta == principal
+                                     else ""))
+
+    cc = C["cartas"]
+    secundarias_menc = [m for m in mencoes if m["carta"] != principal]
+    spans = _agrupa_spans_cartas(secundarias_menc, iv, cc)
+    cartas = {"principal": principal, "fade_entrada": 2.0,
+              "secundarias": spans}
+    jdump(cartas, d / "cartas.json")
+
+    if spans:
+        print(f"[cartas] {len(spans)} exibicao(oes) de carta secundaria "
+              f"(tempo de SAIDA, ja cortado):")
+        for s in spans:
+            print(f"  {hhmmss(s['ini'])} -> {hhmmss(s['fim'])}  {s['carta']}")
+    else:
+        print("[cartas] nenhuma carta secundaria mencionada nesta edicao - "
+              "o video fica todo no layout 1")
+
+    # ---- previa: barata, sempre gerada (README: o gargalo e decodificar
+    # 4K60, e a previa sai em resolucao baixa) ----
+    import rosto
+    rjson = d / "rosto.json"
+    if not rjson.exists() or a.force:
+        rosto.rastreia(Path(a.video), d)
+    resumo_rosto = jload(rjson)["resumo"]
+
+    meta = jload(d / "meta.json")
+    w_fonte, h_fonte = meta["w"], meta["h"]
+    principal_img = _catalogo_img(principal)
+    nomes_sec = list(dict.fromkeys(s["carta"] for s in spans))
+    secundarias_imgs = [(nome, _catalogo_img(nome)) for nome in nomes_sec]
+
+    # Dois grafos, nao um: com decode QSV o [0:v] ainda esta em memoria
+    # de GPU quando chega no crop/overlay, e so `hw=True` poe o
+    # `hwdownload` que isso pede - grafo errado para a chamada e erro de
+    # pixel format, nao resultado errado (ver nota em grafo_cartas()).
+    #
+    # 360p/15fps, nao 480p/30: MEDIDO que decode e crop nao sao o custo
+    # da previa (crop sozinho roda a 1.5x tempo real) - e o `overlay`
+    # que e caro por QUADRO nesta versao do ffmpeg, com ou sem QSV, com
+    # ou sem imagem de carta real (reproduzido ate com uma cor lisa de
+    # lavfi). Metade dos quadros = metade do trabalho de overlay: e o
+    # unico botao que realmente mexe no tempo da previa.
+    gscript_hw = d / "graph_cartas_qsv.txt"
+    gscript_hw.write_text(
+        grafo_cartas(iv, C, cartas, resumo_rosto, w_fonte, h_fonte,
+                     secundarias_imgs, escala=360, fps=15, hw=True),
+        encoding="utf-8")
+    gscript_sw = d / "graph_cartas.txt"
+    gscript_sw.write_text(
+        grafo_cartas(iv, C, cartas, resumo_rosto, w_fonte, h_fonte,
+                     secundarias_imgs, escala=360, fps=15, hw=False),
+        encoding="utf-8")
+
+    mantido = sum(b - x for x, b in iv)
+    saida = d / "cartas_previa.mp4"
+    entradas = (["-i", str(meta["src"]), "-loop", "1", "-i", str(principal_img)]
+                + [x for _, p in secundarias_imgs
+                   for x in ("-loop", "1", "-i", str(p))])
+
+    def _saidas(gscript):
+        return (["-/filter_complex", str(gscript), "-map", "[vo]", "-map", "[ao]",
+                 "-t", f"{mantido:.3f}",
+                 "-c:v", "libx264", "-preset", "fast", "-crf", "28",
+                 "-c:a", "aac", "-b:a", "128k", str(saida)])
+
+    print(f"[cartas] gerando previa lo-res...", flush=True)
+    # QSV primeiro: decode de software do IMG_0301 inteiro (5,5min) levou
+    # mais de 30min so nesta etapa, contra minutos com QSV - MEDIDO no
+    # checkpoint 4. Se a combinacao hwaccel+filtros nao colar nesta versao
+    # do ffmpeg, cai para software antes de desistir - mesma rede de
+    # seguranca do rosto.amostra_frames().
+    r = subprocess.run([FFMPEG, "-y", "-v", "error", "-stats",
+                        "-hwaccel", "qsv"] + entradas + _saidas(gscript_hw))
+    if r.returncode != 0:
+        r = subprocess.run([FFMPEG, "-y", "-v", "error", "-stats"]
+                            + entradas + _saidas(gscript_sw))
+    if r.returncode != 0 or not saida.exists():
+        sys.exit("[cartas] ffmpeg falhou na previa - veja graph_cartas*.txt")
+    print(f"[cartas] previa pronta: {saida}  "
+          f"({saida.stat().st_size/1e6:.1f} MB)")
+    mpv = _find_mpv()
+    if mpv and not a.sem_abrir:
+        subprocess.run([mpv, "--force-window=yes",
+                        f"--force-media-title=previa cartas {Path(a.video).name}",
+                        str(saida)])
+
+
 def cmd_render(a):
     C, d, dur, iv = _plano(a, "render")
     cr = C["render"]
@@ -2757,6 +3094,19 @@ def main():
     v.add_argument("video")
     v.add_argument("--ignorar-transcript", action="store_true")
     v.set_defaults(fn=cmd_previa)
+
+    ct = sub.add_parser("cartas",
+                        help="adiciona overlay de carta + reenquadramento; "
+                             "gera cartas.json e uma previa lo-res")
+    ct.add_argument("video")
+    ct.add_argument("--carta", default=None,
+                    help="carta principal (ex.: '7 de espadas'); "
+                         "sem isto, usa a mais mencionada na fala")
+    ct.add_argument("--force", action="store_true",
+                    help="refaz o rastreio de rosto mesmo se ja tiver cache")
+    ct.add_argument("--sem-abrir", action="store_true",
+                    help="gera a previa mas nao abre o mpv sozinho")
+    ct.set_defaults(fn=cmd_cartas)
 
     r = sub.add_parser("render")
     r.add_argument("video")

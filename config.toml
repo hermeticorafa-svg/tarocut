@@ -198,6 +198,37 @@ passo           = 1.0    # de quanto em quanto a janela anda (s)
 palavras_seg    = 0.85
 duracao_minima  = 5.0    # trecho mais curto que isto nao vale marcar
 
+[cartas]
+# "Adicionar cartas": limiares mecanicos para decidir QUANDO uma carta
+# secundaria entra em tela e QUANTO tempo fica. NAO CALIBRADOS ainda -
+# nao existe video editado a mao para medir contra (ao contrario de
+# [corte], que tem os tres videos de calibracao). Ajuste pelo preview de
+# baixa resolucao que o comando `cartas` gera, e atualize este comentario
+# com o que mudou e por que, do jeito que o resto deste arquivo faz.
+
+# tempo minimo que uma carta secundaria fica em tela - especificacao do
+# Rafael (ver o pedido da feature), nao medicao.
+duracao_minima  = 5.0
+# duas mencoes da MESMA carta secundaria mais perto que isto, no tempo de
+# SAIDA (ja cortado), viram uma exibicao so em vez de duas com um fade no
+# meio.
+gap_max         = 6.0
+# a exibicao comeca um pouco ANTES da palavra que a carta foi mencionada,
+# para o fade nao atrasar em cima da fala.
+antecipa        = 0.3
+# duracao do fade de entrada da carta principal (a unica com fade suave
+# por enquanto - ver nota em grafo_cartas())
+fade            = 0.4
+# fracao da altura do quadro que cada carta ocupa. 0,55 saiu pequena
+# demais - o Rafael comparou lado a lado com um video editado a mao dele
+# (a carta la vai quase de borda a borda) e pediu maior.
+carta_altura    = 0.85
+# margem da carta ate a borda do quadro, fracao da LARGURA do quadro
+carta_margem    = 0.025
+# folga em volta do vaivem medido do rosto (rosto.json/resumo) ao montar
+# a janela de crop do layout 3 (Mariana centralizada) - fracao do quadro
+crop_margem     = 0.08
+
 [alinhamento]
 # Quanto o alinhador (wav2vec2) pode discordar do Whisper sobre ONDE a
 # palavra comeca, em segundos, antes de perder a razao.
