@@ -2771,27 +2771,40 @@ def _agrupa_spans_cartas(mencoes, iv, cc):
     Mapeia cada mencao para a saida ANTES de agrupar - fundir por
     proximidade so faz sentido no relogio que quem assiste ve, nao no da
     fonte (o corte pode ter comido o intervalo entre duas falas, ou
-    esticado por causa de outra coisa cortada no meio)."""
+    esticado por causa de outra coisa cortada no meio).
+
+    Pedido do Rafael em 02/09: a carta entra `atraso` DEPOIS do fim da
+    mencao (nao antes - a antiga `antecipa` ia na direcao contraria) e
+    fica ate `persistencia` depois do fim da ULTIMA mencao da mesma
+    carta em sequencia continua. Cada mencao nova dentro da janela de
+    persistencia da anterior funde na mesma exibicao e reinicia o
+    relogio a partir dela - e por isso que a fusao (que olha so a
+    proximidade entre mencoes) e o rabo depois da ultima (que decide
+    quando a carta some) usam a MESMA constante agora: as duas
+    respondem "ha quanto tempo a carta nao e mencionada?"."""
     pontos = sorted(
         (_tempo_saida(m["s"], iv), _tempo_saida(m["e"], iv), m["carta"])
         for m in mencoes)
 
-    spans = []
-    for ini, fim, carta in pontos:
-        if (spans and spans[-1]["carta"] == carta
-                and ini - spans[-1]["fim"] <= cc["gap_max"]):
-            spans[-1]["fim"] = max(spans[-1]["fim"], fim)
-        else:
-            spans.append({"carta": carta, "ini": ini, "fim": fim})
+    atraso, persist = cc["atraso"], cc["persistencia"]
 
-    for s in spans:
-        s["ini"] = max(0.0, s["ini"] - cc["antecipa"])
-        if s["fim"] - s["ini"] < cc["duracao_minima"]:
-            s["fim"] = s["ini"] + cc["duracao_minima"]
+    grupos = []
+    for ini, fim, carta in pontos:
+        if (grupos and grupos[-1]["carta"] == carta
+                and ini - grupos[-1]["ultima_fim"] <= persist):
+            grupos[-1]["ultima_fim"] = fim
+        else:
+            grupos.append({"carta": carta, "primeira_fim": fim,
+                            "ultima_fim": fim})
+
+    spans = [{"carta": g["carta"],
+              "ini": g["primeira_fim"] + atraso,
+              "fim": g["ultima_fim"] + persist}
+             for g in grupos]
 
     # Sem empilhamento (layout 4 ficou de fora por decisao do Rafael - ver
-    # plano): se o minimo de uma carta invade a proxima, a de tras cede -
-    # a carta que comecou depois e a que esta sendo falada agora.
+    # plano): se a persistencia de uma carta invade a proxima, a de tras
+    # cede - a carta que comecou depois e a que esta sendo falada agora.
     for i in range(len(spans) - 1):
         if spans[i]["fim"] > spans[i + 1]["ini"]:
             spans[i]["fim"] = spans[i + 1]["ini"]
