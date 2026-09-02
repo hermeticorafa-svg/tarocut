@@ -10,6 +10,7 @@ Pipeline:
   analyze     words + energia -> stream.json  (fluxo fundido: o que o
               Whisper transcreveu MAIS o que ele engoliu)
   draft       stream -> transcript.md editavel
+  editor      ajusta o corte pela transcricao, no navegador
   previa      toca o corte no mpv, sem renderizar
   render      aplica os cortes e normaliza o volume
 """
@@ -1296,6 +1297,226 @@ def reconcilia(stream, editado):
             apagados += 1
     return apagados
 
+# ----------------------------------------------- camada do editor (montagem)
+
+def _spans(v, ordena=True):
+    """Normaliza uma lista de [ini, fim]: descarta lixo, ordena e funde o
+    que se toca. Sem isso, mil ajustes de 1 ms viram mil trechos no arquivo.
+
+    LARGURA ZERO NAO E GESTO. `b > a` deixava passar `[37.19, 37.19+5e-15]`
+    - ruido de ponto flutuante, nao clique de ninguem. E `aplica_manual`
+    parte o trecho mantido em cada corte que recebe, entao cinco desses no
+    edicao.json do IMG_0246 estilhacaram "Os Arcanos" em cinco cacos de
+    0,10s, cada um com fade de 10 ms na entrada e na saida: metralhadora.
+    1 ms e o mesmo limite que `aplica_manual` usa na saida - a 48 kHz sao
+    48 amostras, e ninguem clica isso."""
+    out = []
+    for x in v or []:
+        try:
+            a, b = float(x[0]), float(x[1])
+        except (TypeError, ValueError, IndexError, KeyError):
+            continue
+        if b - a > 0.001:
+            out.append([a, b])
+    if ordena:
+        out.sort()
+    fund = []
+    for a, b in out:
+        if fund and a <= fund[-1][1] + 1e-9:
+            fund[-1][1] = max(fund[-1][1], b)
+        else:
+            fund.append([a, b])
+    return fund
+
+
+def uniao_spans(A, B):
+    return _spans(list(A or []) + list(B or []))
+
+
+def subtrai_spans(A, B):
+    """A menos B.
+
+    E o que mantem `cortes` e `restauros` DISJUNTOS dentro do montagem.json:
+    cada gesto tira do conjunto contrario antes de entrar no seu. Essa
+    disjuncao e o motivo de o botao de mais desfazer o de menos - com os
+    dois conjuntos se sobrepondo, `aplica_manual` teria de escolher um
+    vencedor, e escolheria sempre o mesmo."""
+    out = []
+    for a, b in _spans(A):
+        pedacos = [[a, b]]
+        for x, y in _spans(B):
+            novo = []
+            for p, q in pedacos:
+                if y <= p or x >= q:
+                    novo.append([p, q])
+                    continue
+                if p < x:
+                    novo.append([p, x])
+                if y < q:
+                    novo.append([y, q])
+            pedacos = novo
+        out += [c for c in pedacos if c[1] - c[0] > 0.001]
+    return _spans(out)
+
+
+def lacunas(iv, dur):
+    """O complemento de `iv`: o que NAO se ouve.
+
+    O editor raciocina em lacuna, nao em trecho mantido - os botoes de mais
+    e menos movem a borda da lacuna colada na selecao, e e so isso que eles
+    fazem. Mora aqui, e nao no navegador, pela mesma regra do resto: quem
+    responde onde a lamina esta e quem calculou o corte."""
+    out, t = [], 0.0
+    for a, b in iv:
+        if a > t + 1e-9:
+            out.append([t, a])
+        t = max(t, b)
+    if t < dur - 1e-9:
+        out.append([t, dur])
+    return out
+
+
+def carrega_montagem(d):
+    """work/<video>/montagem.json - o que o editor de transcricao decidiu.
+
+    Duas camadas, e a diferenca entre elas e o ponto todo do arquivo.
+
+    `tokens` sao decisoes de PALAVRA, do mesmo tipo que apagar texto no
+    transcript.md: passam por toda a geometria de emenda (fusao, snap, corte
+    minimo, respeito a palavra vizinha), porque quem oculta uma palavra quer
+    a palavra fora, nao um numero exato de milissegundos.
+
+    `cortes` e `restauros` sao trechos de TEMPO, os botoes de mais e menos.
+    Entram DEPOIS de tudo, sem snap e sem minimo: um ajuste de 1 ms nao
+    sobreviveria ao filtro de corte minimo, e nao deve mesmo sobreviver a
+    ele - quem pediu 1 ms esta olhando a palavra e quer 1 ms.
+
+    NAO se chama `edicao.json` de proposito. Sobraram `edicao.json` em
+    `work/` do editor removido em 01/09, com outro formato e decisoes de
+    outra epoca; passar a ler aqueles arquivos seria reimpor decisao velha
+    em silencio, que e o defeito que este programa mais teve."""
+    p = d / "montagem.json"
+    if not p.exists():
+        return None
+    try:
+        m = jload(p)
+    except Exception as e:
+        print(f"[montagem] montagem.json ilegivel ({e}); ignorando")
+        return None
+    if not isinstance(m, dict):
+        return None
+    m["tokens"] = [t for t in (m.get("tokens") or []) if isinstance(t, dict)]
+    m["cortes"] = _spans(m.get("cortes"))
+    m["restauros"] = _spans(m.get("restauros"))
+    return m
+
+
+def confere_montagem(stream, m):
+    """As decisoes de palavra ainda apontam para a palavra em que foram
+    tomadas? Devolve a lista de problemas, vazia quando esta tudo no lugar.
+
+    Indice de token caduca: basta a analise inserir um token antes e a
+    decisao passa a valer para outra palavra - em silencio, que e como
+    julgamento humano some neste programa. Por isso cada decisao guarda
+    tambem o `s`/`e` do token em que foi tomada: ou ela cai na palavra
+    certa, ou o programa para e diz qual e. E a mesma regra do selo do
+    transcript.md, so que por palavra, e por isso o remedio tambem e o
+    mesmo - recusa, nao aviso."""
+    ruins = []
+    for dec in (m or {}).get("tokens") or []:
+        i = dec.get("i")
+        t = stream[i] if isinstance(i, int) and 0 <= i < len(stream) else None
+        if t is None:
+            ruins.append(f"token {i} nao existe mais "
+                         f"({dec.get('t','')!r}, {dec.get('estado','')})")
+        elif (abs(t["s"] - dec.get("s", -9)) > 0.01
+              or abs(t["e"] - dec.get("e", -9)) > 0.01):
+            ruins.append(f"token {i} mudou de lugar: era {dec.get('t','')!r} "
+                         f"em {dec.get('s', 0):.2f}s, hoje e {t['t']!r} em "
+                         f"{t['s']:.2f}s")
+    return ruins
+
+
+def aplica_montagem(stream, m, rotulo):
+    """Camada de palavra. Vence o transcript.md por ser a decisao mais
+    recente e a mais explicita - no editor a pessoa clicou naquela palavra;
+    no .md ela pode so ter deixado como veio."""
+    ruins = confere_montagem(stream, m)
+    if ruins:
+        print(f"[{rotulo}] o montagem.json e de outra analise:")
+        for r in ruins[:6]:
+            print(f"    {r}")
+        sys.exit(f"[{rotulo}] abortado: as decisoes de palavra do editor "
+                 f"cairiam na palavra errada. Abra o editor e decida de "
+                 f"novo, ou apague o montagem.json.")
+    n = 0
+    for dec in m.get("tokens") or []:
+        t = stream[dec["i"]]
+        novo = (dec.get("estado") == "cortar")
+        if t["cut"] != novo:
+            n += 1
+        t["cut"] = novo
+        # `prot` protege enumeracao contra corte AUTOMATICO; nao autoriza
+        # sobreviver a um clique. Mesma regra do `aplica_anotacoes`: se uma
+        # pessoa decidiu, sai.
+        t["prot"] = False
+        t["why"] = "oculto no editor" if novo else "restaurado no editor"
+    return n
+
+
+def spans_da_mao(stream, m, folga=0.0):
+    """Os trechos que a PESSOA mandou ficar no editor: os restauros de
+    milissegundo mais o tempo das palavras marcadas para manter.
+
+    Serve para uma coisa so: separar "a anotacao nao foi obedecida" - bug, e
+    o pior deste programa - de "eu reabri essa anotacao de proposito, depois
+    de ouvir". Sem essa separacao todo ajuste feito no editor acenderia o
+    alarme que existe para avisar que o julgamento sumiu, e alarme que
+    acende sozinho vira papel de parede.
+
+    A palavra entra alargada de `folga_palavra`, que e EXATAMENTE a regiao
+    que o `_respeita_palavras` defende em volta dela. Sem isso a conta nao
+    fechava: reabrir o `Yala,` de 13,10-13,52 dentro da anotacao de 0-32,45
+    devolvia 0,54s ao video (a palavra mais 0,06 de cada lado), mas so 0,42
+    contavam como decisao da pessoa, e o `conferir` gritava NAO OBEDECIDA
+    numa anotacao que eu mesmo tinha acabado de reabrir."""
+    if not m:
+        return []
+    fora = [list(x) for x in (m.get("restauros") or [])]
+    for dec in m.get("tokens") or []:
+        if dec.get("estado") != "manter":
+            continue
+        try:
+            a, b = float(dec["s"]), float(dec["e"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        i = dec.get("i")
+        if isinstance(i, int) and 0 <= i < len(stream):
+            t = stream[i]
+            if abs(t["s"] - a) < 0.01:
+                b = fim_util(t)      # cauda podada nao e palavra mantida
+        fora.append([a - folga, b + folga])
+    return _spans(fora)
+
+
+def aplica_manual(manter, m, dur):
+    """Camada de tempo, aplicada por ultimo e sem arredondar nada.
+
+    Restaura primeiro e corta depois. O editor mantem `cortes` e `restauros`
+    disjuntos (ver `subtrai_spans`), entao esta ordem nao decide nada; ela so
+    fixa o resultado de um arquivo editado a mao em que os dois se cruzem.
+
+    Nada aqui passa por snap, fusao ou minimo - seria desfazer, no escuro, o
+    ajuste de milissegundo que a pessoa fez de proposito."""
+    if not m:
+        return manter
+    iv = [[a, b] for a, b in manter]
+    for a, b in m.get("restauros") or []:
+        iv.append([max(0.0, a), min(dur, b)])
+    iv = subtrai_spans(iv, m.get("cortes") or [])
+    return [(round(a, 4), round(b, 4)) for a, b in iv if b - a > 0.001]
+
+
 # -------------------------------------------------------- montagem do corte
 
 def fim_util(t):
@@ -1542,7 +1763,8 @@ def _garante_ilhas(cortes, minimo, stream):
     return [c for c in saida if c[1] > c[0]]
 
 
-def intervalos(stream, C, dur, db=None, hop=0.02, anot=None):
+def intervalos(stream, C, dur, db=None, hop=0.02, anot=None,
+               manual=None):
     """Fluxo -> lista de trechos a MANTER."""
     cc = C["corte"]
 
@@ -1592,7 +1814,8 @@ def intervalos(stream, C, dur, db=None, hop=0.02, anot=None):
         t = max(t, b)
     if t < dur - 0.02:
         manter.append([t, dur])
-    return [(round(a, 3), round(b, 3)) for a, b in manter if b - a > 0.05]
+    iv = [(round(a, 3), round(b, 3)) for a, b in manter if b - a > 0.05]
+    return aplica_manual(iv, manual, dur)
 
 
 def trecho_audio(i, a, b, fade):
@@ -1627,13 +1850,20 @@ def grafo(iv, C, escala=None, fps=None):
     return "\n".join(L)
 
 
-def _base(video, rotulo, ignorar_transcript=False):
+def _base(video, rotulo, ignorar_transcript=False, aplicar_mont=True):
     """Tudo o que precede o calculo dos trechos: le o fluxo analisado e
     empilha por cima dele as decisoes humanas.
 
-    Devolve as pecas soltas, e nao o corte pronto, porque `conferir` precisa
-    do fluxo E dos trechos para dizer o que ficou de fora do que se mandou
-    cortar."""
+    Devolve as pecas soltas, e nao o corte pronto, por duas razoes: o
+    `conferir` precisa do fluxo E dos trechos para dizer o que ficou de
+    fora do que se mandou cortar, e o editor recalcula a cada clique com o
+    estado que esta na tela e ainda nao foi salvo - por isso ele chama com
+    `aplicar_mont=False` e aplica a camada de palavra ele mesmo.
+
+    A ordem em que as decisoes humanas se empilham e a ordem em que foram
+    tomadas: transcript.md, depois anotacoes.json, depois montagem.json. A
+    ultima e a mais explicita - no editor a pessoa clicou naquela
+    palavra."""
     C = cfg()
     d = wdir(video)
     S = jload(d / "stream.json")
@@ -1659,10 +1889,17 @@ def _base(video, rotulo, ignorar_transcript=False):
                              carrega_anotacoes(d) or S.get("anotacoes", []))
     if anot:
         print(f"[{rotulo}] {len(anot)} trechos anotados aplicados")
-    return C, d, stream, dur, db, hop or 0.02, anot
+    mont = carrega_montagem(d)
+    if mont and aplicar_mont:
+        n = aplica_montagem(stream, mont, rotulo)
+        print(f"[{rotulo}] montagem.json: {len(mont['tokens'])} palavras "
+              f"decididas a mao ({n} mudam a proposta), "
+              f"{len(mont['cortes'])} cortes e "
+              f"{len(mont['restauros'])} restauros de milissegundo")
+    return C, d, stream, dur, db, hop or 0.02, anot, mont
 
 
-def anotacoes_desobedecidas(anot, iv, tol=0.15):
+def anotacoes_desobedecidas(anot, iv, tol=0.15, mao=None):
     """Anotacao que foi lida, aplicada, e mesmo assim continua no video.
 
     A pergunta mora aqui, uma vez so, porque duas partes precisam dela: o
@@ -1673,13 +1910,34 @@ def anotacoes_desobedecidas(anot, iv, tol=0.15):
 
     `tol` e folga de borda, nao gosto: `folga_palavra` recua a emenda 0,06s
     de cada lado da palavra mantida vizinha, entao uma anotacao cercada de
-    fala sobra ~0,12s por construcao. Acima disso e outra coisa."""
+    fala sobra ~0,12s por construcao. Acima disso e outra coisa.
+
+    `mao` sao os trechos que a pessoa mandou ficar no editor (ver
+    `spans_da_mao`). O que sobra por causa deles nao e a anotacao sumindo
+    no calculo - e alguem desdizendo a anotacao de olhos abertos, depois de
+    ouvir. Sai na quinta posicao como SIM ou NAO, e nao como medida, porque
+    a pergunta e uma so e tem de ter uma resposta so: quem chama diz as
+    duas coisas com palavras diferentes, mas nao decide qual e qual.
+
+    O MESMO `tol` decide as duas coisas, e pela mesma razao. Reabrir uma
+    palavra a mao devolve ela mais a folga em volta - e, quando ela cai
+    perto da borda da anotacao, devolve tambem a lasca que sobrou do outro
+    lado, fina demais para o corte pegar. MEDIDO no IMG_0246: reabrir o
+    `os` de 116,59-116,83 dentro da anotacao de 116,46-128,03 devolve
+    0,49s, dos quais 0,36 sao a palavra com folga e 0,13 sao essa lasca.
+    Exigir a soma exata fazia o alarme mais serio deste programa disparar
+    num ajuste que a propria pessoa acabara de fazer."""
+    mao = _spans(mao)
     fora = []
     for an in anot or []:
         x, y = an["ini"], an["fim"]
         vivo = sum(max(0.0, min(y, b) - max(x, a)) for a, b in iv)
-        if vivo > tol:
-            fora.append((x, y, vivo, str(an.get("motivo", ""))))
+        if vivo <= tol:
+            continue
+        por_mao = sum(max(0.0, min(y, b, q) - max(x, a, p))
+                      for a, b in iv for p, q in mao)
+        fora.append((x, y, vivo, str(an.get("motivo", "")),
+                     por_mao >= vivo - tol))
     return fora
 
 
@@ -1753,16 +2011,23 @@ def confere_pelo_whisper(d, C, stream, iv, rotulo):
 def _plano(a, rotulo):
     """Etapas comuns a render, audio e previa: aplica as decisoes humanas e
     calcula os trechos a manter."""
-    C, d, stream, dur, db, hop, anot = _base(
+    C, d, stream, dur, db, hop, anot, mont = _base(
         a.video, rotulo, getattr(a, "ignorar_transcript", False))
-    iv = intervalos(stream, C, dur, db, hop, anot)
+    iv = intervalos(stream, C, dur, db, hop, anot, mont)
     # O `conferir` ja fazia esta pergunta, e so quem lembrava de roda-lo
     # ouvia a resposta. Aqui ela e feita no caminho que TODO mundo passa
     # antes de gastar minutos: e o unico defeito deste programa que o
     # ouvido nao pega, porque o que sumiu nao faz barulho nenhum.
-    for x, y, vivo, motivo in anotacoes_desobedecidas(anot, iv):
-        print(f"[{rotulo}] AVISO: a anotacao {x:.2f}-{y:.2f} nao foi "
-              f"obedecida - {vivo:.2f}s continuam no video: {motivo[:60]}")
+    for x, y, vivo, motivo, mao in anotacoes_desobedecidas(
+            anot, iv, mao=spans_da_mao(stream, mont,
+                                       C["corte"]["folga_palavra"])):
+        if mao:
+            print(f"[{rotulo}] a anotacao {x:.2f}-{y:.2f} foi reaberta "
+                  f"no editor - {vivo:.2f}s de volta: {motivo[:50]}")
+        else:
+            print(f"[{rotulo}] AVISO: a anotacao {x:.2f}-{y:.2f} nao foi "
+                  f"obedecida - {vivo:.2f}s continuam no video: "
+                  f"{motivo[:60]}")
     confere_pelo_whisper(d, C, stream, iv, rotulo)
     return C, d, dur, iv
 
@@ -1791,6 +2056,47 @@ def fora_de_ordem(st):
     aparecer para quem le o revisao.txt."""
     pal = [t for t in st if t["k"] == "palavra"]
     return sum(1 for a, b in zip(pal, pal[1:]) if b["s"] < a["s"])
+
+
+def sobrepostos(st, folga=0.5):
+    """Pares de tokens (palavra OU hesitacao) que invadem o tempo um do
+    outro, com o indice ORIGINAL de cada um em `st` (para ancorar no
+    revisao.txt).
+
+    `fora_de_ordem` pega o alinhador embaralhando o INICIO da palavra. Isto
+    aqui pega um sintoma irmao, que nao mexe em nenhum inicio: quando
+    `resolve_suspeitos` (duracao impossivel) e `marca_ecos` (retomada
+    colapsada) disputam o MESMO audio, cada um sozinho tem inicio em ordem,
+    mas os dois juntos cobrem o mesmo intervalo duas vezes. `_respeita_
+    palavras` entao protege cada palavra real por conta propria, sem saber
+    que ha uma disputa - e o que sobra e um pedaco isolado entre dois
+    cortes, do tamanho de uma unica palavra.
+
+    Medido no IMG_0246_bruto: "principalmente" (136,99-138,64s, duracao
+    impossivel) e "nessas" (137,55-138,01s) tiveram cada um sua recuperacao
+    disputando a mesma frase ("das mulheres, principalmente, nessas
+    cartas, em que..."), sem que nenhuma violasse `fora_de_ordem` sozinha.
+    O resultado foi um "em" solto - ILHA CURTA que so apareceu porque
+    alguem ouviu o corte, nao porque o revisao.txt avisou.
+
+    `folga=0.5` veio de rodar contra os quatro stream.json disponiveis
+    (IMG_0246, IMG_0246_bruto, IMG_0247, IMG_0248): abaixo de ~0,3s e so
+    jitter comum entre duas palavras reais vizinhas (visto ate 0,44s em
+    trecho limpo, sem nenhum defeito); a 0,5s sobram so os pares que batem
+    em casos ja documentados no codigo - o "do" que _respeita_palavras
+    cita (IMG_0247, 49,81-53,08 x 50,64-50,90) e o proprio "principalmente"
+    acima, presentes tanto no bruto quanto no IMG_0246 ja julgado (onde a
+    disputa se resolveu diferente: os dois tokens saem cut=True, sem
+    nenhuma anotacao cobrindo o trecho - sinal de que o resultado desse
+    canto do pipeline nao e estavel entre rodadas, mais um motivo para
+    avisar sempre)."""
+    pal = sorted(((t["s"], i) for i, t in enumerate(st)
+                 if t["k"] in ("palavra", "hesitacao")))
+    out = []
+    for (sa, ia), (sb, ib) in zip(pal, pal[1:]):
+        if sb < st[ia]["e"] - folga:
+            out.append((ia, ib))
+    return out
 
 
 def rarefeitos(st, cr):
@@ -1861,6 +2167,7 @@ def cmd_revisar(a):
     st, dur = S["stream"], S["dur"]
     raros = rarefeitos(st, cfg()["revisao"])
     bagunca = fora_de_ordem(st)
+    choques = sobrepostos(st)
 
     L = [f"# {Path(a.video).stem} | {hhmmss(dur)} | tempos em segundos",
          "# [-N.Ns] = ja marcado para corte, trecho quieto. Texto solto =",
@@ -1876,6 +2183,12 @@ def cmd_revisar(a):
          "# pode estar segundos longe de onde aparece aqui.",
          "# [!Ns/N palavras] = o que SOBRA ali e fala rarefeita (o normal e",
          "# ~2,5 palavras/s): parada longa que o detector de pausas nao viu.",
+         "# [disputa N.Ns] = duas recuperacoes automaticas (duracao",
+         "# impossivel + retomada colapsada) brigaram pelo mesmo audio.",
+         "# Nenhuma teve o inicio embaralhado sozinha, entao isto nao vira",
+         "# ~ nem [aviso fora de ordem] - mas o resultado pode ser uma",
+         "# palavra solta entre dois cortes (ILHA CURTA no conferir). Ouca",
+         "# com tarocut.py audio antes de aceitar o corte automatico ali.",
          "# Procure: retomadas com outras palavras, interrupcoes, trechos",
          "# em que ela se perde. Responda com trechos [inicio, fim, motivo]."]
     if bagunca:
@@ -1883,6 +2196,9 @@ def cmd_revisar(a):
                  f"alinhador embaralhou")
         L.append("# esses trechos, e ali o [-N.Ns] pode faltar mesmo "
                  "havendo parada.")
+    if choques:
+        L.append(f"# aviso: {len(choques)} disputa(s) de recuperacao "
+                 f"automatica marcadas [disputa] abaixo - confira com audio.")
     L.append("")
 
     # ancora cada aviso no primeiro token MANTIDO que cai dentro dele: e o
@@ -1893,6 +2209,12 @@ def cmd_revisar(a):
             if not t["cut"] and t["e"] > x and t["s"] < y:
                 marca[i] = f"[!{s:.0f}s/{n} palavras]"
                 break
+
+    # disputa de recuperacao: ancora no segundo token do par (o que invade),
+    # que e o que aparece "de surpresa" lendo o texto em ordem.
+    for ia, ib in choques:
+        sobra = st[ia]["e"] - st[ib]["s"]
+        marca[ib] = marca.get(ib, "") + f"[disputa {sobra:.1f}s]"
 
     # Palavras cujo tempo o alinhador recusou. Sem isto o revisao.txt mente
     # com cara de verdade: no IMG_0247 um "As" impresso em 80,0s foi falado
@@ -2004,9 +2326,9 @@ def cmd_conferir(a):
     Alarme que dispara em 70% das emendas e papel de parede. O que aquele
     teste queria pegar - silaba comida - virou a folga de 0,06 no
     config.toml, que ataca a causa em vez do sintoma."""
-    C, d, stream, dur, db, hop, anot = _base(a.video, "conferir",
-                                             a.ignorar_transcript)
-    iv = intervalos(stream, C, dur, db, hop, anot)
+    C, d, stream, dur, db, hop, anot, mont = _base(a.video, "conferir",
+                                                   a.ignorar_transcript)
+    iv = intervalos(stream, C, dur, db, hop, anot, mont)
     para_fonte, para_previa = _mapa_previa(iv)
     mantido = sum(b - x for x, b in iv)
 
@@ -2024,8 +2346,11 @@ def cmd_conferir(a):
 
     # 1. Anotacao desobedecida. E o pior de todos: o julgamento humano foi
     #    escrito, foi lido, e sumiu na geometria sem uma linha de aviso.
-    for x, y, vivo, motivo in anotacoes_desobedecidas(anot, iv):
-        diz("ANOTACAO NAO OBEDECIDA", x, y,
+    for x, y, vivo, motivo, mao in anotacoes_desobedecidas(
+            anot, iv, mao=spans_da_mao(stream, mont,
+                                       C["corte"]["folga_palavra"])):
+        diz("ANOTACAO REABERTA A MAO" if mao
+            else "ANOTACAO NAO OBEDECIDA", x, y,
             f"sobra {vivo:.2f}s de {y-x:.2f}s | {motivo[:50]}")
 
     # 2. Fala marcada para sair que continua tocando. Silencio nao entra:
@@ -2070,6 +2395,7 @@ def cmd_conferir(a):
          f"{hhmmss(mantido)} de {hhmmss(dur)}",
          "# ouca na ordem: a coluna PREVIA e o tempo no .m4a.",
          "# ANOTACAO NAO OBEDECIDA = voce mandou cortar e nao saiu. Sempre bug.",
+         "# ANOTACAO REABERTA A MAO = voce mesmo trouxe de volta, no editor.",
          "# FALA CORTADA SOBREVIVE = o programa marcou para sair e continua ali.",
          "# ILHA CURTA = pouca coisa entre dois cortes; nem sempre e defeito.",
          "# PALAVRA RASPADA = borda comeu pedaco de palavra mantida.",
@@ -2084,6 +2410,20 @@ def cmd_conferir(a):
     print("\n".join(L))
     print(f"\n[conferir] {len(achados)} pontos para ouvir -> {p}"
           if achados else f"\n[conferir] nada suspeito -> {p}")
+
+
+def cmd_editor(a):
+    """Abre a transcricao no navegador para o ajuste fino.
+
+    Mora em `editor.py`, e o import e aqui dentro de proposito: o
+    editor carrega servidor HTTP e thread, e nenhuma das outras etapas
+    precisa disso para rodar.
+
+    Vem DEPOIS do passe de julgamento, nao no lugar dele. O `/revisar`
+    decide o que sai lendo o texto inteiro; aqui se conserta a borda de
+    milissegundo que so aparece ouvindo."""
+    import editor
+    editor.serve(a.video, a.porta, not a.sem_abrir)
 
 
 def cmd_previa(a):
@@ -2337,6 +2677,13 @@ def main():
     au.add_argument("--out", default=None)
     au.add_argument("--ignorar-transcript", action="store_true")
     au.set_defaults(fn=cmd_audio)
+
+    ed = sub.add_parser("editor",
+                        help="ajusta o corte pela transcricao, no navegador")
+    ed.add_argument("video")
+    ed.add_argument("--porta", type=int, default=8731)
+    ed.add_argument("--sem-abrir", action="store_true")
+    ed.set_defaults(fn=cmd_editor)
 
     v = sub.add_parser("previa", help="ve o corte no mpv sem renderizar")
     v.add_argument("video")

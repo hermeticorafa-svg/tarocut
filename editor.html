@@ -1,0 +1,900 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tarocut - editor</title>
+<!--
+  A tela do editor. Uma regra manda em tudo o que esta aqui dentro:
+
+  ESTE ARQUIVO NAO CALCULA CORTE. Nem um pedaco. Todo gesto vira um POST
+  /acao e volta com os trechos ja calculados por `tarocut.intervalos()`, a
+  mesma funcao do render. Ate "quanto este botao vai devolver" vem de la.
+  O que se faz aqui e desenhar a resposta e tocar o audio - e desenhar
+  inclui o riscado, que sai dos trechos MANTIDOS e nao do `cut` do token:
+  o que aparece riscado e o que de fato nao vai sair no .mov.
+
+  A unica conta de tempo que sobrou na tela e a posicao da letra dentro da
+  palavra, e mesmo essa e feita no servidor (`Sessao.selecao`): a pagina
+  manda "palavra 137, letra 4 de 8".
+-->
+<style>
+:root{
+  --papel:#e8e6e1;      /* cinza claro, quente: papel, nao tela */
+  --tinta:#211f1c;
+  --fora:#a9a49a;       /* o que foi ocultado: legivel, mas apagado */
+  --risco:#b3ada2;
+  --sel:#d8cfa8;        /* selecao: sublinhado de lapis, nao bloco azul */
+  --toca:#c9dcc4;
+  --linha:#cfcbc3;
+  --painel:#f3f1ec;
+  --alarme:#8c3b2e;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--papel);
+  color:var(--tinta);
+  font:20px/1.95 Cambria,Georgia,"Palatino Linotype","Book Antiqua",serif;
+  -webkit-font-smoothing:antialiased;
+}
+
+/* ------------------------------------------------------------ a folha */
+/* A margem da direita e o lugar do painel E dos botoes de mais/menos, que
+   passam 55 px do fim da palavra: sem ela, uma palavra no fim da linha
+   ganhava botoes por baixo do painel. */
+body{padding-right:330px}
+#folha{
+  max-width:33em;
+  margin:0 auto;
+  padding:3.5rem 1.5rem 60vh;   /* fundo alto: da para rolar a ultima linha ate o meio */
+  user-select:none;
+  cursor:default;
+}
+#folha p{margin:0 0 1.5em;text-align:justify;hyphens:auto}
+
+.tok{border-radius:2px;padding:1px 0}
+.tok.sel{background:var(--sel)}
+.tok.toca{background:var(--toca)}
+.f{color:var(--fora);text-decoration:line-through;text-decoration-thickness:1px}
+
+/* Vao: silencio, ou hesitacao de que o transcritor nao tirou texto. Nao
+   tem letra para riscar, entao o risco e o proprio traco - a largura
+   cresce com o que foi tirado, ate um teto, para 15 s de gravacao morta
+   nao sumirem da tela sem deixar marca. */
+.vao{display:inline-block;position:relative;height:.8em;vertical-align:baseline}
+.vao::before{
+  content:"";position:absolute;left:0;right:0;top:.42em;
+  border-top:1px solid var(--risco);
+}
+.vao.sel{background:var(--sel)}
+
+/* ------------------------------------------------------- botoes e caret */
+#capa{position:absolute;inset:0;pointer-events:none;z-index:5}
+/* Empilhados na vertical, e nao lado a lado, por medicao boba mas real:
+   dois botoes redondos de 22px em fila tapam cinco letras da palavra
+   vizinha, e este editor existe para mostrar o texto inteiro. Em coluna
+   cobrem duas. O par continua sendo um so gesto - mais em cima, menos
+   embaixo -, e o lado do par e que diz de que borda ele fala. */
+.grupo{position:absolute;display:flex;flex-direction:column;gap:2px;
+       pointer-events:auto}
+.bt{
+  width:17px;height:17px;border:1px solid var(--linha);border-radius:50%;
+  background:var(--painel);color:var(--tinta);
+  font:600 12px/1 system-ui,sans-serif;cursor:pointer;padding:0;
+  display:flex;align-items:center;justify-content:center;
+  box-shadow:0 1px 2px rgba(0,0,0,.10);
+}
+.bt:hover:not(:disabled){background:#fff}
+.bt:disabled{opacity:.28;cursor:default}
+#caret{
+  position:absolute;width:2px;background:var(--tinta);
+  animation:pisca 1.06s step-end infinite;pointer-events:none;
+}
+@keyframes pisca{50%{opacity:0}}
+
+/* --------------------------------------------------------- painel do canto */
+#painel{
+  position:fixed;top:12px;right:12px;width:288px;max-height:calc(100vh - 24px);
+  overflow:auto;background:var(--painel);border:1px solid var(--linha);
+  border-radius:6px;padding:10px 12px;z-index:20;
+  font:12px/1.5 system-ui,"Segoe UI",sans-serif;color:#4a463f;
+  box-shadow:0 2px 10px rgba(0,0,0,.07);
+}
+#painel h1{font:600 12px/1.4 inherit;margin:0 0 6px;color:var(--tinta)}
+#painel .bloco{margin:9px 0 0;padding-top:9px;border-top:1px solid var(--linha)}
+#painel b{color:var(--tinta);font-weight:600}
+.unid{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}
+.unid button{
+  border:1px solid var(--linha);background:#fff;border-radius:4px;
+  padding:3px 6px;font:11px/1 inherit;cursor:pointer;color:#4a463f;
+}
+.unid button[aria-pressed=true]{background:var(--tinta);color:var(--papel);border-color:var(--tinta)}
+.gesto{display:flex;justify-content:space-between;gap:8px;margin-top:2px}
+.gesto span:last-child{color:#7d786f;text-align:right}
+.gesto.off{opacity:.38}
+.chave{color:#7d786f}
+.chave kbd{
+  font:11px/1 ui-monospace,Consolas,monospace;background:#fff;
+  border:1px solid var(--linha);border-radius:3px;padding:1px 4px;
+}
+.aviso{margin-top:5px;color:var(--alarme);cursor:pointer}
+.aviso.mao{color:#6b665e}
+#log{
+  margin-top:5px;max-height:150px;overflow:auto;white-space:pre-wrap;
+  font:11px/1.45 ui-monospace,Consolas,monospace;color:#57534b;
+}
+@media (max-width:1180px){
+  #painel{top:auto;bottom:0;right:0;left:0;width:auto;max-height:38vh;border-radius:0}
+  body{padding-right:0}
+  #folha{padding-bottom:46vh}
+}
+
+/* -------------------------------------------------------------- menu */
+#menu{
+  position:absolute;z-index:30;min-width:186px;background:var(--painel);
+  border:1px solid var(--linha);border-radius:6px;padding:4px;
+  box-shadow:0 4px 14px rgba(0,0,0,.16);display:none;
+  font:13px/1 system-ui,"Segoe UI",sans-serif;
+}
+#menu button{
+  display:block;width:100%;text-align:left;border:0;background:none;
+  padding:7px 10px;border-radius:4px;cursor:pointer;font:inherit;color:var(--tinta);
+}
+#menu button:hover:not(:disabled){background:#e2dfd8}
+#menu button:disabled{opacity:.35;cursor:default}
+#menu hr{border:0;border-top:1px solid var(--linha);margin:4px 2px}
+</style>
+</head>
+<body>
+
+<div id="folha"></div>
+
+<div id="capa">
+  <div class="grupo" id="gEsq" hidden>
+    <button class="bt" data-lado="esq" data-op="mais"  title="">+</button>
+    <button class="bt" data-lado="esq" data-op="menos" title="">&minus;</button>
+  </div>
+  <div class="grupo" id="gDir" hidden>
+    <button class="bt" data-lado="dir" data-op="mais"  title="">+</button>
+    <button class="bt" data-lado="dir" data-op="menos" title="">&minus;</button>
+  </div>
+  <div id="caret" hidden></div>
+</div>
+
+<aside id="painel">
+  <h1 id="tit">carregando...</h1>
+  <div id="resumo"></div>
+
+  <div class="bloco">
+    <b>Unidade</b>
+    <div class="unid" id="unid"></div>
+  </div>
+
+  <div class="bloco" id="caixaGestos">
+    <b>Nesta seleção</b>
+    <div id="gestos"></div>
+  </div>
+
+  <div class="bloco" id="caixaPorque" hidden>
+    <b>Por que saiu</b>
+    <div id="porque"></div>
+  </div>
+
+  <div class="bloco" id="caixaAvisos" hidden>
+    <b>Você mandou e não saiu</b>
+    <div id="avisos"></div>
+  </div>
+
+  <div class="bloco" id="caixaLog" hidden>
+    <b id="logTit"></b>
+    <div id="log"></div>
+  </div>
+
+  <div class="bloco chave">
+    <kbd>clique</kbd> palavra · <kbd>arrastar</kbd> trecho ·
+    <kbd>ctrl+clique</kbd> letra<br>
+    <kbd>&larr;</kbd><kbd>&rarr;</kbd> andar ·
+    <kbd>shift</kbd>+setas estende<br>
+    <kbd>&minus;</kbd><kbd>=</kbd> menos/mais à direita ·
+    <kbd>_</kbd><kbd>+</kbd> à esquerda<br>
+    <kbd>1</kbd>–<kbd>7</kbd> unidade ·
+    <kbd>backspace</kbd> oculta/restaura<br>
+    <kbd>espaço</kbd> toca e pausa ·
+    <kbd>enter</kbd> toca a seleção ·
+    <kbd>ctrl+z</kbd> desfaz<br>
+    <kbd>botão direito</kbd> no texto: tocar · fora: exportar
+  </div>
+</aside>
+
+<div id="menu"></div>
+
+<script>
+"use strict";
+
+/* ==================================================================== */
+/*  estado                                                              */
+/* ==================================================================== */
+
+const UNIDADES = [1, 10, 50, 100, 250, 500, 1000];   // ms; teclas 1..7
+
+const S = {
+  doc: null,          // /doc: tokens, blocos, duracao
+  est: null,          // ultima resposta do servidor: iv, pecas, gestos
+  sel: null,          // {tipo:'faixa',i0,i1} | {tipo:'caret',i,k,n}
+  u: 100,             // unidade em ms
+  els: [],            // <span> de cada token
+  vaos: [],           // marca do silencio comido ANTES de cada token
+  sig: [],            // assinatura do desenho de cada token (evita repintar)
+  ancora: null,       // token onde comecou o arraste
+  arrastando: false,
+};
+
+const $ = (id) => document.getElementById(id);
+const folha = $("folha"), capa = $("capa"), menu = $("menu");
+
+/* ---------------------------------------------------------- formatacao */
+
+function ms(seg) {
+  const v = Math.abs(seg);
+  if (v < 1) return Math.round(v * 1000) + " ms";
+  return v.toFixed(v < 10 ? 2 : 1).replace(".", ",") + " s";
+}
+function rel(seg) {
+  const m = Math.floor(seg / 60), s = seg - 60 * m;
+  return m + ":" + (s < 10 ? "0" : "") + s.toFixed(1).replace(".", ",");
+}
+
+/* ==================================================================== */
+/*  conversa com o servidor                                             */
+/* ==================================================================== */
+
+function selParaServidor() {
+  if (!S.sel) return {};
+  if (S.sel.tipo === "faixa") return { i0: S.sel.i0, i1: S.sel.i1 };
+  return { i: S.sel.i, k: S.sel.k, n: S.sel.n };
+}
+
+let vez = 0;
+async function acao(nome, extra) {
+  const meu = ++vez;
+  const r = await fetch("/acao", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(Object.assign(
+      { acao: nome, sel: selParaServidor(), unidade: S.u / 1000 },
+      extra || {})),
+  });
+  const est = await r.json();
+  if (meu !== vez) return est;      // chegou tarde: outro gesto ja mandou
+  S.est = est;
+  pinta();
+  return est;
+}
+
+/* ==================================================================== */
+/*  desenho                                                             */
+/* ==================================================================== */
+
+function monta() {
+  /* Uma vez so: cria os elementos. Depois disso `pinta` so troca o que
+     mudou - repintar 900 tokens a cada gesto pisca e perde a rolagem. */
+  folha.textContent = "";
+  const toks = S.est.pecas.tokens;
+  for (const b of S.doc.blocos) {
+    const p = document.createElement("p");
+    for (let i = b.i0; i < b.i1; i++) {
+      const vao = document.createElement("span");
+      vao.className = "vao";
+      vao.hidden = true;
+      S.vaos[i] = vao;
+      p.appendChild(vao);
+
+      const el = document.createElement("span");
+      el.className = "tok";
+      el.dataset.i = i;
+      S.els[i] = el;
+      p.appendChild(el);
+      if (toks[i].txt) p.appendChild(document.createTextNode(" "));
+    }
+    folha.appendChild(p);
+  }
+  const fim = document.createElement("p");
+  const v = document.createElement("span");
+  v.className = "vao"; v.hidden = true; v.id = "vaoFim";
+  fim.appendChild(v);
+  folha.appendChild(fim);
+}
+
+function larguraVao(oculto) {
+  /* Nao e linha do tempo - e tipografia. Cresce com o que foi tirado e
+     para num teto, para uma pausa de 30 s nao empurrar a linha inteira. */
+  return Math.min(4.2, 0.55 + oculto * 0.5).toFixed(2) + "em";
+}
+
+function marcaVao(el, oculto) {
+  if (oculto < 0.02) { el.hidden = true; return; }
+  el.hidden = false;
+  el.style.width = larguraVao(oculto);
+  el.title = ms(oculto) + " sem som aqui";
+}
+
+function pintaToken(i, p) {
+  const el = S.els[i];
+  const vivo = p.vivo;
+  const somaViva = vivo.reduce((a, [x, y]) => a + (y - x), 0);
+  const oculto = (p.e - p.s) * (1 - somaViva);
+
+  marcaVao(S.vaos[i], p.ocultoAntes);
+
+  if (!p.txt) {                      // silencio ou hesitacao sem texto
+    el.className = "tok vao";
+    el.textContent = "";
+    if (oculto < 0.02) { el.hidden = true; return; }
+    el.hidden = false;
+    el.style.width = larguraVao(oculto);
+    el.title = ms(oculto) + " sem som aqui";
+    return;
+  }
+
+  el.hidden = false;
+  el.className = "tok";
+  el.style.width = "";
+  el.title = oculto > 0.02 ? ms(oculto) + " desta palavra saiu" : "";
+  el.textContent = "";
+
+  /* Que letras sobrevivem. `vivo` vem do servidor como fatia do tempo do
+     token; repartir isso pelas letras e a unica leitura possivel - o
+     alinhador entrega a fronteira da PALAVRA, nao a do fonema. E so
+     desenho: nenhum corte sai daqui. */
+  const L = p.txt.length;
+  let atual = null, buf = "";
+  const despeja = () => {
+    if (!buf) return;
+    if (atual) { el.appendChild(document.createTextNode(buf)); }
+    else {
+      const s = document.createElement("span");
+      s.className = "f";
+      s.textContent = buf;
+      el.appendChild(s);
+    }
+    buf = "";
+  };
+  for (let k = 0; k < L; k++) {
+    const f = (k + 0.5) / L;
+    const viva = vivo.some(([x, y]) => f >= x && f <= y);
+    if (viva !== atual) { despeja(); atual = viva; }
+    buf += p.txt[k];
+  }
+  despeja();
+  el.dataset.n = L;
+}
+
+function pinta() {
+  const pc = S.est.pecas;
+  if (!S.els.length) monta();
+  for (let i = 0; i < pc.tokens.length; i++) {
+    const p = pc.tokens[i];
+    const sig = p.ocultoAntes + "|" + JSON.stringify(p.vivo);
+    if (S.sig[i] !== sig) { S.sig[i] = sig; pintaToken(i, p); }
+  }
+  marcaVao($("vaoFim"), pc.fim);
+  marcaSelecao();
+  painel();
+  posBotoes();
+}
+
+/* ------------------------------------------------------------ selecao */
+
+function marcaSelecao() {
+  for (const el of S.els) if (el) el.classList.remove("sel");
+  if (S.sel && S.sel.tipo === "faixa")
+    for (let i = S.sel.i0; i < S.sel.i1; i++)
+      if (S.els[i]) S.els[i].classList.add("sel");
+}
+
+/* ==================================================================== */
+/*  painel do canto                                                     */
+/* ==================================================================== */
+
+function linhaGesto(rot, span, tecla) {
+  const d = document.createElement("div");
+  d.className = "gesto" + (span ? "" : " off");
+  const a = document.createElement("span");
+  a.innerHTML = rot + ' <kbd>' + tecla + '</kbd>';
+  const b = document.createElement("span");
+  b.textContent = span
+    ? ms(span[1] - span[0]) + " em " + rel(span[0])
+    : "nada aqui";
+  d.append(a, b);
+  return d;
+}
+
+function painel() {
+  const e = S.est;
+  $("tit").textContent = S.doc.nome + " · " + S.doc.arquivo;
+  $("resumo").innerHTML =
+    "<b>" + rel(e.mantido) + "</b> de " + rel(S.doc.dur) +
+    " · " + e.trechos + " trechos · " + e.mao + " ajustes seus";
+
+  const g = $("gestos");
+  g.textContent = "";
+  if (!S.sel) {
+    g.textContent = "clique numa palavra";
+  } else {
+    g.append(
+      linhaGesto("&minus; esquerda", e.gestos.esq.menos, "_"),
+      linhaGesto("+ esquerda", e.gestos.esq.mais, "+"),
+      linhaGesto("&minus; direita", e.gestos.dir.menos, "&minus;"),
+      linhaGesto("+ direita", e.gestos.dir.mais, "="));
+  }
+
+  const i = S.sel ? (S.sel.tipo === "faixa" ? S.sel.i0 : S.sel.i) : -1;
+  const p = i >= 0 ? e.pecas.tokens[i] : null;
+  const fora = p && p.vivo.reduce((a, [x, y]) => a + (y - x), 0) < 0.99;
+  $("caixaPorque").hidden = !(fora && p.why);
+  if (fora && p.why) $("porque").textContent = p.why;
+
+  const av = $("avisos");
+  av.textContent = "";
+  $("caixaAvisos").hidden = !e.avisos.length;
+  for (const a of e.avisos) {
+    const d = document.createElement("div");
+    d.className = "aviso" + (a.mao ? " mao" : "");
+    const rot = a.palavra ? "NÃO SAIU"
+              : a.mao ? "reaberta por você" : "ANOTAÇÃO NÃO OBEDECIDA";
+    d.textContent = rot + " · " + rel(a.ini) + " · " +
+      a.motivo.slice(0, 110);
+    d.onclick = () => vaiPara(a.ini);
+    av.appendChild(d);
+  }
+}
+
+function vaiPara(t) {
+  const toks = S.est.pecas.tokens;
+  for (let i = 0; i < toks.length; i++) {
+    if (toks[i].e > t) {
+      selecionaFaixa(i, i + 1);
+      S.els[i].scrollIntoView({ block: "center", behavior: "smooth" });
+      return;
+    }
+  }
+}
+
+/* ==================================================================== */
+/*  botoes de mais e menos                                              */
+/* ==================================================================== */
+
+function retLetra(el, k) {
+  /* Retangulo da fronteira entre a letra k-1 e a k. Precisa andar pelos
+     nos de texto porque o token vem partido em pedacos riscados e nao
+     riscados. */
+  const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  let acc = 0, no;
+  while ((no = w.nextNode())) {
+    const L = no.nodeValue.length;
+    if (acc + L >= k) {
+      const r = document.createRange();
+      r.setStart(no, k - acc); r.setEnd(no, k - acc);
+      return r.getBoundingClientRect();
+    }
+    acc += L;
+  }
+  return el.getBoundingClientRect();
+}
+
+function ancoras() {
+  if (!S.sel) return null;
+  if (S.sel.tipo === "caret") {
+    const r = retLetra(S.els[S.sel.i], S.sel.k);
+    return [r, r];
+  }
+  const a = S.els[S.sel.i0], b = S.els[S.sel.i1 - 1];
+  if (!a || !b) return null;
+  return [a.getBoundingClientRect(), b.getBoundingClientRect()];
+}
+
+function posBotoes() {
+  const car = $("caret");
+  const an = ancoras();
+  if (!an || !S.est) {
+    $("gEsq").hidden = $("gDir").hidden = true;
+    car.hidden = true;
+    return;
+  }
+  const [ra, rb] = an;
+  const sx = window.scrollX, sy = window.scrollY;
+
+  car.hidden = S.sel.tipo !== "caret";
+  if (S.sel.tipo === "caret") {
+    car.style.left = (ra.left + sx - 1) + "px";
+    car.style.top = (ra.top + sy) + "px";
+    car.style.height = (ra.height || 24) + "px";
+  }
+
+  const ge = $("gEsq"), gd = $("gDir");
+  ge.hidden = gd.hidden = false;
+  ge.style.left = (ra.left + sx - 22) + "px";
+  ge.style.top = (ra.top + sy + ra.height / 2 - 18) + "px";
+  gd.style.left = (rb.right + sx + 5) + "px";
+  gd.style.top = (rb.top + sy + rb.height / 2 - 18) + "px";
+
+  for (const bt of document.querySelectorAll(".bt")) {
+    const span = S.est.gestos[bt.dataset.lado][bt.dataset.op];
+    bt.disabled = !span;
+    bt.title = span
+      ? (bt.dataset.op === "menos" ? "tira " : "devolve ") +
+        ms(span[1] - span[0]) + " em " + rel(span[0])
+      : (bt.dataset.op === "mais"
+         ? "nada ocultado desse lado" : "nada para tirar");
+  }
+}
+
+for (const bt of document.querySelectorAll(".bt")) {
+  bt.onclick = () => acao(bt.dataset.op, { lado: bt.dataset.lado });
+}
+
+/* ==================================================================== */
+/*  selecionar                                                          */
+/* ==================================================================== */
+
+function selecionaFaixa(i0, i1) {
+  S.sel = { tipo: "faixa", i0: Math.max(0, i0), i1: i1 };
+  acao("nada");
+}
+function selecionaCaret(i, k) {
+  const n = (S.est.pecas.tokens[i].txt || "").length || 1;
+  S.sel = { tipo: "caret", i, k: Math.max(0, Math.min(n, k)), n };
+  acao("nada");
+}
+
+function tokenDe(alvo) {
+  const el = alvo.closest ? alvo.closest(".tok") : null;
+  return el && el.dataset.i !== undefined ? +el.dataset.i : null;
+}
+
+folha.addEventListener("mousedown", (ev) => {
+  if (ev.button !== 0) return;
+  const i = tokenDe(ev.target);
+  if (i === null) { S.sel = null; acao("nada"); return; }
+  if (ev.ctrlKey) {
+    const el = S.els[i], n = (S.est.pecas.tokens[i].txt || "").length;
+    let melhor = 0, dist = Infinity;
+    for (let k = 0; k <= n; k++) {
+      const d = Math.abs(retLetra(el, k).left - ev.clientX);
+      if (d < dist) { dist = d; melhor = k; }
+    }
+    selecionaCaret(i, melhor);
+    return;
+  }
+  S.ancora = i;
+  S.arrastando = true;
+  selecionaFaixa(i, i + 1);
+  ev.preventDefault();
+});
+
+folha.addEventListener("mousemove", (ev) => {
+  if (!S.arrastando) return;
+  const i = tokenDe(ev.target);
+  if (i === null) return;
+  const a = Math.min(S.ancora, i), b = Math.max(S.ancora, i) + 1;
+  if (!S.sel || S.sel.i0 !== a || S.sel.i1 !== b) selecionaFaixa(a, b);
+});
+
+document.addEventListener("mouseup", () => { S.arrastando = false; });
+window.addEventListener("scroll", posBotoes, { passive: true });
+window.addEventListener("resize", posBotoes);
+
+/* ==================================================================== */
+/*  teclado                                                             */
+/* ==================================================================== */
+
+function andaToken(passo, estende) {
+  if (!S.sel) return;
+  const toks = S.est.pecas.tokens;
+  const temTexto = (i) => toks[i] && toks[i].txt;
+  if (S.sel.tipo === "caret") {
+    let { i, k, n } = S.sel;
+    k += passo;
+    if (k < 0 || k > n) {              // saiu da palavra: pula para a vizinha
+      let j = i + passo;
+      while (j >= 0 && j < toks.length && !temTexto(j)) j += passo;
+      if (j < 0 || j >= toks.length) return;
+      selecionaCaret(j, passo > 0 ? 0 : toks[j].txt.length);
+    } else selecionaCaret(i, k);
+    return;
+  }
+  let { i0, i1 } = S.sel;
+  if (estende) {
+    if (passo > 0) { let j = i1; while (j < toks.length && !temTexto(j)) j++;
+                     if (j < toks.length) i1 = j + 1; }
+    else if (i1 - 1 > i0) i1--;
+    else { let j = i0 - 1; while (j >= 0 && !temTexto(j)) j--;
+           if (j >= 0) i0 = j; }
+  } else {
+    let j = (passo > 0 ? i1 : i0 - 1);
+    while (j >= 0 && j < toks.length && !temTexto(j)) j += passo;
+    if (j < 0 || j >= toks.length) return;
+    i0 = j; i1 = j + 1;
+  }
+  selecionaFaixa(i0, i1);
+}
+
+document.addEventListener("keydown", (ev) => {
+  if (menu.style.display === "block" && ev.key === "Escape") {
+    fechaMenu(); return;
+  }
+  if (ev.key >= "1" && ev.key <= "7" && !ev.ctrlKey) {
+    poeUnidade(UNIDADES[+ev.key - 1]); ev.preventDefault(); return;
+  }
+  if (ev.ctrlKey && (ev.key === "z" || ev.key === "Z")) {
+    acao("desfazer"); ev.preventDefault(); return;
+  }
+  switch (ev.key) {
+    case "ArrowLeft":  andaToken(-1, ev.shiftKey); ev.preventDefault(); break;
+    case "ArrowRight": andaToken(+1, ev.shiftKey); ev.preventDefault(); break;
+    case "_": acao("menos", { lado: "esq" }); ev.preventDefault(); break;
+    case "+": acao("mais",  { lado: "esq" }); ev.preventDefault(); break;
+    case "-": acao("menos", { lado: "dir" }); ev.preventDefault(); break;
+    case "=": acao("mais",  { lado: "dir" }); ev.preventDefault(); break;
+    case "Backspace": case "Delete":
+      if (S.sel && S.sel.tipo === "faixa") acao("alterna", {});
+      ev.preventDefault(); break;
+    case " ":
+      espaco(); ev.preventDefault(); break;
+    case "Enter":
+      tocaSelecao(false); ev.preventDefault(); break;
+    case "Escape":
+      para(); S.sel = null; acao("nada"); ev.preventDefault(); break;
+  }
+});
+
+function poeUnidade(u) {
+  S.u = u;
+  for (const b of $("unid").children)
+    b.setAttribute("aria-pressed", +b.dataset.u === u);
+  acao("nada");
+}
+
+/* ==================================================================== */
+/*  audio: toca o corte, nao o original                                 */
+/* ==================================================================== */
+
+const A = { ctx: null, buf: null, fontes: [], t0: 0, mapa: null, rot: 0 };
+
+async function carregaAudio() {
+  if (A.buf) return A.buf;
+  A.ctx = new (window.AudioContext || window.webkitAudioContext)(
+    { sampleRate: S.doc.sr });     // mesma taxa do wav: nao reamostra 21 MB
+  const r = await fetch("/audio.wav");
+  A.buf = await A.ctx.decodeAudioData(await r.arrayBuffer());
+  return A.buf;
+}
+
+function para() {
+  for (const f of A.fontes) { try { f.stop(); } catch (e) {} }
+  A.fontes = []; A.mapa = null;
+  if (A.rot) cancelAnimationFrame(A.rot), A.rot = 0;
+  for (const el of S.els) if (el) el.classList.remove("toca");
+}
+
+async function toca(lista) {
+  /* Agenda um trecho de cada vez no relogio de amostra do Web Audio: e
+     assim que a emenda sai sem lacuna. O fade e o mesmo do config.toml,
+     senao a previa aqui deixaria de valer como julgamento do que o ffmpeg
+     vai produzir. */
+  para();
+  await carregaAudio();
+  if (A.ctx.state === "suspended") await A.ctx.resume();
+  const fade = S.doc.fade;
+  const t0 = A.ctx.currentTime + 0.06;
+  let saida = 0;
+  const mapa = [];
+  for (const [a, b] of lista) {
+    const d = b - a;
+    if (d <= 0.005) continue;
+    const src = A.ctx.createBufferSource();
+    src.buffer = A.buf;
+    const g = A.ctx.createGain();
+    g.gain.setValueAtTime(0, t0 + saida);
+    g.gain.linearRampToValueAtTime(1, t0 + saida + fade);
+    g.gain.setValueAtTime(1, t0 + saida + Math.max(fade, d - fade));
+    g.gain.linearRampToValueAtTime(0, t0 + saida + d);
+    src.connect(g).connect(A.ctx.destination);
+    src.start(t0 + saida, a, d);
+    A.fontes.push(src);
+    mapa.push([saida, saida + d, a]);
+    saida += d;
+  }
+  A.t0 = t0; A.mapa = mapa;
+  segue();
+}
+
+function segue() {
+  /* Acende a palavra que esta soando. Sem isso, "tocar a partir daqui"
+     faz perder o lugar no texto na primeira emenda. */
+  const passo = () => {
+    if (!A.mapa) return;
+    const t = A.ctx.currentTime - A.t0;
+    let fonte = null;
+    for (const [x, y, a] of A.mapa) if (t >= x && t < y) fonte = a + (t - x);
+    if (fonte === null) {
+      if (t > 0) { para(); return; }
+    } else acende(fonte);
+    A.rot = requestAnimationFrame(passo);
+  };
+  A.rot = requestAnimationFrame(passo);
+}
+
+let ultimoAceso = -1;
+function acende(t) {
+  const toks = S.est.pecas.tokens;
+  let achou = -1;
+  for (let i = 0; i < toks.length; i++)
+    if (toks[i].s <= t && t < toks[i].e) { achou = i; break; }
+  if (achou === ultimoAceso) return;
+  if (ultimoAceso >= 0 && S.els[ultimoAceso])
+    S.els[ultimoAceso].classList.remove("toca");
+  ultimoAceso = achou;
+  if (achou < 0) return;
+  const el = S.els[achou];
+  if (!el) return;
+  el.classList.add("toca");
+  const r = el.getBoundingClientRect();
+  if (r.top < 90 || r.bottom > innerHeight - 90)
+    el.scrollIntoView({ block: "center", behavior: "smooth" });
+}
+
+function recorta(ini, fim) {
+  const out = [];
+  for (const [a, b] of S.est.iv) {
+    const x = Math.max(a, ini), y = Math.min(b, fim);
+    if (y > x + 0.005) out.push([x, y]);
+  }
+  return out;
+}
+
+function tempoSel() {
+  /* Os tempos da selecao vem do servidor a cada gesto, junto com os
+     botoes: o primeiro instante de que o botao da esquerda fala e o
+     ultimo de que fala o da direita. Aqui basta o token. */
+  if (!S.sel) return null;
+  const toks = S.est.pecas.tokens;
+  if (S.sel.tipo === "caret") {
+    const p = toks[S.sel.i];
+    const t = p.s + (p.e - p.s) * S.sel.k / (S.sel.n || 1);
+    return [t, t];
+  }
+  return [toks[S.sel.i0].s, toks[S.sel.i1 - 1].e];
+}
+
+function tocaSelecao(ateOFim) {
+  const t = tempoSel();
+  if (!t) { toca(S.est.iv); return; }
+  toca(recorta(t[0], ateOFim ? S.doc.dur : Math.max(t[1], t[0] + 0.05)));
+}
+
+function espaco() {
+  if (A.ctx && A.ctx.state === "running" && A.mapa) { A.ctx.suspend(); return; }
+  if (A.ctx && A.ctx.state === "suspended" && A.mapa) { A.ctx.resume(); return; }
+  tocaSelecao(true);
+}
+
+/* ==================================================================== */
+/*  menus de botao direito                                              */
+/* ==================================================================== */
+
+function fechaMenu() { menu.style.display = "none"; }
+document.addEventListener("click", fechaMenu);
+document.addEventListener("scroll", fechaMenu, { passive: true });
+
+function abreMenu(x, y, itens) {
+  menu.textContent = "";
+  for (const it of itens) {
+    if (it === "-") { menu.appendChild(document.createElement("hr")); continue; }
+    const b = document.createElement("button");
+    b.textContent = it[0];
+    b.disabled = !!it[2];
+    b.onclick = () => { fechaMenu(); it[1](); };
+    menu.appendChild(b);
+  }
+  menu.style.display = "block";
+  menu.style.left = Math.min(x, innerWidth - 200) + window.scrollX + "px";
+  menu.style.top = Math.min(y, innerHeight - menu.offsetHeight - 8)
+    + window.scrollY + "px";
+}
+
+document.addEventListener("contextmenu", (ev) => {
+  ev.preventDefault();
+  if (!S.est) return;
+  const i = tokenDe(ev.target);
+  if (i !== null) {
+    const dentro = S.sel && S.sel.tipo === "faixa" &&
+      i >= S.sel.i0 && i < S.sel.i1;
+    if (!dentro) selecionaFaixa(i, i + 1);
+    const toks = S.est.pecas.tokens;
+    const oculto = (a, b) => {
+      let v = 0;
+      for (let j = a; j < b; j++)
+        v += toks[j].vivo.reduce((s, [x, y]) => s + (y - x), 0);
+      return v / Math.max(1, b - a) < 0.5;
+    };
+    const a = dentro ? S.sel.i0 : i, b = dentro ? S.sel.i1 : i + 1;
+    abreMenu(ev.clientX, ev.clientY, [
+      ["tocar", () => tocaSelecao(false)],
+      ["tocar a partir daqui", () => tocaSelecao(true)],
+      "-",
+      [oculto(a, b) ? "restaurar" : "ocultar", () => acao("alterna", {})],
+    ]);
+    return;
+  }
+  abreMenu(ev.clientX, ev.clientY, [
+    ["exportar áudio  (~1 min)", () => roda("audio")],
+    ["exportar vídeo  (~6 min)", () => roda("render")],
+    "-",
+    ["conferir o corte", () => roda("conferir")],
+    ["desfazer", () => acao("desfazer"), !S.est.podeDesfazer],
+  ]);
+});
+
+/* ==================================================================== */
+/*  exportar                                                            */
+/* ==================================================================== */
+
+let vigia = null;
+async function roda(cmd) {
+  para();
+  $("caixaLog").hidden = false;
+  $("logTit").textContent = cmd;
+  $("log").textContent = "iniciando...";
+  const r = await (await fetch("/rodar", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ cmd }),
+  })).json();
+  if (!r.ok) {                      // o servidor roda um de cada vez
+    $("logTit").textContent = "já está rodando";
+    return;
+  }
+  if (vigia) clearInterval(vigia);
+  vigia = setInterval(async () => {
+    const r = await (await fetch("/log")).json();
+    $("log").textContent = r.linhas.join("\n");
+    $("log").scrollTop = 1e6;
+    if (!r.rodando && r.rc !== null) {
+      clearInterval(vigia); vigia = null;
+      $("logTit").textContent = cmd + (r.rc === 0 ? " · pronto" : " · falhou");
+    }
+  }, 700);
+}
+
+/* ==================================================================== */
+/*  partida                                                             */
+/* ==================================================================== */
+
+(async function () {
+  S.doc = await (await fetch("/doc")).json();
+  S.est = S.doc.estado;
+  document.title = "tarocut · " + S.doc.nome;
+
+  const u = $("unid");
+  for (const v of UNIDADES) {
+    const b = document.createElement("button");
+    b.dataset.u = v;
+    b.textContent = v < 1000 ? v + " ms" : "1 s";
+    b.onclick = () => poeUnidade(v);
+    u.appendChild(b);
+  }
+  poeUnidade(S.u);
+  pinta();
+
+  if (S.doc.aviso) {
+    const d = document.createElement("div");
+    d.className = "aviso";
+    d.textContent = S.doc.aviso;
+    $("resumo").appendChild(d);
+  }
+  carregaAudio().catch(() => {});   // adianta os 21 MB antes do primeiro toque
+})();
+</script>
+</body>
+</html>

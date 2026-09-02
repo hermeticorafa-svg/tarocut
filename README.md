@@ -17,7 +17,9 @@ de progresso, e dá para cancelar no meio.
 
 A janela não faz nada que o terminal não faça: ela chama os mesmos comandos.
 O botão *Abrir transcript* abre o `.md` no seu editor de texto; o
-*2. Conferir corte* roda a conferência de geometria do passo 2b.
+*2. Conferir corte* roda a conferência de geometria do passo 2b; o
+*3. Editor* abre a transcrição no navegador (passo 3) e fica no ar até você
+fechar a aba — a janela continua usável enquanto isso.
 
 Uma coisa fica de fora, porque não é dela: **o passe de julgamento** —
 `/revisar` roda no Claude Code, numa janela nova (o porquê está no passo 2).
@@ -25,7 +27,7 @@ O botão *Copiar /revisar* põe o comando pronto na área de transferência, é 
 colar lá.
 
 As marcas na lista: `✎` transcript editado à mão, `★` anotações do Claude,
-`♪` prévia em áudio já gerada, `▶` já renderizado.
+`✂` ajustado no editor, `♪` prévia em áudio já gerada, `▶` já renderizado.
 
 ---
 
@@ -88,7 +90,34 @@ o que você mandou cortar não saiu — é bug, não gosto. O resto da lista é
 sugestão de onde prestar atenção. Fica salva em `work/<video>/conferir.txt`,
 na ordem em que você vai ouvir.
 
-**3. Revisão** — duas formas de ouvir o corte, nenhuma renderiza vídeo:
+**3. Ajuste fino** — a transcrição no navegador, com o que sai riscado:
+
+```bash
+venv\Scripts\python.exe tarocut.py editor "C:\Users\marip\Videos\IMG_0247.MOV"
+```
+
+Abre uma página com o texto do vídeo inteiro, ipsis litteris, e **riscado**
+tudo o que não vai sair no .mov — inclusive o que as anotações do passe de
+julgamento tiraram. Não tem linha do tempo, não tem forma de onda: é o
+texto.
+
+Clique numa palavra e ela é selecionada; arraste para pegar um trecho.
+Aparecem quatro botõezinhos, um par de cada lado: **o de menos esconde mais
+um tanto daquele lado, o de mais devolve.** O tanto é a *unidade*, escolhida
+no canto da tela entre 1 ms e 1 s (teclas `1` a `7`). O mais desfaz o menos
+exato, então dá para tatear. `backspace` oculta a palavra inteira (e
+restaura, se já estiver oculta); `ctrl+clique` põe o cursor entre duas
+letras, para quando o corte tem de cair no meio de uma palavra.
+
+**Botão direito no texto**: tocar a seleção, ou tocar dali em diante —
+sempre o corte, nunca o original, com `espaço` pausando. **Botão direito
+fora do texto**: exportar áudio, exportar vídeo, conferir.
+
+O que você faz aqui vai para `work/<video>/montagem.json`, sozinho, a cada
+gesto — não há botão de salvar. O `render` lê esse arquivo, então o corte
+que sai é o que você ouviu. `ctrl+z` desfaz.
+
+**3b. Ouvir sem abrir o editor** — duas formas, nenhuma renderiza vídeo:
 
 ```bash
 venv\Scripts\python.exe tarocut.py audio "C:\Users\marip\Videos\IMG_0247.MOV"
@@ -113,8 +142,8 @@ de volta:
 venv\Scripts\python.exe tarocut.py conferir "...IMG_0247.MOV" --em 3:05
 ```
 
-Ajuste no `anotacoes.json` (ou no `transcript.md`), rode de novo, repita até
-gostar. Só então renderize.
+Ajuste no editor (ou no `anotacoes.json`, ou no `transcript.md`), rode de
+novo, repita até gostar. Só então renderize.
 
 **4. Export**:
 

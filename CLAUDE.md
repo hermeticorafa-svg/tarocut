@@ -16,7 +16,8 @@ Sempre pelo Python do venv, nunca `python` solto:
 venv\Scripts\python.exe tarocut.py <comando> "C:\Users\marip\Videos\IMG_0247.MOV"
 ```
 
-Etapas, em ordem: `ingest → transcribe → align → analyze → draft → render`.
+Etapas, em ordem: `ingest → transcribe → align → analyze → draft →
+editor → render`.
 `run` faz ingest→draft; `lote` faz uma pasta inteira. Cada etapa tem cache;
 `--force` refaz. `tarocut.bat` abre a janela (`gui.py`), que só chama esses
 mesmos comandos.
@@ -28,6 +29,9 @@ mesmos comandos.
 | `tarocut.py` | tudo: CLI, pipeline, marcação, geometria do corte, render |
 | `alinhar.py` | wav2vec2 — fronteiras de palavra (o Whisper erra os tempos) |
 | `gui.py` | janela Tk; só dispara comandos e mostra estado |
+| `editor.py` | servidor do editor: a sessão, os gestos, o que a tela pergunta |
+| `editor.html` | a tela: a transcrição, os quatro botões, o motor de áudio |
+| `teste_editor.py` | as promessas do editor que quebram em silêncio |
 | `lexico.py` | gera `lexicon/terms.txt` a partir do livro do Yala |
 | `.claude/commands/revisar.md` | o passe de julgamento: o que o Claude lê e o que ele tem de conferir depois |
 | `config.toml` | **todos** os números do gosto de corte |
@@ -35,12 +39,24 @@ mesmos comandos.
 
 Estado por vídeo em `work/<video>/`: `meta.json`, `audio.wav`, `words.json`,
 `stream.json` (a fonte da verdade), `transcript.md`, `revisao.txt`,
-`anotacoes.json`.
+`anotacoes.json`, `montagem.json`.
 
-**O editor gráfico foi removido** (01/09). Era `editor.py` + `editor.html`,
-com estado em `work/<video>/edicao.json`; sai inteiro do histórico com
-`git show cf6e07e:editor.py`. Vai ser refeito do zero. Os `edicao.json` que
-sobraram em `work/` não são lidos por ninguém.
+As três camadas de decisão humana empilham nesta ordem, que é a ordem em
+que foram tomadas: `transcript.md` (apagar texto) → `anotacoes.json` (o
+passe de julgamento, trechos de tempo) → `montagem.json` (o editor). O
+`_base` monta as três; a última vence, por ser a mais explícita.
+
+`montagem.json` tem duas camadas, e a diferença entre elas é o arquivo
+inteiro. `tokens` são decisões de **palavra** e passam por toda a geometria
+de emenda — quem oculta uma palavra quer a palavra fora, não um número de
+milissegundos. `cortes` e `restauros` são trechos de **tempo**, os botões
+de mais e menos, e entram depois de tudo, sem snap e sem mínimo: quem pediu
+1 ms está olhando a palavra e quer 1 ms.
+
+**Não se chama `edicao.json`, e isso é de propósito.** Sobraram
+`edicao.json` em `work/` do editor removido em 01/09 (`git show
+cf6e07e:editor.py`), com outro formato e decisões de outra época. Passar a
+ler aqueles arquivos seria reimpor decisão velha em silêncio.
 
 ## O que não quebrar
 
@@ -74,10 +90,35 @@ decisões antigas em silêncio. Foi assim que uma anotação do IMG_0246 morreu
 (o `e` de 127,93s voltou ao vídeo). Não reintroduza um "arquivo antigo,
 passa".
 
-**Quando o editor voltar: o navegador não calcula corte.** Todo clique tem de
-ir ao servidor e voltar com os spans, vindos da mesma função que o `render`
-usa. Refazer a geometria em JS é mais rápido e mente em algum canto. Não
-porte `spans_corte` para o front.
+**O navegador não calcula corte.** Todo gesto vai ao servidor e volta com os
+trechos, vindos da mesma `intervalos()` que o `render` usa. Refazer a
+geometria em JS é mais rápido e mente em algum canto. Não porte
+`spans_corte` para o front — nem "só para desenhar".
+
+Isso vale até para as contas pequenas: qual trecho cada botão vai tirar ou
+devolver sai do `Sessao.gestos`, e a letra dentro da palavra vira tempo no
+`Sessao.selecao`. A tela manda "palavra 137, letra 4 de 8" e desenha a
+resposta.
+
+**O riscado sai dos trechos mantidos, não do `cut` do token.** É o que faz a
+tela mostrar o corte de verdade — inclusive o que uma anotação tirou e o que
+o snap raspou. Pintar pelo `cut` mostraria a *proposta*, e a diferença entre
+as duas é exatamente onde moram os defeitos deste programa.
+
+**Decisão de palavra caduca; trecho de tempo não.** Índice de token deixa de
+valer assim que a análise insere um token antes dele. Por isso cada decisão
+do `montagem.json` guarda o `s`/`e` da palavra em que foi tomada, e o
+`confere_montagem` recusa em vez de avisar — mesma regra do selo do
+`transcript.md`, só que por palavra. O editor guarda cópia em
+`montagem-anterior.json` antes de gravar por cima.
+
+**Ocultar palavra curta pode não ocultar nada.** `_respeita_palavras` recua
+a emenda `folga_palavra` (0,06 s) de cada palavra mantida vizinha, então uma
+palavra mais curta que 0,12 s fica coberta pelas duas folgas e sobrevive
+inteira — medido no `de` de 100,19s do IMG_0248. Não se conserta baixando a
+folga: 0,06 é o erro de fronteira medido do alinhador. O `Sessao.avisos`
+pergunta e a tela diz; o conserto é a pessoa terminar com o botão de menos,
+que passa por cima da geometria.
 
 **`align` é etapa separada por medição:** 72% dos fins de palavra do Whisper
 caem tarde (mediana +27 ms). Cortar pelos tempos do Whisper come o "s" final.
@@ -86,6 +127,12 @@ caem tarde (mediana +27 ms). Cortar pelos tempos do Whisper come o "s" final.
 posição da cabeça dela. `minimo`, `ilha_minima` e `snap` existem para isso.
 
 ## Verificar uma mudança
+
+Mexeu no editor ou na geometria? **`venv\Scripts\python.exe
+teste_editor.py`** roda nos três vídeos de calibração e checa o que quebra
+calado: o mais desfaz o menos exato, ocultar a palavra tira a palavra (ou
+avisa que não tirou), e o corte que a tela mostrou é byte a byte o que o
+`render` relê do disco.
 
 **Rode `conferir` antes de ouvir.** Ele lê o corte pela mesma função do
 `render` e lista só o suspeito: anotação desobedecida, fala cortada que

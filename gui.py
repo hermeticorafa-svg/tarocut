@@ -82,6 +82,8 @@ def estado(video):
             pass
     if (d / "anotacoes.json").exists():
         marcas += "★ "               # passe de julgamento feito
+    if (d / "montagem.json").exists():
+        marcas += "✂ "               # ajustado no editor
     if (Path(video).parent / f"{Path(video).stem}_previa.m4a").exists():
         marcas += "♪ "               # ja existe previa em audio
     if (d / f"{Path(video).stem}_cortado.mov").exists():
@@ -281,6 +283,7 @@ class App(tk.Tk):
         ttk.Label(quadro, foreground="#666",
                   text="✎ transcript editado     "
                        "★ anotações do Claude     "
+                       "✂ ajustado no editor     "
                        "♪ prévia em áudio     "
                        "▶ renderizado"
                   ).grid(row=1, column=0, sticky="w", pady=(4, 0))
@@ -309,7 +312,8 @@ class App(tk.Tk):
            lambda: self.roda(["conferir"], "conferência do corte"))
         bt("Abrir transcript", self.abre_transcript)
         sep()
-        bt("3. Ouvir prévia",
+        bt("3. Editor", self.abre_editor)
+        bt("Ouvir prévia",
            lambda: self.roda(["audio"], "prévia em áudio"))
         bt("Ver no mpv", lambda: self.roda(["previa"], "prévia em vídeo"))
         sep()
@@ -428,6 +432,50 @@ class App(tk.Tk):
         if self.job:
             self.job.cancelar()
             self.status.set("cancelando...")
+
+    def abre_editor(self):
+        """O editor nao passa pelo Job: ele fica no ar ate a pessoa fechar
+        a aba, e o Job existe para comandos que comecam e terminam. Trava-lo
+        aqui deixaria a janela inutil enquanto se edita.
+
+        Mas a saida dele vem para o log daqui, e e por isso que ele nao roda
+        escondido. O editor RECUSA abrir quando o transcript.md nao confere
+        com a analise - e recusa de proposito. Sem esta bomba, essa recusa
+        morria num console invisivel e o unico sintoma era o navegador nao
+        abrir, sem uma linha dizendo por que."""
+        v = self.exige_video()
+        if not v:
+            return
+        if not (WORK / v.stem / "stream.json").exists():
+            messagebox.showinfo("tarocut",
+                                "Esse vídeo ainda não foi analisado. "
+                                "Rode '1. Analisar' primeiro.")
+            return
+        argv = [str(PY), str(ROOT / "tarocut.py"), "editor", str(v)]
+        self._escreve(f"\n$ tarocut.py editor {v.name}\n", "gui")
+        try:
+            proc = subprocess.Popen(
+                argv, cwd=str(ROOT),
+                env=dict(os.environ, PYTHONIOENCODING="utf-8",
+                         PYTHONUNBUFFERED="1"),
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL, text=True,
+                encoding="utf-8", errors="replace",
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except OSError as e:
+            messagebox.showinfo("tarocut", f"não consegui abrir o editor: {e}")
+            return
+
+        def bomba():
+            for ln in proc.stdout:
+                ln = ln.rstrip()
+                if ln:
+                    self.fila.put(("linha", ln, False))
+            rc = proc.wait()
+            self.fila.put(("linha", f"[editor] fechado (código {rc})", False))
+
+        threading.Thread(target=bomba, daemon=True).start()
+        self.status.set(f"editor aberto no navegador: {v.name}")
 
     def abre_transcript(self):
         v = self.exige_video()
