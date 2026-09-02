@@ -16,8 +16,7 @@ Efeito colateral valioso: o que sobra entre duas palavras alinhadas e mesmo
 uma lacuna. O detector acustico de "voz sem texto" deixa de brigar com ruido
 de alinhamento e passa a apontar cacoete de verdade.
 """
-import re, sys, time, unicodedata, wave
-from pathlib import Path
+import re, time, wave
 
 import numpy as np
 
@@ -77,7 +76,6 @@ class Alinhador:
         import torch
         from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
         self.torch = torch
-        torch.set_num_threads(max(1, (torch.get_num_threads() or 4)))
         if not quiet:
             print(f"[align] carregando {MODELO} ...", flush=True)
         self.proc = Wav2Vec2Processor.from_pretrained(MODELO)
@@ -151,7 +149,7 @@ def carrega_wav(p):
     return pcm.astype(np.float32) / 32768.0
 
 
-def blocos(words, max_s=22.0, folga=0.35):
+def blocos(words, max_s=22.0):
     """Fatia em pedacos curtos: wav2vec2 grande nao cabe na memoria com 10
     minutos de audio de uma vez. Corta nas maiores pausas para nao partir
     palavra."""

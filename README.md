@@ -16,16 +16,16 @@ passo do fluxo abaixo — o log do que está rodando aparece embaixo, com barra
 de progresso, e dá para cancelar no meio.
 
 A janela não faz nada que o terminal não faça: ela chama os mesmos comandos.
-O botão *2. Editor* abre o editor de corte no navegador (descrito abaixo); o
-*Abrir transcript* abre o `.md` no seu editor de texto, se preferir mexer lá.
+O botão *Abrir transcript* abre o `.md` no seu editor de texto; o
+*2. Conferir corte* roda a conferência de geometria do passo 2b.
 
 Uma coisa fica de fora, porque não é dela: **o passe de julgamento** —
 `/revisar` roda no Claude Code, numa janela nova (o porquê está no passo 2).
 O botão *Copiar /revisar* põe o comando pronto na área de transferência, é só
 colar lá.
 
-As marcas na lista: `✎` transcript editado à mão, `✂` editado no editor,
-`★` anotações do Claude, `♪` prévia em áudio já gerada, `▶` já renderizado.
+As marcas na lista: `✎` transcript editado à mão, `★` anotações do Claude,
+`♪` prévia em áudio já gerada, `▶` já renderizado.
 
 ---
 
@@ -56,6 +56,11 @@ tarefa. O passe de julgamento precisa só da transcrição de um vídeo — feit
 numa conversa longa, arrasta junto todo o histórico a cada resposta. Numa
 janela limpa ele lê 1,3 mil tokens em vez de arrastar 170 mil.
 
+O comando mora em `.claude/commands/revisar.md` — dá para ler e mudar o que
+ele faz. Ele mesmo roda o `conferir` do passo 2b depois de escrever as
+anotações e só termina quando nenhuma delas ficou para trás; o 2b abaixo é
+a sua conferência, quando quiser olhar com os próprios olhos.
+
 O `tarocut.py revisar` existe só para isso: escreve um `revisao.txt` que
 colapsa o que já está cortado em marcadores de duração. Um vídeo de 10 min
 cabe em ~1,3 mil tokens, contra 32 mil do `stream.json`.
@@ -72,35 +77,18 @@ decide **o que sai** — é julgamento de conteúdo, e só uma cabeça faz. O
 não substitui o outro: já aconteceu de uma anotação certa ser anulada pelo
 cálculo do corte e ninguém perceber até você ouvir.
 
-A regra é uma só: **nenhuma linha `ANOTACAO NAO OBEDECIDA`.** Se aparecer,
-o que você mandou cortar não saiu — é bug, não gosto. O resto da lista é
-sugestão de onde prestar atenção. Fica salva em `work/<video>/conferir.txt`,
-na ordem em que você vai ouvir.
-
-**3. Revisão** — o editor (a seção seguinte) é o caminho normal: mostra a
-transcrição, toca o corte na hora e deixa aparar emenda no milissegundo.
-
-```bash
-venv\Scripts\python.exe tarocut.py editor "C:\Users\marip\Videos\IMG_0247.MOV"
-```
-
-Fora dele há mais três formas, nenhuma renderiza vídeo:
-
-```bash
-venv\Scripts\python.exe tarocut.py conferir "C:\Users\marip\Videos\IMG_0247.MOV"
-```
-
 Não gera nada: **olha o corte e reclama.** Em um segundo, lista só o que
 merece o seu ouvido — trecho que você mandou cortar e continua tocando, fala
 sobrevivendo dentro do trecho mantido, ilha de meio segundo entre dois
 cortes, palavra raspada na borda. Cada linha vem com os dois tempos: o da
 fonte, para anotar, e o da prévia, para achar de ouvido.
 
-E o contrário também, quando você ouviu algo estranho e quer saber onde é:
+A regra é uma só: **nenhuma linha `ANOTACAO NAO OBEDECIDA`.** Se aparecer,
+o que você mandou cortar não saiu — é bug, não gosto. O resto da lista é
+sugestão de onde prestar atenção. Fica salva em `work/<video>/conferir.txt`,
+na ordem em que você vai ouvir.
 
-```bash
-venv\Scripts\python.exe tarocut.py conferir "...IMG_0247.MOV" --em 3:05
-```
+**3. Revisão** — duas formas de ouvir o corte, nenhuma renderiza vídeo:
 
 ```bash
 venv\Scripts\python.exe tarocut.py audio "C:\Users\marip\Videos\IMG_0247.MOV"
@@ -118,8 +106,15 @@ venv\Scripts\python.exe tarocut.py previa "C:\Users\marip\Videos\IMG_0247.MOV"
 Abre no mpv tocando direto do original, via EDL — instantâneo, e com imagem,
 quando a dúvida for visual (pulo de cabeça na emenda).
 
-Ajuste no editor (ou no `transcript.md`, ou no `anotacoes.json`), rode de
-novo, repita até gostar. Só então renderize.
+Ouviu algo estranho e quer saber onde é na fonte? O `conferir` faz o caminho
+de volta:
+
+```bash
+venv\Scripts\python.exe tarocut.py conferir "...IMG_0247.MOV" --em 3:05
+```
+
+Ajuste no `anotacoes.json` (ou no `transcript.md`), rode de novo, repita até
+gostar. Só então renderize.
 
 **4. Export**:
 
@@ -131,65 +126,6 @@ Sai um `.mov` cortado, com o volume corrigido, pronto pro CapCut.
 
 Os passos 2 e 3 são opcionais: sem eles, o render usa as propostas
 automáticas.
-
----
-
-## O editor
-
-```bash
-venv\Scripts\python.exe tarocut.py editor "C:\Users\marip\Videos\IMG_0247.MOV"
-```
-
-Abre no navegador. Roda na sua máquina, como o resto — o servidor só escuta
-em `127.0.0.1` e morre quando você fecha o terminal.
-
-**Em cima, a transcrição.** Fundo alternando a cada timestamp, o que está
-marcado para corte riscado e apagado, o que você mesmo decidiu com um traço
-laranja embaixo. Clique numa palavra para cortar ou devolver; `shift+clique`
-faz do último clique até ali; `alt+clique` toca daquele ponto. Passar o mouse
-mostra por que aquilo foi marcado.
-
-**Embaixo, o áudio.** A onda do vídeo inteiro na tira fina, a região ampliada
-embaixo dela. Verde é o que fica, vermelho é o que sai — e a linha rosa é a
-emenda. `Espaço` toca, e o que se ouve **já é o corte**: os trechos são
-emendados na hora, com o mesmo micro-fade do render. Mexeu numa palavra, o
-áudio muda na próxima batida, sem renderizar nada.
-
-**Ajuste fino.** `,` e `.` pulam de emenda em emenda; `-` tira 1 ms de áudio
-junto ao cursor e `=` devolve 1 ms (com `shift`, 10 ms). Segure a tecla e ele
-vai comendo. As duas escolhem sozinhas o lado que ainda tem áudio, que numa
-emenda é sempre o que sobrou grande demais; `del` e `backspace` forçam o lado
-direito e o esquerdo, quando você quiser mandar. Arrastar na onda seleciona,
-e aí `del` corta o trecho e `r` devolve. `Ctrl+Z` desfaz tudo isso, palavra e
-milissegundo na mesma pilha.
-
-Salva sozinho, em `work/<video>/edicao.json`. `Ctrl+S` força.
-
-### Por que o que se ouve é o que sai
-
-O navegador não calcula corte nenhum. A cada clique ele manda o estado para o
-servidor e recebe de volta a lista de trechos, vinda da **mesma função que o
-`render` usa** — mesmo snap, mesma fusão de ilhas, mesmo corte mínimo.
-Refazer essa geometria em JavaScript seria mais rápido e mentiria em algum
-canto, mais cedo ou mais tarde.
-
-O `edicao.json` tem duas camadas, e a diferença entre elas é o ponto:
-
-- **`tokens`** — decisões de palavra, do mesmo tipo que apagar texto no
-  `.md`. Passam por toda a geometria: quem clica numa palavra quer a palavra
-  fora, não um número exato de milissegundos.
-- **`cortes` e `restauros`** — trechos de tempo desenhados na onda. Entram
-  **depois de tudo**, sem snap e sem mínimo. Um ajuste de 1 ms não
-  sobreviveria ao filtro de corte mínimo, e não deve mesmo: quem pediu 1 ms
-  está olhando a onda.
-
-O editor entra **depois** do `transcript.md`, e ganha dele — é a decisão mais
-recente e a mais explícita. Dá para usar os dois; não dá para esperar que o
-`.md` vença no mesmo trecho.
-
-Se você reanalisar o vídeo (`run --force`), o `edicao.json` fica com o selo
-velho e o `render` **para** em vez de aplicar decisões de índices que mudaram
-de lugar. Abra o editor de novo, ou apague o arquivo.
 
 ---
 
@@ -280,7 +216,9 @@ O léxico fica em `lexicon/`:
 | `align` | alinhamento forçado: as **fronteiras** de palavra |
 | `analyze` | cruza transcrição com energia do áudio, acha o que foi engolido, propõe cortes |
 | `draft` | escreve o `transcript.md` |
-| `editor` | abre o editor de corte no navegador |
+| `revisar` | escreve o `revisao.txt` para o passe de julgamento |
+| `conferir` | olha a geometria do corte e reclama, sem gerar nada |
+| `audio` | corte só em áudio, para julgar de ouvido |
 | `previa` | toca o corte no mpv, sem renderizar |
 | `render` | aplica os cortes e normaliza o volume |
 | `run` | ingest → draft |

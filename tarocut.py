@@ -276,6 +276,13 @@ def initial_prompt():
 # ------------------------------------------------------------------- ingest
 
 def cmd_ingest(a):
+    # As outras etapas aceitam o nome curto ("IMG_0247") porque o `wdir`
+    # resolve. Esta nao: ela e quem escreve o meta.json com o caminho de
+    # verdade. Sem esta linha, o nome curto derrubava o ffprobe e saia um
+    # traceback com KeyError: 'streams'.
+    if not Path(a.video).exists():
+        sys.exit(f"[ingest] nao achei {a.video} - esta etapa precisa do "
+                 f"caminho do arquivo, nao do nome curto.")
     d = wdir(a.video)
     r = run([FFPROBE, "-v", "error", "-print_format", "json",
              "-show_format", "-show_streams", a.video])
@@ -309,7 +316,7 @@ def cmd_transcribe(a):
     modelo = a.model or c["model"]
     print(f"[transcribe] modelo={modelo} ({c['compute_type']}) ...", flush=True)
     m = WhisperModel(modelo, device="cpu", compute_type=c["compute_type"])
-    segs, info = m.transcribe(
+    segs, _ = m.transcribe(
         str(d / "audio.wav"), language=c["language"],
         word_timestamps=True, vad_filter=True,
         vad_parameters=dict(min_silence_duration_ms=300),
@@ -403,7 +410,7 @@ def resolve_suspeitos(stream, escuta, ch, sempre, dens_min, db, hop, limiar):
     uma repeticao) ou parece cacoete. Se for conteudo novo, PRESERVA - fala
     perdida nao pode virar corte silencioso."""
     novos, n = [], 0
-    for i, t in enumerate(stream):
+    for t in stream:
         if not t.get("suspeito"):
             novos.append(t)
             continue
@@ -632,10 +639,6 @@ def detecta_tentativas(stream, min_ngram=3, janela_s=30.0, max_span=15.0,
         })
         consumido.update(range(a, b))
     return cadeias
-
-
-RE_SO_NUM = re.compile(r"^[\d.,:/-]+$")
-
 
 
 def eh_hesitacao(lac, palavra_antes, sempre, ch, limiar):
@@ -979,7 +982,6 @@ def cmd_analyze(a):
         l["texto"] = "" if mot else txt
         if k % 10 == 0 or k == len(alvo):
             print(f"  ... {k}/{len(alvo)}", flush=True)
-    (d / "_clip.wav").unlink(missing_ok=True)
 
     # --- funde tudo num unico fluxo ------------------------------------
     sempre, contextual = carrega_fillers()
@@ -1032,6 +1034,10 @@ def cmd_analyze(a):
                                ch["densidade_minima"], db, hop, limiar)
     if n_susp:
         print(f"[analyze] trechos de duracao impossivel resolvidos: {n_susp}")
+    # o `escuta` acima escreve _clip.wav a cada trecho, e `resolve_suspeitos`
+    # chama de novo depois desta linha; apagar antes dela deixava o arquivo
+    # para tras em toda pasta de trabalho.
+    (d / "_clip.wav").unlink(missing_ok=True)
     n_eco = marca_ecos(stream)
     if n_eco:
         print(f"[analyze] retomadas colapsadas: {n_eco}")
@@ -1051,7 +1057,12 @@ def cmd_analyze(a):
     print(f"[analyze] cadeias de tentativa: {len(cadeias)} "
           f"({n_tent} tokens, {sum(c['dur'] for c in cadeias):.0f}s)")
 
-    jdump({"lacunas": lacunas, "stream": stream, "cadeias": cadeias,
+    # `ini`/`fim` sao indices no fluxo, e `resolve_suspeitos` inseriu tokens
+    # depois que eles foram calculados: gravados, apontariam para o lugar
+    # errado. Ja foram usados (por `marca_tentativas`) e nao servem mais.
+    jdump({"lacunas": lacunas, "stream": stream,
+           "cadeias": [{k: v for k, v in c.items() if k not in ("ini", "fim")}
+                       for c in cadeias],
            "anotacoes": anot, "dur": dur_total}, d / "stream.json")
 
     ncut = sum(1 for t in stream if t["cut"])
@@ -1116,10 +1127,10 @@ def blocos(st):
     """Fatia o fluxo em blocos de transcricao: uma pausa longa fecha o
     bloco, e sem pausa ele fecha no tamanho maximo.
 
-    Vive aqui, e nao dentro do `cmd_draft`, porque o editor grafico precisa
-    da MESMA fatia. As ancoras `[b###]` sao o vocabulario comum entre o
-    transcript.md e a tela: se cada um cortasse os blocos a seu modo, o
-    mesmo trecho teria dois nomes."""
+    As ancoras `[b###]` sao o nome publico de cada trecho - e por elas que
+    se fala de um pedaco do video sem citar tempo. Fica fora do `cmd_draft`
+    para que quem precisar da MESMA fatia (uma tela, um relatorio) nao a
+    corte a seu modo e de dois nomes ao mesmo trecho."""
     out, i0, bid = [], 0, 1
     for i, t in enumerate(st):
         if (t["k"] == "silencio" and t["e"] - t["s"] > 1.5) or i - i0 > 89:
@@ -1227,15 +1238,32 @@ def selo_stream(stream):
 def confere_atualidade(md, stream):
     """O transcript.md corresponde ao stream.json atual?
 
-    O cabecalho guarda a contagem de tokens. Se a analise rodou de novo e o
-    draft nao, o `reconcilia` reimpoe em silencio as decisoes antigas por
-    cima das novas - foi assim que um corte ja consertado reapareceu no
-    render. Melhor recusar e mandar rodar `draft` do que editar no escuro."""
+    Se a analise rodou de novo e o draft nao, o `reconcilia` reimpoe em
+    silencio as decisoes antigas por cima das novas - foi assim que um corte
+    ja consertado reapareceu no render. Melhor recusar e mandar rodar
+    `draft` do que editar no escuro.
+
+    CABECALHO SEM SELO TAMBEM E RECUSA. Aqui havia um `return True` para
+    "arquivo antigo, sem selo", e ele custou uma anotacao: o transcript.md
+    do IMG_0246 vinha de uma versao anterior do programa (382 tokens contra
+    383), passava batido, e o `reconcilia` casava o "e" de 127,93s - que uma
+    anotacao mandou cortar - com o "e" seguinte, que fica. Resultado: um
+    trecho julgado por uma pessoa voltava ao video sem uma linha de aviso.
+    Quarto caminho encontrado para o mesmo defeito. Nao se le cabecalho que
+    nao da para conferir.
+
+    O selo cobre o que a contagem de tokens nao cobria: a analise pode mudar
+    QUAIS trechos saem sem mudar QUANTOS tokens existem."""
     m = re.search(r"selo=([0-9a-f]{10})", md.read_text(encoding="utf-8")[:400])
-    if not m:
-        return True                      # arquivo antigo, sem selo
-    if m.group(1) == selo_stream(stream):
+    if m and m.group(1) == selo_stream(stream):
         return True
+    if not m:
+        print("[aviso] o transcript.md nao tem selo: e de uma versao "
+              "anterior do programa e nao da para conferir contra a analise "
+              "de agora.")
+        print("[aviso] rode 'draft' antes (as marcas ⟨ ⟩ que voce tiver "
+              "posto a mao se perdem; copie o arquivo se quiser guarda-las).")
+        return False
     print("[aviso] o transcript.md nao corresponde ao stream.json atual: "
           "a analise rodou de novo depois dele.")
     print("[aviso] rode 'draft' antes, ou as edicoes antigas vao valer.")
@@ -1267,113 +1295,6 @@ def reconcilia(stream, editado):
             t["cut"], t["why"] = True, "apagado no texto"
             apagados += 1
     return apagados
-
-# ------------------------------------------------- camada do editor grafico
-
-def _spans(v, ordena=True):
-    """Normaliza uma lista de [ini, fim]: descarta lixo, ordena e funde o
-    que se toca. Sem isso, mil ajustes de 1 ms viram mil trechos no
-    arquivo.
-
-    LARGURA ZERO NAO E GESTO. `b > a` deixava passar `[37.19, 37.19+5e-15]`
-    - ruido de ponto flutuante, nao clique de ninguem. E `aplica_manual`
-    parte o trecho mantido em cada corte que recebe, entao cinco desses no
-    edicao.json do IMG_0246 estilhacaram "Os Arcanos" em cinco cacos de
-    0,10s, cada um com fade de 10 ms na entrada e na saida: metralhadora.
-    1 ms e o mesmo limite que `aplica_manual` ja usava na saida - a 48 kHz
-    sao 48 amostras, e ninguem arrasta isso com o mouse."""
-    out = []
-    for x in v or []:
-        try:
-            a, b = float(x[0]), float(x[1])
-        except (TypeError, ValueError, IndexError, KeyError):
-            continue
-        if b - a > 0.001:
-            out.append([a, b])
-    if ordena:
-        out.sort()
-    fund = []
-    for a, b in out:
-        if fund and a <= fund[-1][1] + 1e-9:
-            fund[-1][1] = max(fund[-1][1], b)
-        else:
-            fund.append([a, b])
-    return fund
-
-
-def carrega_edicao(d):
-    """work/<video>/edicao.json - o que o editor grafico decidiu.
-
-    Duas camadas, e a diferenca entre elas e o ponto todo do arquivo.
-
-    `tokens` sao decisoes de PALAVRA, do mesmo tipo que apagar texto no
-    transcript.md: passam por toda a geometria de emenda (fusao, snap,
-    corte minimo, respeito a palavra vizinha), porque quem clica numa
-    palavra quer a palavra fora, nao um numero exato de milissegundos.
-
-    `cortes` e `restauros` sao trechos de TEMPO desenhados na onda. Entram
-    DEPOIS de tudo, sem snap e sem minimo: um ajuste de 1 ms nao
-    sobreviveria ao filtro de corte minimo, e nao deve mesmo sobreviver a
-    ele - quem pediu 1 ms esta olhando a onda e quer 1 ms."""
-    p = d / "edicao.json"
-    if not p.exists():
-        return None
-    try:
-        ed = jload(p)
-    except Exception as e:
-        print(f"[editor] edicao.json ilegivel ({e}); ignorando")
-        return None
-    if not isinstance(ed, dict):
-        return None
-    ed["tokens"] = ed.get("tokens") or {}
-    ed["cortes"] = _spans(ed.get("cortes"))
-    ed["restauros"] = _spans(ed.get("restauros"))
-    return ed
-
-
-def aplica_edicao(stream, ed):
-    """Camada de palavra. Vence o transcript.md por ser a decisao mais
-    recente e a mais explicita - no editor a pessoa clicou naquela palavra;
-    no .md ela pode so ter deixado como veio."""
-    n = 0
-    for k, estado in (ed.get("tokens") or {}).items():
-        try:
-            t = stream[int(k)]
-        except (ValueError, TypeError, IndexError):
-            continue
-        novo = (estado == "cortar")
-        if t["cut"] != novo:
-            n += 1
-        t["cut"] = novo
-        t["why"] = "cortado no editor" if novo else "mantido no editor"
-    return n
-
-
-def aplica_manual(manter, ed, dur):
-    """Camada de tempo, aplicada por ultimo e sem arredondar nada.
-
-    Restaura primeiro e corta depois: entre dois gestos que se sobrepoem, o
-    corte e a palavra final. Nada aqui passa por snap, fusao ou minimo -
-    seria desfazer, no escuro, o ajuste que a pessoa fez olhando a onda."""
-    if not ed:
-        return manter
-    iv = [[a, b] for a, b in manter]
-    for a, b in ed.get("restauros") or []:
-        iv.append([max(0.0, a), min(dur, b)])
-    iv = _spans(iv)
-    for ca, cb in ed.get("cortes") or []:
-        novo = []
-        for a, b in iv:
-            if cb <= a or ca >= b:
-                novo.append([a, b])
-                continue
-            if a < ca:
-                novo.append([a, ca])
-            if cb < b:
-                novo.append([cb, b])
-        iv = novo
-    return [(round(a, 4), round(b, 4)) for a, b in iv if b - a > 0.001]
-
 
 # -------------------------------------------------------- montagem do corte
 
@@ -1418,7 +1339,7 @@ def spans_corte(stream, C, anot=None, dur=None):
     pausa e deixa-se metade do respiro colado em cada fala vizinha. Antes eu
     guardava uma lasca do meio da pausa, o que punha na tela 0,45s da cabeca
     dela numa posicao sem relacao com nenhum dos lados."""
-    cs, cc = C["silencio"], C["corte"]
+    cs = C["silencio"]
     alvo = cs["pausa_alvo"]
     out = []
     n = len(stream)
@@ -1621,16 +1542,15 @@ def _garante_ilhas(cortes, minimo, stream):
     return [c for c in saida if c[1] > c[0]]
 
 
-def intervalos(stream, C, dur, db=None, hop=0.02, anot=None, manual=None):
+def intervalos(stream, C, dur, db=None, hop=0.02, anot=None):
     """Fluxo -> lista de trechos a MANTER."""
     cc = C["corte"]
 
     # `minimo` existe contra emenda invisivel: economizar 0,2s nao paga um
     # pulo na tela. Mas ele nao tem o que dizer sobre um trecho que uma
-    # PESSOA marcou para sair. O `aplica_manual` ja sabia disso ("nada aqui
-    # passa por snap, fusao ou minimo - seria desfazer, no escuro, o ajuste
-    # que a pessoa fez"); a anotacao de julgamento e a mesma decisao humana
-    # escrita noutro arquivo, e estava sujeita ao filtro.
+    # PESSOA marcou para sair: desfazer no escuro o corte que alguem pediu
+    # olhando o texto e o mesmo erro que desfazer o ajuste de quem olha a
+    # onda.
     #
     # MEDIDO: um "ééé" de 0,35s anotado vira corte de 0,35s, perde 0,06 de
     # folga de cada lado e sai com 0,23 - abaixo de 0,28. A anotacao era
@@ -1672,52 +1592,55 @@ def intervalos(stream, C, dur, db=None, hop=0.02, anot=None, manual=None):
         t = max(t, b)
     if t < dur - 0.02:
         manter.append([t, dur])
-    iv = [(round(a, 3), round(b, 3)) for a, b in manter if b - a > 0.05]
-    return aplica_manual(iv, manual, dur)
+    return [(round(a, 3), round(b, 3)) for a, b in manter if b - a > 0.05]
+
+
+def trecho_audio(i, a, b, fade):
+    """Um trecho de audio aparado, com o micro-fade das duas pontas.
+
+    Mora aqui porque o `audio` e o `render` tem de emendar do mesmo jeito: a
+    previa em .m4a so vale como julgamento enquanto for exatamente o que o
+    .mov vai receber. Eram duas copias identicas desta linha, uma em cada
+    comando - o tipo de par que so se descobre desalinhado tarde, ouvindo."""
+    return (f"[0:a]atrim=start={a}:end={b},asetpts=PTS-STARTPTS,"
+            f"afade=t=in:st=0:d={fade},"
+            f"afade=t=out:st={max(0, b - a - fade):.3f}:d={fade}[a{i}];")
 
 
 def grafo(iv, C, escala=None, fps=None):
     fade = C["audio"]["fade"]
     L, vs, as_ = [], [], []
     for i, (a, b) in enumerate(iv):
-        d = b - a
         L.append(f"[0:v]trim=start={a}:end={b},setpts=PTS-STARTPTS[v{i}];")
-        af = (f",afade=t=in:st=0:d={fade}"
-              f",afade=t=out:st={max(0, d-fade):.3f}:d={fade}")
-        L.append(f"[0:a]atrim=start={a}:end={b},"
-                 f"asetpts=PTS-STARTPTS{af}[a{i}];")
+        L.append(trecho_audio(i, a, b, fade))
         vs.append(f"[v{i}]")
         as_.append(f"[a{i}]")
     pares = "".join(v + a for v, a in zip(vs, as_))
     L.append(f"{pares}concat=n={len(iv)}:v=1:a=1[vc][ao];")
-    cadeia = "[vc]"
     filtros = []
     if escala:
         filtros.append(f"scale=-2:{escala}")
     if fps:
         filtros.append(f"fps={fps}")
     filtros.append("null")
-    L.append(cadeia + ",".join(filtros) + "[vo]")
+    L.append("[vc]" + ",".join(filtros) + "[vo]")
     return "\n".join(L)
 
 
-def _base(video, rotulo, ignorar_edicao=False, aplicar_ed=True):
+def _base(video, rotulo, ignorar_transcript=False):
     """Tudo o que precede o calculo dos trechos: le o fluxo analisado e
     empilha por cima dele as decisoes humanas.
 
-    Devolve as pecas em vez do resultado porque o editor grafico precisa
-    delas soltas - ele recalcula os trechos a cada clique, com o estado que
-    esta na tela e ainda nao foi salvo, e nao pode reler o disco a cada
-    vez. Assim o que se ouve no editor sai da MESMA funcao que o render usa,
-    e nao de uma reimplementacao parecida."""
+    Devolve as pecas soltas, e nao o corte pronto, porque `conferir` precisa
+    do fluxo E dos trechos para dizer o que ficou de fora do que se mandou
+    cortar."""
     C = cfg()
     d = wdir(video)
     S = jload(d / "stream.json")
     stream, dur = S["stream"], S["dur"]
-    selo = selo_stream(stream)
 
     md = d / "transcript.md"
-    if md.exists() and not ignorar_edicao:
+    if md.exists() and not ignorar_transcript:
         if not confere_atualidade(md, stream):
             sys.exit(f"[{rotulo}] abortado: transcript.md desatualizado")
         n = reconcilia(stream, parse_transcript(md))
@@ -1725,22 +1648,6 @@ def _base(video, rotulo, ignorar_edicao=False, aplicar_ed=True):
               f"({n} tokens apagados a mao)")
     else:
         print(f"[{rotulo}] usando as propostas automaticas")
-
-    # o editor entra DEPOIS do .md de proposito: e a decisao mais recente
-    ed = None if ignorar_edicao else carrega_edicao(d)
-    # Selo velho = a analise rodou de novo e os indices de token mudaram de
-    # lugar. Aplicar mesmo assim cortaria palavras a esmo. So o editor
-    # continua: la o arquivo e reconciliado (a camada de tempo sobrevive, a
-    # de palavra nao) e regravado com o selo novo.
-    if ed and aplicar_ed and ed.get("selo") and ed["selo"] != selo:
-        sys.exit(f"[{rotulo}] abortado: edicao.json e de outra analise. "
-                 f"Abra o editor de novo (ele reconcilia) ou apague o "
-                 f"arquivo.")
-    if ed and aplicar_ed:
-        n = aplica_edicao(stream, ed)
-        print(f"[{rotulo}] edicao.json aplicado ({n} tokens mudados, "
-              f"{len(ed['cortes'])} cortes finos, "
-              f"{len(ed['restauros'])} restauros)")
 
     db = hop = None
     wav = d / "audio.wav"
@@ -1752,10 +1659,31 @@ def _base(video, rotulo, ignorar_edicao=False, aplicar_ed=True):
                              carrega_anotacoes(d) or S.get("anotacoes", []))
     if anot:
         print(f"[{rotulo}] {len(anot)} trechos anotados aplicados")
-    return C, d, stream, dur, db, hop or 0.02, anot, ed, selo
+    return C, d, stream, dur, db, hop or 0.02, anot
 
 
-def confere_pelo_whisper(d, stream, iv, rotulo):
+def anotacoes_desobedecidas(anot, iv, tol=0.15):
+    """Anotacao que foi lida, aplicada, e mesmo assim continua no video.
+
+    A pergunta mora aqui, uma vez so, porque duas partes precisam dela: o
+    `conferir`, que lista tudo o que merece ouvido, e o `_plano`, que avisa
+    antes de gastar minutos gerando audio ou video. Ja se acharam QUATRO
+    caminhos pelos quais julgamento humano sumia no calculo do corte, e o
+    que eles tinham em comum nao era a causa - era ninguem perguntar.
+
+    `tol` e folga de borda, nao gosto: `folga_palavra` recua a emenda 0,06s
+    de cada lado da palavra mantida vizinha, entao uma anotacao cercada de
+    fala sobra ~0,12s por construcao. Acima disso e outra coisa."""
+    fora = []
+    for an in anot or []:
+        x, y = an["ini"], an["fim"]
+        vivo = sum(max(0.0, min(y, b) - max(x, a)) for a, b in iv)
+        if vivo > tol:
+            fora.append((x, y, vivo, str(an.get("motivo", ""))))
+    return fora
+
+
+def confere_pelo_whisper(d, C, stream, iv, rotulo):
     """Ultima conferencia antes de gastar minutos gerando audio ou video.
 
     Todo o resto do programa raciocina sobre os tempos do ALINHADOR. Quando
@@ -1777,7 +1705,7 @@ def confere_pelo_whisper(d, stream, iv, rotulo):
     if len(W) != len(pal):
         return 0            # sem correspondencia 1:1 nao da para conferir
 
-    fundo = cfg()["alinhamento"]["enterrada_min"]
+    fundo = C["alinhamento"]["enterrada_min"]
     suspeitas = []
     for t, w in zip(pal, W):
         if t["cut"]:
@@ -1823,13 +1751,20 @@ def confere_pelo_whisper(d, stream, iv, rotulo):
 
 
 def _plano(a, rotulo):
-    """Etapas comuns a render e previa: aplica a edicao manual e calcula
-    os trechos a manter."""
-    C, d, stream, dur, db, hop, anot, ed, _ = _base(
-        a.video, rotulo, getattr(a, "ignorar_edicao", False))
-    iv = intervalos(stream, C, dur, db, hop, anot, ed)
-    confere_pelo_whisper(d, stream, iv, rotulo)
-    return C, d, stream, dur, iv
+    """Etapas comuns a render, audio e previa: aplica as decisoes humanas e
+    calcula os trechos a manter."""
+    C, d, stream, dur, db, hop, anot = _base(
+        a.video, rotulo, getattr(a, "ignorar_transcript", False))
+    iv = intervalos(stream, C, dur, db, hop, anot)
+    # O `conferir` ja fazia esta pergunta, e so quem lembrava de roda-lo
+    # ouvia a resposta. Aqui ela e feita no caminho que TODO mundo passa
+    # antes de gastar minutos: e o unico defeito deste programa que o
+    # ouvido nao pega, porque o que sumiu nao faz barulho nenhum.
+    for x, y, vivo, motivo in anotacoes_desobedecidas(anot, iv):
+        print(f"[{rotulo}] AVISO: a anotacao {x:.2f}-{y:.2f} nao foi "
+              f"obedecida - {vivo:.2f}s continuam no video: {motivo[:60]}")
+    confere_pelo_whisper(d, C, stream, iv, rotulo)
+    return C, d, dur, iv
 
 
 def escreve_edl(d, src, iv):
@@ -2069,8 +2004,9 @@ def cmd_conferir(a):
     Alarme que dispara em 70% das emendas e papel de parede. O que aquele
     teste queria pegar - silaba comida - virou a folga de 0,06 no
     config.toml, que ataca a causa em vez do sintoma."""
-    C, d, stream, dur, db, hop, anot, ed, selo = _base(a.video, "conferir")
-    iv = intervalos(stream, C, dur, db, hop, anot, ed)
+    C, d, stream, dur, db, hop, anot = _base(a.video, "conferir",
+                                             a.ignorar_transcript)
+    iv = intervalos(stream, C, dur, db, hop, anot)
     para_fonte, para_previa = _mapa_previa(iv)
     mantido = sum(b - x for x, b in iv)
 
@@ -2088,13 +2024,9 @@ def cmd_conferir(a):
 
     # 1. Anotacao desobedecida. E o pior de todos: o julgamento humano foi
     #    escrito, foi lido, e sumiu na geometria sem uma linha de aviso.
-    for an in (anot or []):
-        x, y = an["ini"], an["fim"]
-        vivo = sum(max(0.0, min(y, b) - max(x, aa)) for aa, b in iv)
-        if vivo > 0.15:
-            diz("ANOTACAO NAO OBEDECIDA", x, y,
-                f"sobra {vivo:.2f}s de {y-x:.2f}s | "
-                f"{str(an.get('motivo', ''))[:50]}")
+    for x, y, vivo, motivo in anotacoes_desobedecidas(anot, iv):
+        diz("ANOTACAO NAO OBEDECIDA", x, y,
+            f"sobra {vivo:.2f}s de {y-x:.2f}s | {motivo[:50]}")
 
     # 2. Fala marcada para sair que continua tocando. Silencio nao entra:
     #    metade da pausa fica colada em cada lado de proposito
@@ -2154,15 +2086,8 @@ def cmd_conferir(a):
           if achados else f"\n[conferir] nada suspeito -> {p}")
 
 
-def cmd_editor(a):
-    """O editor mora em editor.py e so e importado aqui - ele sobe um
-    servidor e nao tem por que existir nas outras 99% das rodadas."""
-    import editor
-    editor.serve(a.video, a.porta, abrir=not a.sem_navegador)
-
-
 def cmd_previa(a):
-    C, d, stream, dur, iv = _plano(a, "previa")
+    _, d, dur, iv = _plano(a, "previa")
     meta = jload(d / "meta.json")
     edl = escreve_edl(d, meta["src"], iv)
     mantido = sum(b - x for x, b in iv)
@@ -2193,20 +2118,31 @@ def _find_mpv():
 
 
 def _loudnorm(entrada, ca):
-    """Mede o loudness e devolve os parametros da segunda passada."""
+    """Mede o loudness e devolve (filtro da 2a passada, LUFS de entrada).
+
+    Devolve o filtro INTEIRO, e nao so os parametros medidos, para que o
+    `audio` e o `render` nao possam divergir: a previa em .m4a so serve para
+    julgar volume enquanto receber o mesmo tratamento do .mov. O highpass e
+    o `linear=true` ja estiveram escritos duas vezes, um em cada comando.
+
+    LUFS de entrada = None quando a medicao falha; ai o filtro sai sem os
+    `measured_*` e o loudnorm faz uma passada so, que e pior mas funciona."""
+    alvo = (f"loudnorm=I={ca['lufs_alvo']}:TP={ca['true_peak']}"
+            f":LRA={ca['lra']}")
     med = run([FFMPEG, "-hide_banner", "-nostats", "-i", str(entrada), "-vn",
-               "-af", f"loudnorm=I={ca['lufs_alvo']}:TP={ca['true_peak']}:"
-                      f"LRA={ca['lra']}:print_format=json",
-               "-f", "null", "-"])
+               "-af", alvo + ":print_format=json", "-f", "null", "-"])
     try:
         blob = med.stderr[med.stderr.rindex("{"):]
         M = json.loads(blob[:blob.index("}") + 1])
-        return (f":measured_I={M['input_i']}:measured_TP={M['input_tp']}"
-                f":measured_LRA={M['input_lra']}"
-                f":measured_thresh={M['input_thresh']}"
-                f":offset={M['target_offset']}"), M["input_i"]
+        medido = (f":measured_I={M['input_i']}:measured_TP={M['input_tp']}"
+                  f":measured_LRA={M['input_lra']}"
+                  f":measured_thresh={M['input_thresh']}"
+                  f":offset={M['target_offset']}")
+        lufs = M["input_i"]
     except Exception:
-        return "", None
+        medido, lufs = "", None
+    return (f"highpass=f={ca['highpass_hz']},{alvo}{medido}:linear=true",
+            lufs)
 
 
 def cmd_audio(a):
@@ -2215,17 +2151,12 @@ def cmd_audio(a):
     O gargalo do render e decodificar 4K60 HEVC 10 bits; com `-vn` o ffmpeg
     nem toca no video. Da para ouvir a edicao inteira em segundos em vez de
     minutos, que e o que torna a calibracao viavel."""
-    C, d, stream, dur, iv = _plano(a, "audio")
+    C, d, dur, iv = _plano(a, "audio")
     meta = jload(d / "meta.json")
     ca = C["audio"]
     fade = ca["fade"]
 
-    L = []
-    for i, (x, y) in enumerate(iv):
-        w = y - x
-        L.append(f"[0:a]atrim=start={x}:end={y},asetpts=PTS-STARTPTS,"
-                 f"afade=t=in:st=0:d={fade},"
-                 f"afade=t=out:st={max(0, w-fade):.3f}:d={fade}[a{i}];")
+    L = [trecho_audio(i, x, y, fade) for i, (x, y) in enumerate(iv)]
     L.append("".join(f"[a{i}]" for i in range(len(iv)))
              + f"concat=n={len(iv)}:v=0:a=1[ac]")
     g = d / "graph_audio.txt"
@@ -2252,12 +2183,9 @@ def cmd_audio(a):
     if r.returncode != 0:
         sys.exit("[audio] ffmpeg falhou no corte")
 
-    medido, entrada_lufs = _loudnorm(bruto, ca)
+    af, entrada_lufs = _loudnorm(bruto, ca)
     if entrada_lufs is not None:
         print(f"[audio] {entrada_lufs} LUFS -> {ca['lufs_alvo']} LUFS")
-    af = (f"highpass=f={ca['highpass_hz']},"
-          f"loudnorm=I={ca['lufs_alvo']}:TP={ca['true_peak']}:"
-          f"LRA={ca['lra']}{medido}:linear=true")
     r = subprocess.run([FFMPEG, "-y", "-v", "error", "-i", str(bruto),
                         "-af", af, "-c:a", "aac", "-b:a", "192k",
                         "-ar", "48000", str(saida)])
@@ -2269,8 +2197,8 @@ def cmd_audio(a):
 
 
 def cmd_render(a):
-    cr = cfg()["render"]
-    C, d, stream, dur, iv = _plano(a, "render")
+    C, d, dur, iv = _plano(a, "render")
+    cr = C["render"]
     meta = jload(d / "meta.json")
     mantido = sum(b - a_ for a_, b in iv)
     print(f"[render] {len(iv)} trechos mantidos  "
@@ -2316,27 +2244,10 @@ def cmd_render(a):
     # ---- audio: loudnorm de duas passadas -----------------------------
     ca = C["audio"]
     print("[render] medindo loudness...", flush=True)
-    med = run([FFMPEG, "-hide_banner", "-nostats", "-i", str(corte), "-vn",
-               "-af", f"loudnorm=I={ca['lufs_alvo']}:TP={ca['true_peak']}:"
-                      f"LRA={ca['lra']}:print_format=json",
-               "-f", "null", "-"])
-    try:
-        blob = med.stderr[med.stderr.rindex("{"):]
-        blob = blob[:blob.index("}") + 1]
-        M = json.loads(blob)
-        medido = (f":measured_I={M['input_i']}:measured_TP={M['input_tp']}"
-                  f":measured_LRA={M['input_lra']}"
-                  f":measured_thresh={M['input_thresh']}"
-                  f":offset={M['target_offset']}")
-        print(f"[render] entrada {M['input_i']} LUFS -> "
-              f"alvo {ca['lufs_alvo']} LUFS")
-    except Exception:
-        medido = ""
-        print("[render] medicao falhou; loudnorm em passada unica")
-
-    af = (f"highpass=f={ca['highpass_hz']},"
-          f"loudnorm=I={ca['lufs_alvo']}:TP={ca['true_peak']}:"
-          f"LRA={ca['lra']}{medido}:linear=true")
+    af, entrada_lufs = _loudnorm(corte, ca)
+    print(f"[render] entrada {entrada_lufs} LUFS -> alvo {ca['lufs_alvo']} LUFS"
+          if entrada_lufs is not None
+          else "[render] medicao falhou; loudnorm em passada unica")
     print("[render] normalizando audio...", flush=True)
     r = subprocess.run([FFMPEG, "-y", "-v", "error", "-stats", "-i",
                         str(corte), "-c:v", "copy", "-af", af,
@@ -2350,6 +2261,13 @@ def cmd_render(a):
 # ---------------------------------------------------------------------- lote
 
 EXTS = {".mov", ".mp4", ".mkv", ".m4v", ".avi"}
+
+# A ordem do pipeline, uma vez so. Ja morou em tres lugares - a lista de
+# nomes do `lote`, a lista de pares logo abaixo dela e o `choices` do
+# argparse -, e acrescentar etapa exigia lembrar dos tres.
+ETAPAS = [("ingest", cmd_ingest), ("transcribe", cmd_transcribe),
+          ("align", cmd_align), ("analyze", cmd_analyze),
+          ("draft", cmd_draft), ("render", cmd_render)]
 
 
 def cmd_lote(a):
@@ -2366,8 +2284,7 @@ def cmd_lote(a):
     if not vids:
         sys.exit(f"[lote] nenhum video em {pasta}")
 
-    etapas = ["ingest", "transcribe", "align", "analyze", "draft", "render"]
-    ate = etapas.index(a.ate)
+    ate = [n for n, _ in ETAPAS].index(a.ate)
     print(f"[lote] {len(vids)} videos, ate a etapa '{a.ate}'\n")
     falhas = []
     for i, v in enumerate(vids, 1):
@@ -2375,13 +2292,9 @@ def cmd_lote(a):
               flush=True)
         ns = argparse.Namespace(video=str(v), force=a.force, model=a.model,
                                 out=None, dry_run=False,
-                                ignorar_edicao=a.ignorar_edicao)
+                                ignorar_transcript=a.ignorar_transcript)
         try:
-            for nome, fn in [("ingest", cmd_ingest),
-                             ("transcribe", cmd_transcribe),
-                             ("align", cmd_align), ("analyze", cmd_analyze),
-                             ("draft", cmd_draft),
-                             ("render", cmd_render)][:ate + 1]:
+            for _, fn in ETAPAS[:ate + 1]:
                 fn(ns)
         except SystemExit as e:
             print(f"[lote] FALHOU em {v.name}: {e}")
@@ -2400,9 +2313,7 @@ def cmd_lote(a):
 def main():
     ap = argparse.ArgumentParser(prog="tarocut")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for nome, fn in [("ingest", cmd_ingest), ("transcribe", cmd_transcribe),
-                     ("align", cmd_align), ("analyze", cmd_analyze),
-                     ("draft", cmd_draft)]:
+    for nome, fn in ETAPAS[:-1]:          # render tem parser proprio
         p = sub.add_parser(nome)
         p.add_argument("video")
         p.add_argument("--force", action="store_true")
@@ -2418,32 +2329,25 @@ def main():
     cf.add_argument("video")
     cf.add_argument("--em", default=None,
                     help="traduz um tempo da previa (MM:SS) para a fonte")
-    cf.add_argument("--ignorar-edicao", action="store_true")
+    cf.add_argument("--ignorar-transcript", action="store_true")
     cf.set_defaults(fn=cmd_conferir)
 
     au = sub.add_parser("audio", help="corte so em audio, rapido, para julgar")
     au.add_argument("video")
     au.add_argument("--out", default=None)
-    au.add_argument("--ignorar-edicao", action="store_true")
+    au.add_argument("--ignorar-transcript", action="store_true")
     au.set_defaults(fn=cmd_audio)
-
-    ed = sub.add_parser("editor",
-                        help="abre o editor de corte no navegador")
-    ed.add_argument("video")
-    ed.add_argument("--porta", type=int, default=8731)
-    ed.add_argument("--sem-navegador", action="store_true")
-    ed.set_defaults(fn=cmd_editor)
 
     v = sub.add_parser("previa", help="ve o corte no mpv sem renderizar")
     v.add_argument("video")
-    v.add_argument("--ignorar-edicao", action="store_true")
+    v.add_argument("--ignorar-transcript", action="store_true")
     v.set_defaults(fn=cmd_previa)
 
     r = sub.add_parser("render")
     r.add_argument("video")
     r.add_argument("--out", default=None)
     r.add_argument("--dry-run", action="store_true")
-    r.add_argument("--ignorar-edicao", action="store_true",
+    r.add_argument("--ignorar-transcript", action="store_true",
                    help="usa so as propostas automaticas, ignora transcript.md")
     r.set_defaults(fn=cmd_render)
 
@@ -2453,25 +2357,21 @@ def main():
     p.add_argument("--model", default=None)
 
     def _todos(a):
-        cmd_ingest(a)
-        cmd_transcribe(a)
-        cmd_align(a)
-        cmd_analyze(a)
-        cmd_draft(a)
+        for _, fn in ETAPAS[:-1]:
+            fn(a)
     p.set_defaults(fn=_todos)
 
     b = sub.add_parser("lote", help="processa uma pasta inteira")
     b.add_argument("pasta")
     b.add_argument("--ate", default="draft",
-                   choices=["ingest", "transcribe", "align", "analyze",
-                            "draft", "render"],
+                   choices=[n for n, _ in ETAPAS],
                    help="etapa final (padrao: draft, para revisar antes)")
     b.add_argument("--pular", default=None,
                    help="ignora arquivos cujo nome contenha estes trechos, "
                         "separados por virgula")
     b.add_argument("--force", action="store_true")
     b.add_argument("--model", default=None)
-    b.add_argument("--ignorar-edicao", action="store_true")
+    b.add_argument("--ignorar-transcript", action="store_true")
     b.set_defaults(fn=cmd_lote)
 
     a = ap.parse_args()

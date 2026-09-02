@@ -172,18 +172,9 @@ anotacao sem mexer no numero (ver achado B, que fez isso funcionar).
 IMG_0247, 437.18-440.87 ("Por exemplo, por exemplo, em Yala"): a palavra
 "Naip" comeca DENTRO do token de junk — os dois se sobrepoem de verdade, sem
 um conter o outro. Partir nao resolve. Sobram 0,63s. O `conferir` reclama
-disso toda vez; a saida e anotacao ou editor.
+disso toda vez; a saida e anotacao.
 
-## 5. A skill `revisar`
-
-Nao tem arquivo em disco nesta maquina — vem registrada na sessao do Claude
-Code, entao nao da para ler nem editar dela. O que ela precisa mudar:
-
-- rodar `conferir` DEPOIS de escrever `anotacoes.json`, e so terminar quando
-  toda anotacao sobrar ~0s. Sem isso ela nao tem como saber se foi obedecida;
-- parar de anotar contra bug. Duas das 19 anotacoes do IMG_0247 sao
-  diagnostico de codigo escrito em prosa dentro do campo `motivo`. Isso e
-  achado para o programador, nao julgamento de conteudo.
+## 5. A skill `revisar`  [FEITA — ver "O laco fechado" no fim]
 
 ---
 
@@ -192,12 +183,129 @@ Code, entao nao da para ler nem editar dela. O que ela precisa mudar:
 - **`config.toml` e medicao, nao gosto.** Cada numero tem comentario dizendo
   contra o que foi calibrado. Medir num video real e atualizar o comentario.
 - **`anotacoes.json` e sagrado.** Nunca regenerar, sobrescrever ou apagar.
-- **Nao e repositorio git.** Backups desta revisao: `tarocut.py.antes-revisao`,
-  `editor.html.antes-revisao`, `work/IMG_0248/transcript.md.antes-revisao`,
-  `correcoes-pendentes.md.bak3`.
+- **E repositorio git** desde `cf6e07e`. Os arquivos `.antes-revisao` de
+  codigo foram apagados: `git show cf6e07e:<arquivo>` devolve qualquer um.
+  `work/` continua fora do git — la nao ha desfazer.
 - **`conferir` antes de ouvir; `audio` antes de renderizar.**
 - **Videos de calibracao: IMG_0246, IMG_0247, IMG_0248.** Uma mudanca so esta
   verificada depois de passar nos tres. Os tres estao alinhados, analisados e
   conferiveis com o codigo atual.
 - **Teste que nao pode falhar:** toda anotacao tem de sobrar ~0s no
   `conferir`.
+
+---
+
+# Revisao lean (01/09, depois desta)
+
+## Editor removido
+
+`editor.py`, `editor.html` e a camada `edicao.json` do `tarocut.py`
+(`_spans`, `carrega_edicao`, `aplica_edicao`, `aplica_manual`) sairam
+inteiros — vai ser refeito do zero. Estao em `git show cf6e07e:editor.py`.
+
+Verificado contra os tres videos de calibracao: IMG_0247 e IMG_0248 dao
+`conferir.txt` **byte a byte identico** ao de antes. IMG_0246 tinha o unico
+`edicao.json` com conteudo, e era ruido — um corte de 0,35s e um restauro
+colado nele, que se anulavam; continua com **22 emendas** e 00:02:07.
+
+A flag `--ignorar-edicao` virou `--ignorar-transcript`, que e o que ela
+sempre fez de verdade.
+
+## E. `confere_atualidade` deixava passar cabecalho sem selo  [FEITA]
+
+Quarto caminho de anotacao sumindo em silencio, e o mais bobo: havia um
+`return True` comentado como "arquivo antigo, sem selo".
+
+O `transcript.md` do IMG_0246 era de uma versao anterior do programa (382
+tokens no cabecalho contra 383 no `stream.json`). Passava batido, e o
+`difflib` do `reconcilia` casava o `e` de 127,934-128,034 — cortado pela
+anotacao 116,46-128,03 — com o `e` seguinte, que fica. O corte devolvia ao
+video 0,18s de um trecho que uma pessoa mandou sair, e o `conferir` gritava
+`ANOTACAO NAO OBEDECIDA` sem ninguem saber de onde vinha.
+
+Agora cabecalho sem selo, ou com selo diferente, e **recusa**. O
+`transcript.md` do IMG_0246 foi regerado (o unico `⟨ ⟩` que ele tinha
+apontava para um token que a analise atual nem tem mais). Resultado: o
+`ANOTACAO NAO OBEDECIDA` do IMG_0246 **sumiu**, mesmas 22 emendas.
+
+## F. `_clip.wav` ficava para tras  [FEITA]
+
+O `unlink` acontecia antes de `resolve_suspeitos`, que chama `escuta` de
+novo. Sobrava um `_clip.wav` em toda pasta de trabalho.
+
+## G. `cadeias` gravava indice que ja tinha mudado de lugar  [FEITA]
+
+`detecta_tentativas` guarda `ini`/`fim` como indices no fluxo;
+`resolve_suspeitos` insere tokens depois disso. Ninguem lia esses dois
+campos (o `relatorio` usa texto e tempo), mas quem lesse leria errado.
+Deixaram de ser gravados no `stream.json`.
+
+## H. `conferir --ignorar-edicao` nao fazia nada  [FEITA]
+
+A flag era lida pelo argparse e nunca chegava ao `_base`.
+
+## Codigo morto tirado
+
+- `calibra.py` — script de calibracao solto, sem referencia em lugar nenhum,
+  com caminho de bash cravado. `git show cf6e07e:calibra.py`.
+- `RE_SO_NUM` no `tarocut.py`, `cc` nao usado em `spans_corte`.
+- `cmd_render` reimplementava o `_loudnorm` que ja existia ao lado, e
+  chamava `cfg()` de novo tendo o `C` na mao.
+- `alinhar.py`: imports `sys`, `unicodedata`, `Path`; parametro `folga` do
+  `blocos`; `torch.set_num_threads(torch.get_num_threads())`.
+- `lexico.py` lia o guia inteiro do disco para escrever um comentario com a
+  contagem de caracteres.
+
+## A janela ganhou `2. Conferir corte`
+
+O `conferir` nao tinha caminho na GUI, e o README manda roda-lo sempre
+depois do julgamento.
+
+---
+
+# O laco fechado (01/09)
+
+O passe de julgamento nao tinha como saber se tinha sido obedecido. Fechado
+dos dois lados.
+
+## Lado 1: a skill virou arquivo
+
+`.claude/commands/revisar.md`. Antes ela vinha registrada na sessao do
+Claude Code e nao dava para ler nem editar — o que e um problema em si:
+nao se conserta o que nao se ve. Agora esta no git, com o resto.
+
+O que ela passou a fazer, alem de julgar:
+
+- roda `conferir` DEPOIS de escrever o `anotacoes.json`, e o criterio de
+  terminar e binario: **zero linhas `ANOTACAO NAO OBEDECIDA`**;
+- quando sobra, tem uma tabela de diagnostico (borda no meio de palavra,
+  palavra mantida dentro do trecho, regiao com `~` do alinhador) e ajusta;
+- para na terceira rodada e reporta, em vez de girar em falso;
+- `anotacoes.json` continua sagrado: copia antes de escrever, nunca apaga
+  entrada nem reescreve `motivo`, e so mexe em `ini`/`fim` de anotacao
+  antiga quando o `conferir` provar que ela nao foi obedecida;
+- achado de codigo vai no relatorio, **nunca dentro do campo `motivo`** —
+  era o segundo item pendente, e o exemplo esta escrito la (as duas
+  anotacoes do IMG_0247 que sao diagnostico em prosa).
+
+Tambem diz para nao ancorar borda de corte em palavra marcada com `~`, e
+para mirar dentro de um `[-N.Ns]`, que e o unico ponto do `revisao.txt`
+onde a borda nao atravessa palavra nem come a vizinha.
+
+## Lado 2: o programa passou a perguntar sozinho
+
+A conta "quanto desta anotacao continua no video" morava dentro do
+`cmd_conferir`. Virou `anotacoes_desobedecidas`, e agora e feita tambem no
+`_plano` — o caminho por onde `render`, `audio` e `previa` passam. Ou seja,
+o aviso sai mesmo de quem nunca rodou `conferir`.
+
+Nao aborta, avisa: ha residuo que nao da para consertar por anotacao (o caso
+437.18-440.87 do IMG_0247, tokens que se sobrepoem de verdade), e abortar ali
+so impediria um render legitimo.
+
+Procedimento se pula; pergunta no caminho de todo mundo, nao.
+
+**Medido:** os tres videos de calibracao dao zero `ANOTACAO NAO OBEDECIDA`,
+e o `conferir.txt` dos tres continua identico ao de antes do refactor. Teste
+positivo com anotacao inventada sobre fala mantida: o aviso sai no `render`
+com o tempo, a sobra e o motivo.

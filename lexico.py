@@ -6,7 +6,7 @@ Rode de novo sempre que o material mudar:
 
     venv\\Scripts\\python.exe lexico.py
 """
-import re, sys, unicodedata, zipfile
+import re, sys, zipfile
 from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -144,13 +144,6 @@ def main():
     bloco(f"arcanos maiores ({len(maiores)})", sorted(set(maiores)))
     bloco(f"cartas da corte ({len(corte)})", sorted(set(corte)))
     bloco(f"cartas numeradas ({len(numeradas)})", sorted(set(numeradas)))
-
-    # termos soltos que so aparecem no guia
-    pdf_md = MAT / "guia-taro-de-yala.md"
-    if pdf_md.exists():
-        txt = pdf_md.read_text(encoding="utf-8")
-        L.append(f"# guia: {len(txt)} caracteres lidos de "
-                 f"{pdf_md.name}")
 
     alvo = ROOT / "lexicon" / "terms.txt"
     alvo.write_text("\n".join(L) + "\n", encoding="utf-8")

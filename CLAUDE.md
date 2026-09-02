@@ -27,15 +27,20 @@ mesmos comandos.
 |---|---|
 | `tarocut.py` | tudo: CLI, pipeline, marcação, geometria do corte, render |
 | `alinhar.py` | wav2vec2 — fronteiras de palavra (o Whisper erra os tempos) |
-| `editor.py` | servidor local do editor; `editor.html` é a interface |
 | `gui.py` | janela Tk; só dispara comandos e mostra estado |
 | `lexico.py` | gera `lexicon/terms.txt` a partir do livro do Yala |
+| `.claude/commands/revisar.md` | o passe de julgamento: o que o Claude lê e o que ele tem de conferir depois |
 | `config.toml` | **todos** os números do gosto de corte |
 | `material/padroes-edicao.md` | medições contra os vídeos editados à mão |
 
 Estado por vídeo em `work/<video>/`: `meta.json`, `audio.wav`, `words.json`,
 `stream.json` (a fonte da verdade), `transcript.md`, `revisao.txt`,
-`anotacoes.json`, `edicao.json`.
+`anotacoes.json`.
+
+**O editor gráfico foi removido** (01/09). Era `editor.py` + `editor.html`,
+com estado em `work/<video>/edicao.json`; sai inteiro do histórico com
+`git show cf6e07e:editor.py`. Vai ser refeito do zero. Os `edicao.json` que
+sobraram em `work/` não são lidos por ninguém.
 
 ## O que não quebrar
 
@@ -49,21 +54,30 @@ vez por vídeo, para sempre. Nunca regenere, sobrescreva ou apague. Ele
 sobrevive a `run --force` de propósito.
 
 **Anotação que some em silêncio é o pior defeito que este programa tem.**
-Já apareceu por três caminhos: o `_funde` juntando a anotação a um token e
-o `_respeita_palavras` truncando o resultado; o filtro `minimo` descartando
-anotação curta; e a borda encolhida pelo `encaixa_anotacoes` (esse é
-proposital). Os dois primeiros estão fechados e o `conferir` vigia. Se
-mexer na geometria, o teste é: **toda anotação tem que sobrar ~0 s.**
+Já apareceu por quatro caminhos: o `_funde` juntando a anotação a um token
+e o `_respeita_palavras` truncando o resultado; o filtro `minimo`
+descartando anotação curta; o `confere_atualidade` aceitando `transcript.md`
+sem selo, que fazia o `reconcilia` casar token errado; e a borda encolhida
+pelo `encaixa_anotacoes` (só esse é proposital). Os três primeiros estão
+fechados.
 
-**`edicao.json` ganha do `transcript.md`** — é a decisão mais recente e mais
-explícita. Tem selo do `stream`; se o vídeo for reanalisado, o `render`
-**para** em vez de aplicar índices que mudaram de lugar. Não conserte isso
-"aplicando mesmo assim".
+A pergunta agora mora em `anotacoes_desobedecidas`, uma vez só, e é feita em
+dois lugares: o `conferir` lista, e o `_plano` avisa — ou seja, `render`,
+`audio` e `previa` reclamam sozinhos, sem depender de alguém lembrar. Se
+mexer na geometria, o teste é: **toda anotação tem que sobrar ~0 s.** O que
+os quatro caminhos tinham em comum não era a causa; era ninguém perguntar.
 
-**O navegador não calcula corte.** Todo clique vai ao servidor e volta com os
-spans, vindos da mesma função que o `render` usa. Refazer a geometria em JS
-seria mais rápido e mentiria em algum canto. Não porte `spans_corte` para o
-front.
+**Cabeçalho de `transcript.md` que não confere é recusa, não aviso.** O selo
+no `<!-- ... selo=... -->` é a impressão digital do `stream`; sem ele ou
+diferente dele, o `reconcilia` casa token errado com token errado e reimpõe
+decisões antigas em silêncio. Foi assim que uma anotação do IMG_0246 morreu
+(o `e` de 127,93s voltou ao vídeo). Não reintroduza um "arquivo antigo,
+passa".
+
+**Quando o editor voltar: o navegador não calcula corte.** Todo clique tem de
+ir ao servidor e voltar com os spans, vindos da mesma função que o `render`
+usa. Refazer a geometria em JS é mais rápido e mente em algum canto. Não
+porte `spans_corte` para o front.
 
 **`align` é etapa separada por medição:** 72% dos fins de palavra do Whisper
 caem tarde (mediana +27 ms). Cortar pelos tempos do Whisper come o "s" final.
@@ -101,5 +115,6 @@ linha faz. Mantenha esse tom.
 
 ## Cuidado
 
-**Não é repositório git.** Não há desfazer. Antes de reescrever um arquivo
-grande, mostre o que muda em vez de aplicar direto.
+**É repositório git** desde `cf6e07e`, mas `work/` está no `.gitignore`:
+código tem desfazer, `anotacoes.json` e `transcript.md` não têm. Antes de
+reescrever um arquivo grande, mostre o que muda em vez de aplicar direto.

@@ -80,8 +80,6 @@ def estado(video):
                 marcas += "✎ "       # transcript editado depois do draft
         except OSError:
             pass
-    if (d / "edicao.json").exists():
-        marcas += "✂ "               # editado no editor grafico
     if (d / "anotacoes.json").exists():
         marcas += "★ "               # passe de julgamento feito
     if (Path(video).parent / f"{Path(video).stem}_previa.m4a").exists():
@@ -282,7 +280,6 @@ class App(tk.Tk):
 
         ttk.Label(quadro, foreground="#666",
                   text="✎ transcript editado     "
-                       "✂ editado no editor     "
                        "★ anotações do Claude     "
                        "♪ prévia em áudio     "
                        "▶ renderizado"
@@ -304,9 +301,13 @@ class App(tk.Tk):
                                                        padx=8)
 
         bt("1. Analisar", self.analisar)
-        bt("2. Editor", self.abre_editor)
-        bt("Abrir transcript", self.abre_transcript)
         bt("Copiar /revisar", self.copia_revisar)
+        # `conferir` e a unica coisa aqui que le a geometria do corte sem
+        # gastar minuto nenhum, e fora da janela ele nao existia - era o
+        # passo que o README manda dar sempre depois do julgamento.
+        bt("2. Conferir corte",
+           lambda: self.roda(["conferir"], "conferência do corte"))
+        bt("Abrir transcript", self.abre_transcript)
         sep()
         bt("3. Ouvir prévia",
            lambda: self.roda(["audio"], "prévia em áudio"))
@@ -400,7 +401,7 @@ class App(tk.Tk):
                                 "Já tem coisa rodando. Espere ou cancele.")
             return
         d = WORK / v.stem
-        if args[0] in ("audio", "previa", "render") \
+        if args[0] in ("audio", "previa", "render", "conferir") \
                 and not (d / "stream.json").exists():
             messagebox.showinfo("tarocut",
                                 "Esse vídeo ainda não foi analisado. "
@@ -427,26 +428,6 @@ class App(tk.Tk):
         if self.job:
             self.job.cancelar()
             self.status.set("cancelando...")
-
-    def abre_editor(self):
-        """O editor nao passa pelo Job: ele fica no ar ate a pessoa fechar
-        a aba, e o Job existe para comandos que comecam e terminam. Trava-
-        lo aqui deixaria a janela inutil enquanto se edita."""
-        v = self.exige_video()
-        if not v:
-            return
-        if not (WORK / v.stem / "stream.json").exists():
-            messagebox.showinfo("tarocut",
-                                "Esse vídeo ainda não foi analisado. "
-                                "Rode '1. Analisar' primeiro.")
-            return
-        pyw = PY.with_name("pythonw.exe")
-        subprocess.Popen([str(pyw if pyw.exists() else PY),
-                          str(ROOT / "tarocut.py"), "editor", str(v)],
-                         cwd=str(ROOT),
-                         creationflags=getattr(subprocess,
-                                               "CREATE_NO_WINDOW", 0))
-        self.status.set(f"editor aberto no navegador: {v.name}")
 
     def abre_transcript(self):
         v = self.exige_video()
