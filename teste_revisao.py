@@ -128,21 +128,26 @@ def teste_pendencias(video):
     txt = (d / "revisao.txt").read_text(encoding="utf-8")
     st = json.load(open(d / "stream.json", encoding="utf-8"))["stream"]
 
-    # o que DEVIA estar la: todo token mantido que so uma pessoa resolve
-    esperado = 0
-    for t in st:
-        if t["cut"]:
-            continue
-        if t["k"] == "hesitacao":
-            esperado += 1
-        elif t["k"] == "palavra" and t["why"].startswith(
-                ("cauda arrastada", "duracao impossivel")):
-            esperado += 1
+    # o que DEVIA estar la: todo token RECUPERADO que sobrou no fluxo -
+    # e a leitura de menor confianca do arquivo, e quem decide e quem le.
+    #
+    # `cauda arrastada` e `duracao impossivel` ja estiveram nesta conta e
+    # sairam por medicao (ver `pendencias`): a primeira virou medida no
+    # conferir, a segunda repetia o que o token vizinho ja dizia. Se
+    # voltarem, voltam com numero novo - nao com este teste.
+    esperado = sum(1 for t in st if not t["cut"] and t["k"] == "hesitacao")
     listadas = [l for l in txt.splitlines() if l.startswith("P")
                 and l[1:2].isdigit()]
     diz(len(listadas) >= esperado,
-        f"toda hesitacao/cauda/duracao mantida virou pendencia "
+        f"todo texto recuperado mantido virou pendencia "
         f"({len(listadas)} listadas, {esperado} exigidas)")
+
+    # e o que NAO devia: a lista existe para ser respondida inteira, e
+    # cada item que ninguem consegue responder gasta a atencao de quem
+    # responde os outros.
+    diz(len(listadas) <= esperado + 6,
+        f"a lista nao inchou ({len(listadas)} itens para {esperado} "
+        f"trechos recuperados)")
 
     # cada pendencia tem de estar ancorada no texto corrido, senao a lista
     # diz o que olhar e nao diz onde
@@ -155,6 +160,129 @@ def teste_pendencias(video):
               and len(str(t["t"])) > 14 and not str(t["t"]).startswith("??")]
     diz(all(x in txt for x in longos),
         f"texto reconstruido sai sem truncar ({len(longos)} caso(s))")
+
+
+def teste_respostas():
+    """O laco que a auditoria deixou aberto: pendencia sem resposta tem de
+    chegar a quem gera o audio. Sao contas puras, entao vao em fluxo de
+    mentira - o que quebra aqui e a regra, nao o video."""
+    print("\n== respostas (pendencias_sem_resposta)")
+    q = {"n": 1, "i": 0, "rot": "som alto sem texto", "desc": "1.8s",
+         "s": 223.35, "x": 223.35, "y": 225.12}
+    inteiro = [(0.0, 900.0)]
+
+    sem, orfas = tc.pendencias_sem_resposta([q], [], inteiro)
+    diz(len(sem) == 1, "pendencia sem resposta nenhuma e cobrada")
+
+    r = [{"em": [223.35], "resposta": "fica", "nota": ""}]
+    sem, orfas = tc.pendencias_sem_resposta([q], r, inteiro)
+    diz(not sem and not orfas, "resposta escrita fecha a pendencia")
+
+    # o tempo vem copiado do revisao.txt, que imprime com duas casas
+    r = [{"em": [223.36], "resposta": "fica", "nota": ""}]
+    sem, _ = tc.pendencias_sem_resposta([q], r, inteiro)
+    diz(not sem, "arredondamento de 0,01s ainda casa")
+
+    # ...mas nao a ponto de uma resposta cobrir a pendencia vizinha: nos
+    # 10 fluxos de work/ o menor vao entre duas ancoras diferentes e 0,13s
+    r = [{"em": [223.48], "resposta": "fica", "nota": ""}]
+    sem, orfas = tc.pendencias_sem_resposta([q], r, inteiro)
+    diz(len(sem) == 1 and len(orfas) == 1,
+        "resposta 0,13s fora nao casa, e aparece como orfa")
+
+    # cortar o trecho e responder: a pendencia deixa de existir no video
+    sem, _ = tc.pendencias_sem_resposta([q], [], [(0.0, 100.0)])
+    diz(not sem, "pendencia que o corte levou embora nao e cobrada")
+
+    # a resposta se guarda pelo TEMPO, nao pelo numero: renumerar a lista
+    # (uma pendencia do meio sai) nao pode transferir resposta de uma
+    # pergunta para outra - e a mesma armadilha do indice de token.
+    q2 = dict(q, n=7, s=500.0, x=500.0, y=501.0)
+    sem, _ = tc.pendencias_sem_resposta(
+        [dict(q, n=1), dict(q2, n=2)],
+        [{"em": [223.35], "resposta": "fica", "nota": ""}], inteiro)
+    diz([x["s"] for x in sem] == [500.0],
+        "resposta segue o tempo quando a lista e renumerada")
+
+    # dizer "sai" nao corta nada: o respostas.json registra decisao, quem
+    # executa e a anotacao. Deixar isso passar como "respondida" seria um
+    # caminho novo para julgamento humano sumir em silencio.
+    r = [{"em": [223.35], "resposta": "sai", "nota": ""}]
+    sem, _ = tc.pendencias_sem_resposta([dict(q, proprio=True)], r, inteiro)
+    diz([x["falta"] for x in sem] == ["PENDENCIA NAO OBEDECIDA"],
+        "'sai' com o trecho ainda tocando vira PENDENCIA NAO OBEDECIDA")
+    sem, _ = tc.pendencias_sem_resposta(
+        [dict(q, proprio=True)], r, [(0.0, 100.0)])
+    diz(not sem, "'sai' com o trecho fora do corte fecha a pendencia")
+
+    # ...mas so onde trecho e pergunta coincidem. Na `retomada?` o trecho
+    # vai da primeira tentativa ate a versao boa, que FICA: cobrar ali
+    # seria reclamar de quem obedeceu.
+    sem, _ = tc.pendencias_sem_resposta([dict(q, rot="retomada?")], r, inteiro)
+    diz(not sem, "'sai' numa retomada nao cobra o trecho inteiro")
+
+    # manter a mao e resposta; e "resgatado" NAO e manter a mao (ver
+    # MAO_MANTEM: `texto_token` imprime toda hesitacao mantida entre ⟨ ⟩)
+    sem, _ = tc.pendencias_sem_resposta([dict(q, mao=True)], [], inteiro)
+    diz(not sem, "trecho restaurado no editor ja e resposta")
+    diz("resgatado" not in tc.MAO_MANTEM,
+        "'resgatado' nao conta como decisao de mao")
+
+
+def teste_respostas_no_disco(video):
+    """A pergunta tem de ser feita no caminho por onde todo mundo passa -
+    nao num procedimento que alguem precisa lembrar."""
+    d = tc.WORK / video
+    if not (d / "stream.json").exists():
+        return
+    print(f"\n== pendencia cobrada pelo conferir | {video}")
+    with contextlib.redirect_stdout(io.StringIO()):
+        C, _, stream, dur, db, hop, anot, mont, _ = tc._base(video, "teste")
+        iv = tc.intervalos(stream, C, dur, db, hop, anot, mont)
+        pend = tc.pendencias(stream, C, tc.carrega_vocabulario(d))
+        sem, _ = tc.pendencias_sem_resposta(pend, tc.carrega_respostas(d), iv)
+        a = argparse.Namespace(video=video, em=None, ignorar_transcript=False)
+        tc.cmd_conferir(a)
+    rel = (d / "conferir.txt").read_text(encoding="utf-8")
+    n = sum(1 for l in rel.splitlines()
+            if "PENDENCIA SEM RESPOSTA" in l and not l.startswith("#"))
+    diz(n == len(sem),
+        f"o conferir cobra todas as pendencias em aberto ({n} no "
+        f"relatorio, {len(sem)} em aberto)")
+
+
+def teste_arrasto(video):
+    """`cauda arrastada` deixou de ser pergunta e virou medida. Se a medida
+    parar de sair, ninguem descobre: o corte continua saindo, so que com o
+    arrasto inteiro dentro."""
+    d = tc.WORK / video
+    if not (d / "stream.json").exists():
+        return
+    print(f"\n== arrasto que sobra | {video}")
+    with contextlib.redirect_stdout(io.StringIO()):
+        C, _, stream, dur, db, hop, anot, mont, _ = tc._base(video, "teste")
+        iv = tc.intervalos(stream, C, dur, db, hop, anot, mont)
+    sobrando = []
+    for t in stream:
+        if t["cut"] or not t.get("cauda"):
+            continue
+        ca, cb = t["cauda"]
+        vivo = sum(max(0.0, min(cb, b) - max(ca, a)) for a, b in iv)
+        if vivo > 0.15:
+            sobrando.append((t["s"], t["t"], vivo))
+    rel = (d / "conferir.txt").read_text(encoding="utf-8")
+    n = sum(1 for l in rel.splitlines()
+            if "ARRASTO SOBREVIVE" in l and not l.startswith("#"))
+    diz(n == len(sobrando),
+        f"o conferir mede o arrasto que a poda nao levou "
+        f"({n} no relatorio, {len(sobrando)} no corte)")
+    # a poda que COUBE nao pode aparecer: se aparecesse, o alarme seria
+    # papel de parede - 64 das 76 caudas dos 10 fluxos deixam 0,06-0,14s,
+    # que e a folga que `_respeita_palavras` devolve por construcao.
+    diz(len(sobrando) <= 5,
+        f"o alarme nao dispara na folga de desenho ({len(sobrando)} de "
+        f"{sum(1 for t in stream if t.get('cauda') and not t['cut'])} "
+        f"caudas)")
 
 
 def teste_repeticao_audivel(video):
@@ -197,9 +325,12 @@ def main():
     alvos = sys.argv[1:] or CALIBRACAO
     teste_gaguejada()
     teste_vocabulario()
+    teste_respostas()
     for v in alvos:
         teste_pendencias(v)
         teste_repeticao_audivel(v)
+        teste_respostas_no_disco(v)
+        teste_arrasto(v)
     print("\n" + ("tudo ok" if not falhas
                   else f"{len(falhas)} FALHA(S):\n  " + "\n  ".join(falhas)))
     sys.exit(1 if falhas else 0)

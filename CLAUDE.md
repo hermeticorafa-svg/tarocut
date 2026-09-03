@@ -43,7 +43,8 @@ mesmos comandos.
 Estado por vídeo em `work/<video>/`: `meta.json`, `audio.wav`, `words.json`,
 `stream.json` (a fonte da verdade), `transcript.md`, `revisao.txt`,
 `conferir.txt`, `entendimento.md` (o que o passe de julgamento entendeu da
-aula), `anotacoes.json`, `montagem.json`, `correcoes.json`.
+aula), `anotacoes.json`, `respostas.json`, `montagem.json`,
+`correcoes.json`.
 
 As três camadas de decisão humana empilham nesta ordem, que é a ordem em
 que foram tomadas: `transcript.md` (apagar texto) → `anotacoes.json` (o
@@ -73,14 +74,23 @@ E **todo número que decide corte mora lá**, não como valor padrão de
 parâmetro. Cinco moravam: os quatro de `detecta_tentativas` (hoje
 `[tentativa]`), a janela do `marca_ecos` e o limite de gaguejada (hoje
 `[cacoete]`), o `volta_max` do `marca_instrucoes` e o `deriva_max` do
-`alinhar.descarta_ruins`. Default de parâmetro é um segundo lugar decidindo
-a mesma coisa, e foi assim que o piso de ruído chegou a viver com `12.0` no
-braço dentro do `alinhar.py`. O que fica no código é o que decide *forma de
-regra*, não taxa: `ENFASE`, `HALLU`, `RE_NUM`.
+`alinhar.descarta_ruins`. Depois vieram os dois de `classifica_fala` —
+quantas palavras cabem num cacoete recuperado e o que é palavra curta,
+hoje `[hesitacao].recuperado_max_palavras` e `.palavra_curta_max` — e o
+`minimo` de `protege_enumeracoes`, que era pior: um segundo lugar
+decidindo o que `fortes_min` já decidia, invisível para quem mexesse no
+config. Esse foi apagado, não mudado de lugar. Default de parâmetro é um
+segundo lugar decidindo a mesma coisa, e foi assim que o piso de ruído
+chegou a viver com `12.0` no braço dentro do `alinhar.py`. O que fica no
+código é o que decide *forma de regra*, não taxa: `ENFASE`, `HALLU`,
+`RE_NUM`, `MAO_MANTEM`.
 
 **`anotacoes.json` é sagrado.** É o passe de julgamento: caro de produzir, uma
 vez por vídeo, para sempre. Nunca regenere, sobrescreva ou apague. Ele
-sobrevive a `run --force` de propósito.
+sobrevive a `run --force` de propósito. **`respostas.json` é da mesma
+família** e vale a mesma regra: um diz o que sai, o outro diz o que a
+pessoa decidiu sobre cada pendência — inclusive as que ficam, que não
+deixam marca em lugar nenhum.
 
 **Anotação que some em silêncio é o pior defeito que este programa tem.**
 Já apareceu por quatro caminhos: o `_funde` juntando a anotação a um token
@@ -95,6 +105,58 @@ dois lugares: o `conferir` lista, e o `_plano` avisa — ou seja, `render`,
 `audio` e `previa` reclamam sozinhos, sem depender de alguém lembrar. Se
 mexer na geometria, o teste é: **toda anotação tem que sobrar ~0 s.** O que
 os quatro caminhos tinham em comum não era a causa; era ninguém perguntar.
+
+**Pendência sem resposta é a mesma família de defeito, do outro lado.** O
+`revisao.txt` lista, numera e ancora cada `Pn`, e até 03/09/2026 nada
+verificava se alguma tinha ficado sem resposta — "responda todas" era
+regra do prompt do `/revisar` e de mais ninguém. A pergunta agora mora em
+`pendencias_sem_resposta`, uma vez só, e é feita nos mesmos dois lugares
+que a da anotação desobedecida: o `conferir` lista (`PENDENCIA SEM
+RESPOSTA`) e o `_plano` avisa. Responder é uma destas três coisas, e o
+programa reconhece as três: **cortar** o trecho, **restaurar** o token no
+editor, ou escrever a linha em `respostas.json`. A terceira existe porque
+"olhei e deixei ficar" não deixa rastro nenhum — é indistinguível de
+ninguém ter olhado.
+
+**`respostas.json` registra decisão, não corta.** É de propósito — ele
+não entra na pilha `transcript.md → anotacoes.json → montagem.json`, e
+`_base` nem o lê. Mas responder `sai` e não cortar seria um caminho novo
+para julgamento humano sumir em silêncio, então isso vira
+`PENDENCIA NAO OBEDECIDA` no `conferir`, irmã da anotação desobedecida. A
+cobrança só vale onde trecho e pergunta coincidem (`proprio`): numa
+`retomada?` o trecho vai da primeira tentativa até a versão boa, e cortar
+só a primeira — o que se pede — deixa a segunda tocando.
+
+A resposta se guarda pelo **tempo** da pendência, nunca pelo número: uma
+pendência do meio da lista que sai renumera todas as de baixo, e a resposta
+passaria a valer para outra pergunta. Mesma regra do `s`/`e` do
+`montagem.json`, e pela mesma razão.
+
+**A lista de pendências é curta de propósito, e custou medição ficar
+assim.** Eram 268 nos 10 fluxos de `work/` (7 a 50 por vídeo); são 55 (0 a
+12). Saíram três categorias, e nenhuma por gosto:
+
+- `fala nao transcrita` (106) apontava a PALAVRA em que o áudio estava
+  grudado, mas `resolve_suspeitos` já separou esse áudio num token próprio
+  antes de o arquivo existir. Nos 106 casos o vizinho ou já sai (90) ou já
+  é outra pendência (16). Mesma pergunta, do lado errado.
+- `cauda arrastada` (76) era pergunta de geometria feita a quem lê texto.
+  Virou medida: `ARRASTO SOBREVIVE` no `conferir`. Das 76, 64 deixam
+  0,06-0,14s (a folga que `_respeita_palavras` devolve por construção), 1
+  sai inteira, e 11 sobrevivem 100% — as 11 têm cauda de 0,25-0,30s, e o
+  corte foi descartado por ser menor que `minimo` + `folga_palavra`. Mais
+  3 sobram em região que o alinhador embaralhou: 14 achados, e perguntar
+  as 76 escondia justamente esses.
+- `disputa` (31) o próprio `/revisar` mandava não responder. E a causa que
+  o docstring de `sobrepostos` afirmava estava errada: 27 das 31 têm dentro
+  uma palavra cujo tempo o alinhador já recusou (a que sai com `~`), 8 são
+  entre dois tokens que já saem, e a única consequência que ela previa —
+  ilha curta — aparece em 3, que o `conferir` já listava.
+
+O que essas três tinham em comum: perguntavam o que o leitor não tinha como
+responder. Alarme que dispara onde ninguém pode agir gasta a atenção de
+quem responderia os outros — é o mesmo defeito do alarme de "emenda em
+ponto alto" e do de "frase pendurada", só que disfarçado de pergunta.
 
 **Cabeçalho de `transcript.md` que não confere é recusa, não aviso.** O selo
 no `<!-- ... selo=... -->` é a impressão digital do `stream`; sem ele ou
@@ -142,6 +204,14 @@ original e o `reconcilia` a marcaria "apagado no texto", cortando-a em
 silêncio. É a mesma família de defeito que a checagem de selo do
 `confere_atualidade` existe para evitar, só que por um caminho novo:
 julgamento humano (aqui, ortografia) sumindo sem avisar.
+
+**A passada mecânica pergunta o mesmo que a tela.** `Sessao.avisos` sempre
+soube dizer "essa palavra sobrou inteira", mas só para quem abre o editor;
+o `conferir` só acusava sobra acima de 0,15s, e uma palavra de 0,08s
+sobrevive 100% sem chegar perto disso. Hoje ele marca `INTEIRA` sempre que
+o token cortado sobrevive por completo, seja qual for o tamanho — dois
+casos nos 10 fluxos, um `eu` de 0,08s e um `na` de 0,06s dentro de uma
+anotação.
 
 **Ocultar palavra curta pode não ocultar nada.** `_respeita_palavras` recua
 a emenda `folga_palavra` (0,06 s) de cada palavra mantida vizinha, então uma
@@ -276,14 +346,18 @@ avisa que não tirou), e o corte que a tela mostrou é byte a byte o que o
 Mexeu na marcação ou no `revisao.txt`? **`venv\Scripts\python.exe
 teste_revisao.py`**, o irmão dele para a outra metade: a gaguejada pela
 próxima palavra audível (com acento, com ENFASE, com o limite de tempo), o
-aviso de palavra inventada, e as duas promessas do `revisao.txt` — toda
-pergunta sem resposta automática vira pendência numerada, e toda pendência
-está ancorada no texto. Foi este teste que achou a `[disputa]` sumindo
-quando caía num token cortado.
+aviso de palavra inventada, as promessas do `revisao.txt` — toda pergunta
+sem resposta automática vira pendência numerada, toda pendência está
+ancorada no texto, e a lista não incha —, e o laço da resposta: a
+pendência sem resposta chega ao `conferir`, a resposta casa pelo tempo
+mesmo com a lista renumerada, e o arrasto que a poda não levou vira medida
+(sem disparar na folga de desenho). Foi este teste que achou a `[disputa]`
+sumindo quando caía num token cortado.
 
 **Rode `conferir` antes de ouvir.** Ele lê o corte pela mesma função do
-`render` e lista só o suspeito: anotação desobedecida, fala cortada que
-sobrevive, ilha curta, palavra raspada. Cada achado sai no tempo da fonte
+`render` e lista só o suspeito: pendência sem resposta, anotação
+desobedecida, fala cortada que sobrevive, ilha curta, palavra raspada,
+arrasto que a poda não levou. Cada achado sai no tempo da fonte
 *e* no da prévia. Sem ele, defeito de geometria só aparecia quando o Rafael
 ouvia — foi assim que seis defeitos chegaram juntos a ele, nenhum de
 julgamento de conteúdo. `conferir <video> --em 3:05` traduz um tempo da

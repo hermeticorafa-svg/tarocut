@@ -84,9 +84,20 @@ O `tarocut.py revisar` existe só para isso: escreve um `revisao.txt` que
 colapsa o que já está cortado em marcadores de duração. Um vídeo de 10 min
 cabe em ~1,3 mil tokens, contra 32 mil do `stream.json`. O arquivo abre com
 uma lista `## PENDENCIAS` numerada — cada item é uma coisa que o programa
-sabe que não sabe resolver (um som que ninguém leu, um pedaço de áudio
-colado numa palavra, uma leitura de baixa confiança), e o passe de
-julgamento tem de responder por todas, uma a uma, no relatório.
+sabe que não sabe resolver (um som que ninguém leu, uma leitura de baixa
+confiança, uma frase que talvez seja tentativa abandonada). São poucas, 0 a
+12 por vídeo, e o passe de julgamento tem de responder por todas.
+
+**Responder é escrever.** A decisão vai em
+`work/<video>/respostas.json` — `{"em": 223.35, "resposta": "fica",
+"nota": "..."}`, com `em` copiado da linha `Pn`. Pendência cujo trecho sai
+no corte já está respondida pelo próprio corte; a linha escrita existe
+para o outro caso, o "olhei e deixei ficar", que não deixa marca em lugar
+nenhum. Escrever `"sai"` aí **registra** a decisão e não corta nada — quem
+corta é a anotação —, e se o trecho continuar tocando o `conferir` diz
+`PENDENCIA NAO OBEDECIDA`. **O que sobrar sem resposta ele lista como
+`PENDENCIA SEM RESPOSTA`, e o `audio`/`render` avisam antes de rodar** — dar o passe por
+encerrado com uma pergunta em aberto dá; fazer isso em silêncio, não.
 
 **2b. Conferir** — logo depois do passe, sempre:
 
@@ -176,6 +187,13 @@ venv\Scripts\python.exe tarocut.py conferir "...IMG_0247.MOV" --em 3:05
 
 Ajuste no editor (ou no `anotacoes.json`, ou no `transcript.md`), rode de
 novo, repita até gostar. Só então renderize.
+
+Duas linhas do `conferir` valem uma palavra à parte, porque o conserto
+delas não é anotação: `ARRASTO SOBREVIVE` é o rabo de uma palavra
+arrastada que o corte não levou (a poda era curta demais para virar
+emenda), e o lugar de apará-lo é o editor, com o botão de menos.
+`PENDENCIA SEM RESPOSTA` não é defeito de corte nenhum — é uma pergunta
+do `revisao.txt` esperando decisão.
 
 **4. Export**:
 

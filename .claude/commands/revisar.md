@@ -67,9 +67,11 @@ anotação. Você está aqui só para saber do que a aula trata.
 O cabeçalho explica as marcas. As que mais importam:
 
 - `## PENDENCIAS` — a lista numerada do que o programa **sabe que não sabe
-  resolver**. Cada `Pn` precisa de uma resposta sua, e as respostas vão no
-  relatório da fase 5. Elas aparecem também ancoradas no texto como `[P7]`,
-  para você ver cada uma no contexto em que caiu.
+  resolver**. Cada `Pn` precisa de uma resposta sua, e a resposta vai em
+  **dois** lugares: `work/<video>/respostas.json` (fase 3) e o relatório
+  (fase 5). Elas aparecem também ancoradas no texto como `[P7]`, para você
+  ver cada uma no contexto em que caiu. São poucas — 0 a 12 por vídeo — e
+  o cabeçalho do bloco diz quantas ainda estão sem resposta.
 - `[rec: ...]` — **texto reconstruído**: não saiu da transcrição do vídeo.
   O Whisper não leu nada ali e o programa re-transcreveu o pedaço isolado.
   É a leitura de menor confiança do arquivo, e é onde bocejo, resmungo e eco
@@ -154,11 +156,14 @@ Percorra `P1`, `P2`, ... `Pn` na ordem. Para cada uma, três coisas:
    aula?** Não "é uma palavra em português?", mas "é uma coisa que ela
    diria aqui, agora, sobre esta carta?".
 3. Decida: **sai**, **fica**, ou **vale ouvido**. Registre a decisão — a
-   fase 5 pede uma linha por pendência.
+   fase 3 pede uma linha no `respostas.json` e a fase 5, uma no relatório.
 
-Pode agrupar no relatório o que se decide junto ("P2, P3, P5 e P8: cauda
-arrastada em conjunção curta, ficam"). O que não pode é sobrar pendência
-sem resposta.
+Pode agrupar o que se decide junto (`{"em": [223.35, 270.45], "resposta":
+"fica"}`, e "P2 e P3: som alto que é ela respirando, ficam" no relatório).
+O que não pode é sobrar pendência sem resposta — e agora **isso não é só
+uma regra deste arquivo**: o `conferir` lista cada uma como `PENDENCIA SEM
+RESPOSTA` e o `audio`/`render` avisam antes de gastar minutos. Terminar sem
+responder dá para fazer; terminar sem responder **em silêncio**, não.
 
 Como decidir cada tipo:
 
@@ -169,13 +174,6 @@ Como decidir cada tipo:
   "Mãe! Mais do que..." recuperado virou "alguém grita Mãe! interrompendo"
   no `motivo`, e o áudio real era a Mariana fazendo um "oooh" de voz
   fofinha.
-- **fala não transcrita** (`X.Xs colados em 'palavra'`) — a palavra é real
-  e fica; o áudio colado nela é que é o problema. É a assinatura clássica
-  do bocejo. Se o `[rec: ...]` vizinho não fizer sentido, ele é o candidato.
-- **cauda arrastada** — a poda automática já tirou o rabo, mas só até uma
-  folga fixa e generosa. Pode sobrar arrasto audível. Vale ouvido; e
-  **se o que você quer aparar cabe dentro de uma única palavra, isso não é
-  anotação** — vai para `montagem.json`, ver fase 3.
 - **som alto sem texto** (`[??]`) — o microfone ouviu e ninguém leu.
   Mantido de propósito para você decidir. Sai ou fica.
 - **retomada?** — o programa achou a mesma dupla de palavras repetida
@@ -189,13 +187,26 @@ Como decidir cada tipo:
   diferentes, fica tudo. Na dúvida, releia a frase inteira em volta do
   `[Pn]`: se as duas versões cabem juntas no mesmo parágrafo sem soar
   repetitivo, é anáfora.
-- **disputa** — não é julgamento de conteúdo, é aviso de geometria: duas
-  recuperações automáticas brigaram pelo mesmo áudio. Quase sempre o texto
-  em volta está certo, mas o corte pode sair fragmentado. Ouça
-  (`tarocut.py audio $ARGUMENTS`) antes de aceitar. Se soar errado, é
-  achado para o programador (fase 5), **não** anotação.
 - **fala rarefeita** — muito tempo e pouca palavra. Quase sempre parada
   longa, retomada, ou ela se perdendo.
+
+**Três categorias saíram desta lista, e é bom saber por quê** — se você
+viu alguma num `revisao.txt` antigo, ela não sumiu por descuido:
+
+- `fala nao transcrita` (`X.Xs colados em 'palavra'`) apontava a palavra em
+  que o áudio estava grudado, mas o programa já separou esse áudio num
+  token próprio antes de escrever o arquivo. Medido nos 10 fluxos: nos 106
+  casos o vizinho ou já está cortado, ou já é um `[rec: ...]`/`[??]` na
+  lista. Era a mesma pergunta, do lado errado.
+- `cauda arrastada` era pergunta de geometria feita a quem lê texto. Virou
+  medida: o `conferir` diz `ARRASTO SOBREVIVE` quando a poda não coube no
+  corte (14 casos nos 10 fluxos, contra 76 perguntas). Continua valendo a
+  regra de onde consertar: **se o que você quer aparar cabe dentro de uma
+  única palavra, isso não é anotação** — vai para `montagem.json`, fase 3.
+- `disputa` este arquivo mesmo mandava não responder ("achado para o
+  programador"). Agora ela aparece onde tem consequência: como nota numa
+  linha `ILHA CURTA` do `conferir`, e como faixa suspeita no cabeçalho do
+  `revisao.txt`.
 
 ### 2b. Varredura corrida (aberta) — é aqui que mora o que você veio buscar
 
@@ -268,7 +279,45 @@ exatamente o farelo que sobra para o editor limpar à mão.
 
 ## Fase 3 — escrever
 
-`work/<video>/anotacoes.json`:
+São dois arquivos, e eles respondem perguntas diferentes: o
+`anotacoes.json` diz **o que sai**, e o `respostas.json` diz **o que você
+decidiu sobre cada pendência** — inclusive as que ficam, que não deixam
+marca em lugar nenhum.
+
+### `work/<video>/respostas.json`
+
+```json
+[{"em": [223.35, 270.45], "resposta": "fica", "nota": "ela respirando fundo entre as frases"},
+ {"em": 464.09, "resposta": "sai", "nota": "tentativa abandonada; a boa e a segunda"}]
+```
+
+- `em` é o **tempo** impresso na linha `Pn` do `revisao.txt`, copiado como
+  está (duas casas). Uma lista quando a mesma decisão vale para várias.
+- `resposta` é `sai`, `fica` ou `ouvido` — qualquer outra palavra e o
+  programa recusa o arquivo em vez de ignorar a linha.
+- **`sai` registra a decisão; não corta nada.** Quem corta é a anotação
+  (ou o `transcript.md`, ou o editor). Se você escrever `sai` e o trecho
+  continuar tocando, o `conferir` diz `PENDENCIA NAO OBEDECIDA` — irmã da
+  `ANOTACAO NAO OBEDECIDA`, e pelo mesmo motivo.
+- `nota` é para uma pessoa ler daqui a seis meses, como o `motivo` da
+  anotação.
+
+É o **tempo**, e não o número `n`, porque número caduca: uma pendência do
+meio da lista que sai renumera todas as de baixo, e a resposta passaria a
+valer para outra pergunta. Mesma razão pela qual `montagem.json` guarda o
+`s`/`e` de cada palavra.
+
+Duas coisas dispensam a linha escrita, e as duas o programa reconhece
+sozinho: pendência cujo trecho **sai no corte** (a resposta é o corte) e
+trecho que você **restaurou no editor** (você clicou naquele token). O que
+não dá para adivinhar é "olhei e deixei ficar" — e é exatamente essa a
+linha que este arquivo existe para guardar.
+
+`respostas.json` é do mesmo tipo do `anotacoes.json`: não se regenera, não
+se sobrescreve, e uma resposta já escrita não se apaga. Acrescente as suas
+ao fim.
+
+### `work/<video>/anotacoes.json`
 
 ```json
 [{"ini": 228.1, "fim": 231.4, "motivo": "interrupcao domestica"}]
@@ -413,6 +462,17 @@ de uma disputa de recuperação automática) escapou do IMG_0246 e só apareceu
 porque alguém ouviu o `audio` por fora do processo. Para cada linha, decida
 e registre na fase 5:
 
+- **`PENDENCIA NAO OBEDECIDA`** — você respondeu `sai` e o trecho
+  continua no corte. Ou faltou a anotação, ou ela não pegou o trecho.
+- **`PENDENCIA SEM RESPOSTA`** — uma pendência que você não respondeu.
+  Ou é esquecimento, ou o tempo que você copiou para o `respostas.json`
+  saiu errado (nesse caso aparece também uma linha `# nota: a resposta em
+  [...] nao casa com pendencia nenhuma`). O primeiro número da coluna
+  `fonte` é o `em` que faltava.
+- **`ARRASTO SOBREVIVE`** — a poda da cauda arrastada não coube no corte
+  (cauda menor que 0,34s é descartada pelo `minimo`) e o rabo continua
+  audível. Conserto: `montagem.json`/`cortes`, não anotação — está dentro
+  de uma palavra só.
 - **`REPETICAO AUDIVEL`** — a mesma palavra duas vezes seguidas no corte.
   Metade destes casos **o corte criou**: no IMG_0248 a anotação de
   343,7-350,4s ("três tentativas da mesma oração") encosta o "que" de
@@ -441,7 +501,9 @@ Termine com cinco blocos curtos:
    Rafael conferir de relance se você entendeu o vídeo certo; se não
    entendeu, todo o resto do passe está suspeito.
 2. **Pendências** — uma linha por `Pn` (agrupadas quando a decisão é a
-   mesma): saiu, ficou, ou vale ouvido. **Nenhuma pode faltar.**
+   mesma): saiu, ficou, ou vale ouvido. **Nenhuma pode faltar**, e o
+   `respostas.json` tem de dizer o mesmo que este bloco — diga aqui
+   quantas o `conferir` ainda cobra (o normal é zero).
 3. **O que anotei** — uma linha por anotação: tempo, o que sai, por quê.
 4. **O que o `conferir` diz** — confirme "zero ANOTACAO NAO OBEDECIDA", ou
    liste o que sobrou e por que você parou. Some a triagem das outras
@@ -503,8 +565,9 @@ importantes em relação às fases 1-5:
   são palavras/sílabas distintas, não uma só esticada. Isso não
   substitui ouvir quando a dúvida é sobre O QUE foi dito — só quando a
   dúvida é sobre a FORMA do som (quanto dura, é uma coisa ou são duas).
-- **O procedimento de escrita continua o mesmo da fase 3-4**: faça
-  backup de `anotacoes.json` uma vez nesta sessão
+- **O procedimento de escrita continua o mesmo da fase 3-4** (as
+  pendências que sobrarem em aberto continuam pedindo linha no
+  `respostas.json`): faça backup de `anotacoes.json` uma vez nesta sessão
   (`anotacoes.json.bak-AAAAMMDD-HHMM`), nunca apague ou reescreva
   anotação existente, ancore em `words.json` como sempre — e lembre da
   regra da fase 3: se o corte cai dentro de uma única palavra (aparar

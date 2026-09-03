@@ -39,12 +39,30 @@ fator   = 4.0    # quantas vezes acima do esperado conta como arrastada
 # hesitacao que o Whisper grudou na palavra seguinte - o passe de julgamento
 # consegue resolver o que o alinhamento automatico nao resolve.
 min_dur = 0.30
-manter  = 1.6    # ao cortar a cauda, preserva este tanto do esperado
+# Ao cortar a cauda, preserva este tanto do esperado - ou seja, deixa
+# 0,6x a duracao normal de arrasto DE PROPOSITO. Isso ficou visivel:
+# `conferir` mede o que sobra de cada cauda (ARRASTO SOBREVIVE) em vez de
+# perguntar no revisao.txt. MEDIDO nos 10 fluxos de work/, 76 caudas: 64
+# deixam 0,06-0,14s (a folga que `_respeita_palavras` devolve por
+# construcao, nao este numero), 1 sai inteira, e 11 sobrevivem 100% -
+# todas com cauda de 0,25-0,30s, abaixo do piso de [corte].minimo +
+# folga_palavra (0,34s), que descarta o corte. Nao se conserta baixando
+# `manter`: cauda menor nao passa a caber, passa a nem ser marcada.
+manter  = 1.6
 # Acima deste excesso a palavra nao esta "arrastada": o Whisper deixou de
 # transcrever alguma coisa e o alinhador absorveu na palavra vizinha. Medido:
 # 'principalmente' com 4,67s escondia um "nessas cartas" repetido. Nesses
 # casos o analyze re-transcreve o trecho antes de decidir, em vez de cortar
 # uma cauda no escuro.
+#
+# MEDIDO (03/09/2026) nos 10 fluxos de work/, juntando as duas familias:
+# o excesso das 116 palavras arrastadas vai de 0,25s a 7,0s SEM VALE - e
+# um continuo, e 1,2 e um corte no meio dele, nao uma fronteira natural.
+# Fica onde esta por falta de medicao que diga o contrario: baixar manda
+# mais trecho para a re-transcricao (mais lento, e o Whisper alucina em
+# trecho curto - ver `isolar_min`), subir volta a cortar cauda no escuro
+# onde havia fala. Quem quiser mexer, meca contra o audio, nao contra
+# esta distribuicao: ela nao tem nada a dizer sobre onde e o certo.
 excesso_suspeito = 1.2
 
 [instrucao]
@@ -66,6 +84,23 @@ volta_max = 25.0
 # com pausa dentro cai para 4-6; "Ous!" em 2,1s deu 1,4. Vale para TODOS os
 # caminhos que recuperam texto (ver `classifica_fala`).
 densidade_minima = 2.5
+# Os outros dois numeros de `classifica_fala`, que decidiam corte escritos
+# no braco dentro da funcao: quantas palavras ainda cabem num cacoete
+# recuperado, e ate quantas letras uma palavra e "curta demais para contar
+# como conteudo". Um trecho recuperado so sai inteiro quando tem no maximo
+# `recuperado_max_palavras` palavras E todas elas sao cacoete do lexico,
+# curtas ou alongadas.
+#
+# MEDIDO nos 10 fluxos de work/: com 3 e 3 a regra corta 11 trechos, e os
+# 11 sao ruido de verdade ("Ei, ei, ei.", "Eeeeeee", "Ah, eu...", "Hum!",
+# "Iiii"); os 10 que ela deixa passar sao fala real ("Certo?", "Entao,
+# entendeu?", "de fazer parte...") ou justamente as leituras inventadas
+# que o passe de julgamento precisa ver ("Disse percebe", "Nurope", "Os
+# pardes"). Subir qualquer um dos dois passa a comer frase curta de
+# verdade - "e a leitura" tem 3 palavras e cai inteira dentro da regra se
+# `palavra_curta_max` chegar a 7.
+recuperado_max_palavras = 3
+palavra_curta_max       = 3
 # abaixo desta duracao nao vale re-transcrever (o Whisper alucina)
 isolar_min          = 0.85
 # GUARDA CONTRA APAGAR FRASE. Um trecho de que o transcritor nao tirou texto

@@ -144,20 +144,26 @@ def parece_frase(dur, frac, pico, limiar, ch):
             and pico - limiar >= ch["guarda_db"])
 
 
-def classifica_fala(txt, dur, sempre, dens_min):
+def classifica_fala(txt, dur, sempre, ch):
     """O texto recuperado num trecho e cacoete ou e fala? -> (cortar, motivo)
 
     Usada por TODOS os caminhos que recuperam texto de um trecho: lacuna
     entre palavras, excesso de palavra com duracao impossivel, e o que
-    vier depois."""
+    vier depois.
+
+    `ch` e o bloco [hesitacao] inteiro, e nao so a densidade: os outros
+    dois numeros desta funcao - quantas palavras ainda cabem num cacoete e
+    o que conta como palavra curta - moravam escritos no braco aqui, e
+    numero que decide corte nao mora no codigo."""
     if not txt or not chave(txt):
         return True, "sem texto"
     dens = densidade_fala(txt, dur)
-    if dens < dens_min:
+    if dens < ch["densidade_minima"]:
         return True, f"nao e fala ({dens:.1f} car/s)"
     toks = [chave_ac(w) for w in txt.split() if chave_ac(w)]
-    if len(toks) <= 3 and all(t in sempre or len(t) <= 3 or eh_alongada(t)
-                              for t in toks):
+    if (len(toks) <= ch["recuperado_max_palavras"]
+            and all(t in sempre or len(t) <= ch["palavra_curta_max"]
+                    or eh_alongada(t) for t in toks)):
         return True, f"hesitação recuperada: {txt[:24]}"
     return False, f"fala nao transcrita: {txt[:26]}"
 
@@ -451,7 +457,7 @@ def alucinou(txt, dur, logprob, c):
 
 # --------------------------------------------------- marcacao: cacoetes
 
-def resolve_suspeitos(stream, escuta, ch, sempre, dens_min, db, hop, limiar):
+def resolve_suspeitos(stream, escuta, ch, sempre, db, hop, limiar):
     """Descobre o que ha nos trechos de duracao impossivel.
 
     Quando o Whisper deixa de transcrever alguma coisa, o alinhador nao tem
@@ -487,7 +493,7 @@ def resolve_suspeitos(stream, escuta, ch, sempre, dens_min, db, hop, limiar):
                 rot, cortar, why = ("hesitação", True,
                                     f"voz sem texto {b-a:.1f}s")
         else:
-            cortar, why = classifica_fala(txt, b - a, sempre, dens_min)
+            cortar, why = classifica_fala(txt, b - a, sempre, ch)
             rot = txt        # o eco e decidido depois, por marca_ecos
         novos.append({"k": "hesitacao", "t": rot, "s": round(a, 3),
                       "e": round(b, 3), "cut": cortar, "why": why})
@@ -783,7 +789,149 @@ def eh_hesitacao(lac, palavra_antes, sempre, ch, limiar):
             return False, (f"som alto sem texto ({lac.get('voz',0)*100:.0f}% "
                            f"de voz) - mantido para julgamento")
         return True, f"voz sem texto {lac['dur']:.1f}s"
-    return classifica_fala(txt, lac["dur"], sempre, ch["densidade_minima"])
+    return classifica_fala(txt, lac["dur"], sempre, ch)
+
+
+def carrega_respostas(d):
+    """work/<video>/respostas.json - o que o passe de julgamento DECIDIU
+    sobre cada pendencia do revisao.txt.
+
+    Irmao do `anotacoes.json`, e pela mesma razao: a anotacao registra o
+    que sai, e esta lista registra o que FICA e por que. Sem ela "responda
+    toda pendencia" era regra do prompt do /revisar e de mais ninguem - o
+    programa listava, numerava e ancorava cada `Pn`, e ninguem conferia se
+    alguma tinha ficado sem resposta. Julgamento que ninguem cobra e
+    julgamento que um dia nao acontece, e este e o programa em que uma
+    pendencia sem resposta ja chegou ao Rafael como bocejo no audio.
+
+        [{"em": 305.04, "resposta": "fica", "nota": "por que"}]
+
+    `em` e o TEMPO da pendencia, o mesmo numero que o revisao.txt imprime
+    na linha `Pn`. E o tempo, e nao o numero `n`, porque numero caduca: se
+    uma pendencia do meio da lista some (foi cortada), todas as de baixo
+    mudam de numero e as respostas passariam a valer para outra pergunta -
+    a mesma armadilha do indice de token que o `confere_montagem` recusa.
+    Tempo de palavra nao caduca.
+
+    `em` aceita uma lista quando a mesma decisao vale para varias ("P2, P3
+    e P5: som alto que e ela respirando fundo, ficam"), que e como o
+    relatorio do /revisar ja pede.
+
+    Recusa em vez de avisar, como o selo do transcript.md: um arquivo de
+    julgamento que o programa nao entende e julgamento sumindo em
+    silencio, que e o defeito que este arquivo existe para fechar."""
+    p = d / "respostas.json"
+    if not p.exists():
+        return []
+    try:
+        dados = jload(p)
+    except Exception as e:
+        sys.exit(f"[respostas] {p} ilegivel ({e}). Conserte o arquivo: e "
+                 f"julgamento humano, nao da para ignorar em silencio.")
+    ok = []
+    for r in dados if isinstance(dados, list) else []:
+        em = r.get("em")
+        em = em if isinstance(em, (list, tuple)) else [em]
+        try:
+            tempos = [float(x) for x in em]
+        except (TypeError, ValueError):
+            sys.exit(f"[respostas] {p}: 'em' tem de ser o tempo da "
+                     f"pendencia (numero ou lista de numeros), e veio "
+                     f"{r.get('em')!r}.")
+        resp = str(r.get("resposta", "")).strip().lower()
+        if resp not in ("sai", "fica", "ouvido"):
+            sys.exit(f"[respostas] {p}: 'resposta' em {tempos} e "
+                     f"{resp!r}; so vale 'sai', 'fica' ou 'ouvido'.")
+        ok.append({"em": tempos, "resposta": resp,
+                   "nota": str(r.get("nota", ""))})
+    return ok
+
+
+# `why` que so uma pessoa escreve ao MANTER: ela viu o token marcado para
+# sair e clicou nele no editor. Manter de olhos abertos e resposta tao
+# explicita quanto cortar - cobrar resposta escrita depois disso e
+# perguntar duas vezes. Sem isto o `conferir` do IMG_0247 cobrava o
+# 'As cartas' de 160,34s, que a pessoa tinha restaurado no editor.
+#
+# "resgatado" NAO entra, por mais que o nome prometa. Ele vem do
+# `reconcilia`, para todo token que o transcript.md traz entre ⟨ ⟩ - e
+# `texto_token` imprime ASSIM toda hesitacao e toda pausa MANTIDA, nao so
+# as que alguem trouxe de volta. Aceita-lo dava "ja respondida" a todas as
+# 8 pendencias do IMG_0247, inclusive as que ninguem tinha olhado.
+MAO_MANTEM = ("restaurado no editor",)
+
+
+def casa_resposta(q, resp, tol=0.05):
+    """Qual resposta do `respostas.json` responde esta pendencia (indice na
+    lista), ou None.
+
+    Regra de UMA linha, mas mora aqui porque quem pergunta sao dois: o
+    `revisar`, que marca na lista o que ja foi respondido, e o
+    `pendencias_sem_resposta`, que cobra o resto. Dois lugares casando
+    tempo com tolerancia propria seriam duas respostas diferentes para a
+    mesma pergunta - o mesmo defeito de ter `minimo` no codigo e
+    `fortes_min` no config.
+
+    `tol` = 0,05s casa o tempo escrito a mao com o tempo da pendencia: o
+    revisao.txt imprime com duas casas, entao o erro de copia e de
+    arredondamento, nao de julgamento. Nao da para afrouxar muito: nos 10
+    fluxos de work/ duas pendencias diferentes chegam a ficar a 0,13s uma
+    da outra, e uma resposta que casasse com as duas responderia por
+    engano uma pergunta que ninguem leu."""
+    for k, r in enumerate(resp):
+        if any(abs(t - q["s"]) <= tol for t in r["em"]):
+            return k
+    return None
+
+
+def pendencias_sem_resposta(pend, resp, iv):
+    """A pergunta que fecha o laco: sobrou pendencia sem resposta escrita?
+
+    Mora aqui, uma vez so, do mesmo jeito e pela mesma razao que
+    `anotacoes_desobedecidas`: quem pergunta sao o `conferir` (que lista) e
+    o `_plano` (que avisa antes de gerar audio ou video). Regra de prompt
+    depende de alguem lembrar; isto nao.
+
+    Uma pendencia se responde de tres jeitos, e os tres contam:
+      - CORTANDO o trecho - a resposta e o proprio corte, e por isso a
+        pendencia que nao sobrevive ao `iv` nao e cobrada;
+      - TRAZENDO de volta a mao um trecho marcado para sair (`MAO_MANTEM`)
+        - a pessoa olhou aquele token e disse fica;
+      - ESCREVENDO no respostas.json - unico jeito de dizer "fica" ou
+        "vale ouvido" sobre o que ninguem tocou, que e o caso em que a
+        decisao nao deixa marca em lugar nenhum.
+
+    Escrever "sai" NAO corta nada - o `respostas.json` registra decisao,
+    quem executa e a anotacao (ou o transcript.md, ou o editor). Uma
+    resposta "sai" sobre trecho que continua tocando por isso nao conta
+    como respondida: seria um jeito novinho de julgamento humano sumir em
+    silencio, e este programa ja tem quatro. Ela volta com `falta`
+    dizendo PENDENCIA NAO OBEDECIDA, irma da anotacao desobedecida.
+
+    Essa cobranca so vale para a pendencia cujo trecho E o que sai
+    (`proprio`, as duas de texto recuperado). Numa `retomada?` o trecho
+    vai da primeira tentativa ate a versao boa, e cortar a primeira -
+    exatamente o que se pede - deixa a segunda tocando: cobrar ali seria
+    reclamar de quem obedeceu.
+
+    Devolve (sem_resposta, orfas). Orfa e resposta que nao casa com
+    pendencia nenhuma - tempo digitado errado, ou pendencia que ja saiu
+    no corte depois de respondida. Nao e erro; e o que se olha quando a
+    lista de sem-resposta nao diminui."""
+    casadas = set()
+    sem = []
+    for q in pend:
+        vivo = sum(max(0.0, min(q["y"], b) - max(q["x"], a)) for a, b in iv)
+        k = casa_resposta(q, resp)
+        if k is not None:
+            casadas.add(k)
+            if (resp[k]["resposta"] == "sai" and vivo > 0.15
+                    and q.get("proprio")):
+                sem.append(dict(q, falta="PENDENCIA NAO OBEDECIDA"))
+        elif vivo > 0.15 and not q.get("mao"):
+            sem.append(dict(q, falta="PENDENCIA SEM RESPOSTA"))
+    orfas = [r for k, r in enumerate(resp) if k not in casadas]
+    return sem, orfas
 
 
 def carrega_anotacoes(d):
@@ -957,7 +1105,7 @@ def classe_num(pal, k):
     return None
 
 
-def protege_enumeracoes(stream, cn, minimo=3):
+def protege_enumeracoes(stream, cn):
     """Contagem corrida - "As, 2, 3, 4, 5, 6, 7, 8, 9, 10" - tem que correr
     inteira. Encurtar as pausas entre os numeros quebra o ritmo e o video
     fica sem sentido. Marca a sequencia como intocavel.
@@ -970,7 +1118,15 @@ def protege_enumeracoes(stream, cn, minimo=3):
     2. Numeros vizinhos NO TEMPO. Silencio nao e token `palavra`, entao a
        varredura nao o enxerga: sem esta trava, "As figuras" (80,0s) e "as"
        (86,0s) pareciam lado a lado e a sequencia falsa atravessava 5,6s de
-       silencio."""
+       silencio.
+
+    Havia um terceiro, `minimo=3`, default de parametro que ninguem nunca
+    passou: comprimento minimo da sequencia contando numero fraco. Era um
+    segundo lugar decidindo o que `fortes_min` ja decide - exigir 3
+    numeros INEQUIVOCOS ja exige 3 tokens -, e um segundo lugar que o
+    config.toml nao alcancava. Baixar `fortes_min` sem saber dele nao
+    frouxaria nada, o que e exatamente o tipo de surpresa que faz numero
+    de corte morar em um lugar so."""
     idx = [i for i, t in enumerate(stream) if t["k"] == "palavra"]
     pal = [stream[i] for i in idx]
     cls = [classe_num(pal, k) for k in range(len(pal))]
@@ -995,7 +1151,7 @@ def protege_enumeracoes(stream, cn, minimo=3):
                 j += 1
         j = ult
         fortes = sum(1 for k in range(i, j + 1) if cls[k] == "forte")
-        if j - i + 1 >= minimo and fortes >= cn["fortes_min"]:
+        if fortes >= cn["fortes_min"]:
             for k in range(idx[i], idx[j] + 1):
                 stream[k]["prot"] = True
                 if stream[k]["cut"]:
@@ -1146,8 +1302,7 @@ def cmd_analyze(a):
     if n_inst:
         print(f"[analyze] marcadores verbais de corte: {n_inst} tokens "
               f"(ela pediu para cortar)")
-    n_susp = resolve_suspeitos(stream, escuta, ch, sempre,
-                               ch["densidade_minima"], db, hop, limiar)
+    n_susp = resolve_suspeitos(stream, escuta, ch, sempre, db, hop, limiar)
     if n_susp:
         print(f"[analyze] trechos de duracao impossivel resolvidos: {n_susp}")
     # o `escuta` acima escreve _clip.wav a cada trecho, e `resolve_suspeitos`
@@ -2533,6 +2688,20 @@ def _plano(a, rotulo):
             print(f"[{rotulo}] AVISO: a anotacao {x:.2f}-{y:.2f} nao foi "
                   f"obedecida - {vivo:.2f}s continuam no video: "
                   f"{motivo[:60]}")
+    # Mesma regra da anotacao desobedecida, para a outra metade do
+    # julgamento: o `conferir` ja faz esta pergunta e so quem lembrava de
+    # roda-lo ouvia a resposta. Aqui ela e feita no caminho por onde TODO
+    # mundo passa antes de gerar audio ou video.
+    sem, _ = pendencias_sem_resposta(
+        pendencias(stream, C, carrega_vocabulario(d)),
+        carrega_respostas(d), iv)
+    for q in sem[:6]:
+        print(f"[{rotulo}] AVISO: {q['falta']} em {q['s']:.2f}s "
+              f"- {q['rot']}: {q['desc'][:50]}")
+    if sem:
+        print(f"[{rotulo}] {len(sem)} pendencia(s) do revisao.txt sem "
+              f"resposta. Decida cada uma e escreva em "
+              f"{d/'respostas.json'} (ou corte o trecho).")
     confere_pelo_whisper(d, C, stream, iv, rotulo)
     # Corte que nao deixa nada nao e corte, e o ffmpeg so diz isso com um
     # erro de `concat=n=0` que nao ajuda ninguem. Acontece quando uma
@@ -2572,36 +2741,39 @@ def fora_de_ordem(st):
 
 def sobrepostos(st, folga=0.5):
     """Pares de tokens (palavra OU hesitacao) que invadem o tempo um do
-    outro, com o indice ORIGINAL de cada um em `st` (para ancorar no
-    revisao.txt).
+    outro, com o indice ORIGINAL de cada um em `st`.
 
-    `fora_de_ordem` pega o alinhador embaralhando o INICIO da palavra. Isto
-    aqui pega um sintoma irmao, que nao mexe em nenhum inicio: quando
-    `resolve_suspeitos` (duracao impossivel) e `marca_ecos` (retomada
-    colapsada) disputam o MESMO audio, cada um sozinho tem inicio em ordem,
-    mas os dois juntos cobrem o mesmo intervalo duas vezes. `_respeita_
-    palavras` entao protege cada palavra real por conta propria, sem saber
-    que ha uma disputa - e o que sobra e um pedaco isolado entre dois
-    cortes, do tamanho de uma unica palavra.
+    `fora_de_ordem` pega o alinhador embaralhando o INICIO da palavra.
+    Isto pega o sintoma irmao, que nao mexe em nenhum inicio: dois tokens
+    cobrindo o mesmo intervalo.
 
-    Medido no IMG_0246_bruto: "principalmente" (136,99-138,64s, duracao
-    impossivel) e "nessas" (137,55-138,01s) tiveram cada um sua recuperacao
-    disputando a mesma frase ("das mulheres, principalmente, nessas
-    cartas, em que..."), sem que nenhuma violasse `fora_de_ordem` sozinha.
-    O resultado foi um "em" solto - ILHA CURTA que so apareceu porque
-    alguem ouviu o corte, nao porque o revisao.txt avisou.
+    A CAUSA, que este docstring atribuia a uma disputa entre
+    `resolve_suspeitos` e `marca_ecos`, foi MEDIDA nos 10 fluxos de
+    `work/` e e outra: das 31 invasoes, 27 tem dentro uma palavra cujo
+    tempo o proprio alinhador recusou (`align_rejeitado` deriva/ordem) -
+    e a que sai com `~` no revisao.txt. Nao ha duas etapas brigando; ha
+    uma palavra no lugar errado, e todo mundo que le o tempo dela erra
+    junto. Por isso a saida daqui alimenta `zonas_suspeitas`, ao lado do
+    `~`, e nao uma pendencia propria.
+
+    E das 31, 8 sao entre dois tokens que ja saem inteiros (nao sobra
+    nada para dar errado) e so 3 produzem a consequencia que se temia -
+    a ilha curta do "em" solto do IMG_0246_bruto ("das mulheres,
+    principalmente, nessas cartas, em que..."). Essas 3 o `conferir` ja
+    lista como ILHA CURTA, medidas contra o corte de verdade; a nota de
+    disputa entra ali para dizer de onde a ilha veio. Perguntar as 31 ao
+    passe de julgamento era pedir julgamento de conteudo sobre geometria,
+    e o proprio /revisar mandava nao responder.
 
     `folga=0.5` veio de rodar contra os quatro stream.json disponiveis
     (IMG_0246, IMG_0246_bruto, IMG_0247, IMG_0248): abaixo de ~0,3s e so
     jitter comum entre duas palavras reais vizinhas (visto ate 0,44s em
     trecho limpo, sem nenhum defeito); a 0,5s sobram so os pares que batem
     em casos ja documentados no codigo - o "do" que _respeita_palavras
-    cita (IMG_0247, 49,81-53,08 x 50,64-50,90) e o proprio "principalmente"
+    cita (IMG_0247, 49,81-53,08 x 50,64-50,90) e o "principalmente"
     acima, presentes tanto no bruto quanto no IMG_0246 ja julgado (onde a
-    disputa se resolveu diferente: os dois tokens saem cut=True, sem
-    nenhuma anotacao cobrindo o trecho - sinal de que o resultado desse
-    canto do pipeline nao e estavel entre rodadas, mais um motivo para
-    avisar sempre)."""
+    disputa se resolveu diferente: os dois tokens saem cut=True - sinal de
+    que o resultado desse canto do pipeline nao e estavel entre rodadas)."""
     pal = sorted(((t["s"], i) for i, t in enumerate(st)
                  if t["k"] in ("palavra", "hesitacao")))
     out = []
@@ -2663,140 +2835,114 @@ def rarefeitos(st, cr):
     return [(a, b, sobra(a, b), conta(a, b)) for a, b in achados]
 
 
-def cmd_revisar(a):
-    """Escreve o arquivo minimo que o passe de julgamento precisa ler.
+def zonas_suspeitas(st, W, choques, junta=3.0, larg_min=1.0):
+    """Faixas de tempo em que NENHUMA borda pode ser ancorada.
 
-    Existe por economia: o passe semantico so precisa do texto do video, e
-    nada mais. Rodado dentro de uma conversa longa, ele arrasta junto todo o
-    historico a cada resposta. Aqui a entrada fica num arquivo pequeno, para
-    a analise acontecer numa sessao limpa.
+    Junta as palavras cujo tempo o alinhador recusou (`deriva`/`ordem`, as
+    que saem com `~`) com as que invadem o tempo uma da outra
+    (`sobrepostos`), e funde o que esta perto. As duas listas sao o mesmo
+    defeito visto de dois lados - MEDIDO nos 10 fluxos de work/: 27 dos 31
+    pares de `sobrepostos` tem uma palavra `deriva`/`ordem` dentro.
 
-    Compacta agressivamente: o que ja foi cortado vira um marcador com a
-    duracao, em vez de aparecer palavra por palavra. Num video de 10 min isso
-    troca ~9 mil tokens por ~2,5 mil, sem perder o que importa para julgar."""
-    d = wdir(a.video)
-    S = jload(d / "stream.json")
-    st, dur = S["stream"], S["dur"]
-    C = cfg()
-    raros = rarefeitos(st, C["revisao"])
-    bagunca = fora_de_ordem(st)
-    choques = sobrepostos(st)
-    vocab = carrega_vocabulario(d)
+    Existe porque `~` solto nao responde a pergunta que a pessoa tem na
+    mao: "da para ancorar aqui?". Tres `~` espalhados numa linha podem ser
+    tres palavras ruins com fala boa no meio, ou 7 segundos seguidos sem
+    uma fronteira confiavel - e so o segundo caso obriga a anotar a regiao
+    inteira. No IMG_0247 sao 49,8-57,4s e 437,1-441,3s; no IMG_0248,
+    169,3-175,2s e 244,0-247,9s.
 
-    L = [f"# {Path(a.video).stem} | {hhmmss(dur)} | tempos em segundos",
-         "# [-N.Ns] = ja marcado para corte, trecho quieto. Texto solto =",
-         "# sera mantido.",
-         "# [-N.Ns VOZ] = marcado para corte MESMO havendo som alto ali",
-         "# dentro. O transcritor nao leu, mas o microfone ouviu: pode ser",
-         "# frase inteira prestes a sumir. Confira antes de deixar passar.",
-         "# [rec: ...] = texto RECONSTRUIDO. Nao saiu da transcricao do",
-         "# video: o programa re-transcreveu aquele pedaco isolado porque",
-         "# o Whisper nao tinha lido nada ali. E a leitura de MENOR",
-         "# confianca do arquivo inteiro, e e onde bocejo e resmungo se",
-         "# disfarcam de palavra. Va sempre pelo sentido: se nao encaixa",
-         "# no assunto da aula, o candidato a sair e ele, nao o vizinho.",
-         "# palavra~ = o tempo dessa palavra nao e confiavel (o alinhador",
-         "# recusou o proprio resultado e caiu no tempo grosseiro do",
-         "# Whisper). NAO ancore borda de corte numa palavra com ~: ela",
-         "# pode estar segundos longe de onde aparece aqui.",
-         "# [Pn] = pendencia numero n, listada em PENDENCIAS logo abaixo.",
-         "# Procure, alem das pendencias: retomadas com outras palavras,",
-         "# interrupcoes, trechos em que ela se perde. Responda com",
-         "# trechos [inicio, fim, motivo]."]
-    if bagunca:
-        L.append(f"# aviso: {bagunca} palavras com tempo fora de ordem - o "
-                 f"alinhador embaralhou")
-        L.append("# esses trechos, e ali o [-N.Ns] pode faltar mesmo "
-                 "havendo parada.")
+    `larg_min` corta a zona de uma palavra so: ali o `~` no texto ja diz
+    tudo, e a faixa nao acrescenta nada. Nos 10 fluxos isso deixa 4 a 7
+    faixas por video."""
+    pal_i = [i for i, t in enumerate(st) if t["k"] == "palavra"]
+    ruins = ({pal_i[k] for k, w in enumerate(W)
+              if w.get("align_rejeitado") in ("deriva", "ordem")}
+             if len(pal_i) == len(W) else set())
+    for ia, ib in choques:
+        ruins.update((ia, ib))
+    z = []
+    for a, b in sorted((st[i]["s"], st[i]["e"]) for i in ruins):
+        if z and a - z[-1][1] <= junta:
+            z[-1][1] = max(z[-1][1], b)
+            z[-1][2] += 1
+        else:
+            z.append([a, b, 1])
+    return [(a, b, n) for a, b, n in z if n >= 2 and b - a >= larg_min]
 
-    # ------------------------------------------------------ pendencias
-    # Tudo o que o programa sabe que NAO sabe resolver sozinho vira um
-    # item numerado aqui em cima, alem de aparecer ancorado no texto.
-    #
-    # Antes cada uma destas marcas so existia no meio do texto corrido, e
-    # a instrucao "toda ocorrencia precisa de uma resposta sua" dependia
-    # de quem lia ir catando marca por marca ate o fim. Nao foi o que
-    # aconteceu: no 7 de espadas um bocejo inteiro atravessou o passe de
-    # julgamento disfarcado de palavra reconstruida e so apareceu quando
-    # o Rafael ouviu o audio. Lista numerada se confere; marca solta no
-    # meio de 200 linhas de texto nao se confere.
-    # A explicacao de cada categoria vai UMA vez, no cabecalho do bloco,
-    # e so das categorias que apareceram. Repeti-la em cada item custava
-    # 100 caracteres por linha num arquivo que existe para ser pequeno -
-    # e o passe de julgamento le todas as linhas de qualquer jeito.
-    EXPLICA = {
-        "cauda arrastada":
-            "a poda ja tirou o rabo, mas so ate a folga fixa do "
-            "config.toml: pode sobrar arrasto audivel. Ouca.",
-        "fala nao transcrita":
-            "audio colado numa palavra REAL que nunca virou texto - quase "
-            "sempre bocejo, resmungo ou eco de microfone.",
-        "texto reconstruido":
-            "leitura de baixa confianca de um trecho que o Whisper nao "
-            "leu. Se nao faz sentido no assunto da aula, e ELE que sai.",
-        "som alto sem texto":
-            "ninguem conseguiu ler e o programa manteve de proposito, "
-            "para voce decidir. Sai ou fica?",
-        "disputa":
-            "duas recuperacoes automaticas brigaram pelo mesmo audio; o "
-            "corte pode sair fragmentado. So o ouvido resolve.",
-        "fala rarefeita":
-            "o que SOBRA ali e pouca fala em muito tempo: parada longa, "
-            "retomada, ou ela se perdendo.",
-        "retomada?":
-            "ela repete duas palavras pouco depois. Pode ser tentativa "
-            "abandonada (corte a PRIMEIRA, fique com a ultima) ou anafora "
-            "de proposito ('na carta da Rainha... na carta do Rei'). So o "
-            "sentido separa as duas - o programa nao corta isto sozinho.",
-    }
 
-    # Tudo o que o programa sabe que NAO sabe resolver sozinho vira um
-    # item numerado aqui em cima, alem de aparecer ancorado no texto.
-    #
-    # Antes cada uma destas marcas so existia no meio do texto corrido, e
-    # a instrucao "toda ocorrencia precisa de uma resposta sua" dependia
-    # de quem lia ir catando marca por marca ate o fim. Nao foi o que
-    # aconteceu: no 7 de espadas um bocejo inteiro atravessou o passe de
-    # julgamento disfarcado de palavra reconstruida e so apareceu quando
-    # o Rafael ouviu o audio. Lista numerada se confere; marca solta no
-    # meio de 200 linhas de texto nao se confere.
+EXPLICA_PENDENCIA = {
+    "texto reconstruido":
+        "leitura de baixa confianca de um trecho que o Whisper nao "
+        "leu. Se nao faz sentido no assunto da aula, e ELE que sai.",
+    "som alto sem texto":
+        "ninguem conseguiu ler e o programa manteve de proposito, "
+        "para voce decidir. Sai ou fica?",
+    "fala rarefeita":
+        "o que SOBRA ali e pouca fala em muito tempo: parada longa, "
+        "retomada, ou ela se perdendo.",
+    "retomada?":
+        "ela repete duas palavras pouco depois. Pode ser tentativa "
+        "abandonada (corte a PRIMEIRA, fique com a ultima) ou anafora "
+        "de proposito ('na carta da Rainha... na carta do Rei'). So o "
+        "sentido separa as duas - o programa nao corta isto sozinho.",
+}
+
+
+def pendencias(st, C, vocab):
+    """A lista fechada do que o programa sabe que NAO sabe resolver.
+
+    Mora aqui, uma vez so, porque tres partes precisam dela: o `revisar`,
+    que numera e ancora cada uma no texto; o `conferir`, que cobra a
+    resposta; e o `_plano`, que avisa antes de gastar minutos gerando
+    audio ou video.
+
+    Cada item leva o trecho de audio de que ele TRATA (`x`, `y`), e nao so
+    a ancora: e por ele que `pendencias_sem_resposta` sabe se a pergunta
+    ainda existe depois do corte.
+
+    TRES CATEGORIAS SAIRAM DAQUI, e as tres por medicao nos 10 fluxos de
+    `work/` (268 pendencias no total antes, 55 depois - de 7-50 por video
+    para 0-12):
+
+      `fala nao transcrita` (106, a maior de todas) nao dizia nada que o
+      token VIZINHO ja nao dissesse. Ela apontava a PALAVRA em que o audio
+      estava grudado, mas `resolve_suspeitos` ja separou esse audio num
+      token proprio antes do revisao.txt existir: nos 106 casos o vizinho
+      ou ja esta cortado (90 - o audio esta indo embora) ou ja e outra
+      pendencia, `som alto sem texto` (14) ou `texto reconstruido` (2).
+      Era a mesma pergunta feita duas vezes, do lado errado.
+
+      `cauda arrastada` (76) era pergunta sobre GEOMETRIA feita a quem le
+      texto - e sem os numeros que permitiriam responde-la. Virou medida
+      no `conferir` (ARRASTO SOBREVIVE): das 76, 64 deixam 0,06-0,14s de
+      arrasto - a folga que `_respeita_palavras` devolve por construcao -
+      e 11 deixam o arrasto INTEIRO, porque a poda (0,25-0,30s) nao coube
+      no `minimo`. Mais 3 sobram por outro motivo, em regiao que o
+      alinhador embaralhou. Perguntar as 76 escondia essas 14.
+
+      `disputa` (31) o proprio /revisar mandava nao responder ("nao e
+      julgamento de conteudo... e achado para o programador"). E a causa
+      no docstring de `sobrepostos` estava errada: 27 das 31 envolvem uma
+      palavra cujo tempo o proprio alinhador recusou (`deriva`/`ordem`),
+      que ja aparece como `~` no texto; 8 sao entre dois tokens que ja
+      saem; e a unica consequencia que ela previa - ilha curta - aparece
+      em 3, e nessas 3 o `conferir` ja lista ILHA CURTA, medida contra o
+      corte de verdade em vez de adivinhada."""
     pend = []
 
-    def ancora(i):
-        """O token MANTIDO mais proximo de `i`, para onde a marca `[Pn]`
-        vai no texto corrido.
+    def pergunta(i, rot, desc, x=None, y=None):
+        pend.append({"i": i, "rot": rot, "desc": desc, "s": st[i]["s"],
+                     "x": st[i]["s"] if x is None else x,
+                     "y": st[i]["e"] if y is None else y})
 
-        Token cortado nao e impresso, entao marca posta nele some sem
-        deixar rastro. Era o caso de TODA `[disputa]`: `sobrepostos`
-        devolve o par que se invade sem olhar `cut`, e nos quatro videos
-        de calibracao pelo menos um dos avisos caia num token ja marcado
-        para sair - o revisao.txt saia sem ele, e a fase 2 do
-        `/revisar` mandava procurar uma marca que nao existia no
-        arquivo."""
-        for k in range(i, len(st)):
-            if not st[k]["cut"]:
-                return k
-        for k in range(i, -1, -1):
-            if not st[k]["cut"]:
-                return k
-        return None
-
-    def pergunta(i, rot, desc):
-        pend.append({"i": i, "rot": rot, "desc": desc})
-
-    for x, y, sob, n in raros:
+    for x, y, sob, n in rarefeitos(st, C["revisao"]):
         # ancora no primeiro token MANTIDO que cai dentro: e o unico ponto
         # do texto corrido onde ele pode aparecer.
         for i, t in enumerate(st):
             if not t["cut"] and t["e"] > x and t["s"] < y:
                 pergunta(i, "fala rarefeita",
-                         f"{sob:.0f}s com so {n} palavra(s)")
+                         f"{sob:.0f}s com so {n} palavra(s)", x, y)
                 break
-
-    # disputa de recuperacao: ancora no segundo token do par (o que
-    # invade), que e o que aparece "de surpresa" lendo o texto em ordem.
-    for ia, ib in choques:
-        pergunta(ib, "disputa", f"{st[ia]['e']-st[ib]['s']:.1f}s")
 
     # Retomada que o corte automatico NAO pegou. `detecta_tentativas` corta
     # com `min_ngram` do config (3 palavras identicas); aqui ela roda de
@@ -2823,47 +2969,158 @@ def cmd_revisar(a):
             continue        # ja esta saindo: nao ha o que perguntar
         pergunta(c["ini"], "retomada?",
                  f"volta a dizer {c['repetido']!r} {c['dur']:.1f}s depois. "
-                 f"Descartaria: {c['descartado'][:70]!r}")
+                 f"Descartaria: {c['descartado'][:70]!r}",
+                 st[c["ini"]]["s"], st[c["fim"] - 1]["e"])
 
     for i, t in enumerate(st):
-        if t["cut"]:
+        if t["cut"] or t["k"] != "hesitacao":
             continue
-        if t["k"] == "hesitacao":
-            if str(t["t"]).startswith("??"):
-                pergunta(i, "som alto sem texto",
-                         f"{t['e']-t['s']:.1f}s")
-            else:
-                fora = fora_do_vocabulario(t["t"], vocab)
-                extra = ("  <== " + ", ".join(fora) + " nao existe no "
-                         "material do curso: leitura provavelmente errada"
-                         if fora else "")
-                pergunta(i, "texto reconstruido",
-                         f"{t['t']!r} ({t['e']-t['s']:.1f}s){extra}")
-        elif t["k"] == "palavra" and t["why"].startswith("cauda arrastada"):
-            pergunta(i, "cauda arrastada",
-                     f"{t['t']!r} {t['why'].split()[-1]}")
-        elif t["k"] == "palavra" and t["why"].startswith("duracao impossivel"):
-            pergunta(i, "fala nao transcrita",
-                     f"{t['why'].split(': ')[-1].replace(' de fala nao '
-                     'transcrita', '')} colados em {t['t']!r}")
+        if str(t["t"]).startswith("??"):
+            pergunta(i, "som alto sem texto", f"{t['e']-t['s']:.1f}s")
+        else:
+            fora = fora_do_vocabulario(t["t"], vocab)
+            extra = ("  <== " + ", ".join(fora) + " nao existe no "
+                     "material do curso: leitura provavelmente errada"
+                     if fora else "")
+            pergunta(i, "texto reconstruido",
+                     f"{t['t']!r} ({t['e']-t['s']:.1f}s){extra}")
+        # so aqui o token ancora E o trecho em questao - `proprio`. E o que
+        # deixa `pendencias_sem_resposta` cobrar as duas coisas que so
+        # fazem sentido quando trecho e pergunta coincidem: manter a mao
+        # vale por resposta, e responder "sai" obriga o trecho a sair.
+        # Numa `retomada?` nenhuma das duas valeria - a cadeia vai da
+        # primeira tentativa ate a versao boa, que fica.
+        pend[-1]["proprio"] = True
+        pend[-1]["mao"] = t["why"] in MAO_MANTEM
 
-    pend.sort(key=lambda q: (st[q["i"]]["s"], q["i"]))
-    marca = {}
+    pend.sort(key=lambda q: (q["s"], q["i"]))
     for n, q in enumerate(pend, 1):
         q["n"] = n
+    return pend
+
+
+def cmd_revisar(a):
+    """Escreve o arquivo minimo que o passe de julgamento precisa ler.
+
+    Existe por economia: o passe semantico so precisa do texto do video, e
+    nada mais. Rodado dentro de uma conversa longa, ele arrasta junto todo o
+    historico a cada resposta. Aqui a entrada fica num arquivo pequeno, para
+    a analise acontecer numa sessao limpa.
+
+    Compacta agressivamente: o que ja foi cortado vira um marcador com a
+    duracao, em vez de aparecer palavra por palavra. Num video de 10 min isso
+    troca ~9 mil tokens por ~2,5 mil, sem perder o que importa para julgar."""
+    d = wdir(a.video)
+    S = jload(d / "stream.json")
+    st, dur = S["stream"], S["dur"]
+    C = cfg()
+    bagunca = fora_de_ordem(st)
+    choques = sobrepostos(st)
+    W = jload(d / "words.json").get("words", [])
+    zonas = zonas_suspeitas(st, W, choques)
+    pend = pendencias(st, C, carrega_vocabulario(d))
+    resp = carrega_respostas(d)
+
+    L = [f"# {Path(a.video).stem} | {hhmmss(dur)} | tempos em segundos",
+         "# [-N.Ns] = ja marcado para corte, trecho quieto. Texto solto =",
+         "# sera mantido.",
+         "# [-N.Ns VOZ] = marcado para corte MESMO havendo som alto ali",
+         "# dentro. O transcritor nao leu, mas o microfone ouviu: pode ser",
+         "# frase inteira prestes a sumir. Confira antes de deixar passar.",
+         "# [rec: ...] = texto RECONSTRUIDO. Nao saiu da transcricao do",
+         "# video: o programa re-transcreveu aquele pedaco isolado porque",
+         "# o Whisper nao tinha lido nada ali. E a leitura de MENOR",
+         "# confianca do arquivo inteiro, e e onde bocejo e resmungo se",
+         "# disfarcam de palavra. Va sempre pelo sentido: se nao encaixa",
+         "# no assunto da aula, o candidato a sair e ele, nao o vizinho.",
+         "# palavra~ = o tempo dessa palavra nao e confiavel (o alinhador",
+         "# recusou o proprio resultado e caiu no tempo grosseiro do",
+         "# Whisper). NAO ancore borda de corte numa palavra com ~: ela",
+         "# pode estar segundos longe de onde aparece aqui.",
+         "# [Pn] = pendencia numero n, listada em PENDENCIAS logo abaixo.",
+         "# Procure, alem das pendencias: retomadas com outras palavras,",
+         "# interrupcoes, trechos em que ela se perde. Responda com",
+         "# trechos [inicio, fim, motivo]."]
+    if bagunca:
+        L.append(f"# aviso: {bagunca} palavras com tempo fora de ordem - o "
+                 f"alinhador embaralhou")
+        L.append("# esses trechos, e ali o [-N.Ns] pode faltar mesmo "
+                 "havendo parada.")
+    if zonas:
+        # O `~` marca a palavra; isto marca a REGIAO. Sem ela a pessoa
+        # descobre que nao ha fronteira confiavel ali depois de escrever
+        # a anotacao, quando o `conferir` acusa que ela nao foi obedecida.
+        L.append("# faixas em que o alinhador nao acertou o tempo de "
+                 "NENHUMA palavra por perto:")
+        for a, b, n in zonas:
+            L.append(f"#   {a:.1f}-{b:.1f}s ({n} palavras) - para cortar "
+                     f"aqui, anote a faixa inteira; nao ancore dentro.")
+
+    # ------------------------------------------------------ pendencias
+    # Tudo o que o programa sabe que NAO sabe resolver sozinho vira um
+    # item numerado aqui em cima, alem de aparecer ancorado no texto.
+    #
+    # Antes cada uma destas marcas so existia no meio do texto corrido, e
+    # a instrucao "toda ocorrencia precisa de uma resposta sua" dependia
+    # de quem lia ir catando marca por marca ate o fim. Nao foi o que
+    # aconteceu: no 7 de espadas um bocejo inteiro atravessou o passe de
+    # julgamento disfarcado de palavra reconstruida e so apareceu quando
+    # o Rafael ouviu o audio. Lista numerada se confere; marca solta no
+    # meio de 200 linhas de texto nao se confere.
+    #
+    # QUAIS perguntas entram na lista e decisao de `pendencias()`, nao
+    # daqui: o `conferir` e o `_plano` cobram a resposta de cada uma, e
+    # duas listas diferentes seriam duas perguntas diferentes com o mesmo
+    # nome. A explicacao de cada categoria vai UMA vez, no cabecalho do
+    # bloco, e so das categorias que apareceram - repeti-la em cada item
+    # custava 100 caracteres por linha num arquivo que existe para ser
+    # pequeno.
+    def ancora(i):
+        """O token MANTIDO mais proximo de `i`, para onde a marca `[Pn]`
+        vai no texto corrido.
+
+        Token cortado nao e impresso, entao marca posta nele some sem
+        deixar rastro - e ja sumiu: era o caso de toda `[disputa]`, que
+        `sobrepostos` devolvia sem olhar `cut`."""
+        for k in range(i, len(st)):
+            if not st[k]["cut"]:
+                return k
+        for k in range(i, -1, -1):
+            if not st[k]["cut"]:
+                return k
+        return None
+
+    # Uma pendencia ja respondida no `respostas.json` continua na lista,
+    # marcada: some-la seria esconder o julgamento de quem reler o arquivo
+    # daqui a seis meses, e reabri-la sem marca faria a pessoa responder
+    # duas vezes a mesma coisa.
+    respondida, casadas = {}, set()
+    for q in pend:
+        k = casa_resposta(q, resp)
+        if k is not None:
+            respondida[q["n"]] = resp[k]
+            casadas.add(k)
+    orfas = [r for k, r in enumerate(resp) if k not in casadas]
+
+    marca = {}
+    for q in pend:
         j = ancora(q["i"])
         if j is not None:
-            marca[j] = marca.get(j, "") + f"[P{n}]"
+            marca[j] = marca.get(j, "") + f"[P{q['n']}]"
 
     if pend:
+        aberta = [q for q in pend if q["n"] not in respondida]
         L.append("")
-        L.append(f"## PENDENCIAS ({len(pend)}) - responda cada uma no "
-                 f"relatorio: sai ou fica, e por que")
+        L.append(f"## PENDENCIAS ({len(pend)}, {len(aberta)} sem resposta) "
+                 f"- responda cada uma em {d.name}/respostas.json e no "
+                 f"relatorio: sai, fica ou ouvido, e por que")
         for rot in sorted({q["rot"] for q in pend}):
-            L.append(f"#  {rot} = {EXPLICA[rot]}")
+            L.append(f"#  {rot} = {EXPLICA_PENDENCIA[rot]}")
         for q in pend:
-            L.append(f"P{q['n']:<3d} {st[q['i']]['s']:7.1f}s  "
-                     f"{q['rot']}: {q['desc']}")
+            r = respondida.get(q["n"])
+            selo = f"  [ja respondida: {r['resposta']}]" if r else ""
+            L.append(f"P{q['n']:<3d} {q['s']:8.2f}s  "
+                     f"{q['rot']}: {q['desc']}{selo}")
     L.append("")
 
     # Palavras cujo tempo o alinhador recusou. Sem isto o revisao.txt mente
@@ -2877,7 +3134,6 @@ def cmd_revisar(a):
     # palavras (92 de 812 no IMG_0247), tres seguidos na mesma linha, e o
     # aviso virava papel de parede. Estes dois sao os que podem estar
     # SEGUNDOS fora do lugar - e a categoria do "As" de 80s.
-    W = jload(d / "words.json").get("words", [])
     pal_i = [i for i, t in enumerate(st) if t["k"] == "palavra"]
     duvida = ({pal_i[k] for k, w in enumerate(W)
                if w.get("align_rejeitado") in ("deriva", "ordem")}
@@ -2931,8 +3187,17 @@ def cmd_revisar(a):
     p.write_text("\n".join(L) + "\n", encoding="utf-8")
     n = len("\n".join(L))
     print(f"[revisar] {p}  ({n} caracteres, ~{n//4} tokens)")
-    print(f"[revisar] {len(pend)} pendencia(s) exigem resposta explicita")
-    print(f"[revisar] escreva o julgamento em {d/'anotacoes.json'}")
+    aberta = len(pend) - len(respondida)
+    print(f"[revisar] {len(pend)} pendencia(s); {aberta} ainda sem resposta")
+    if orfas:
+        # Resposta que nao casa com pendencia nenhuma quase sempre e tempo
+        # digitado errado - e o sintoma dela e justamente o contrario do
+        # que a pessoa espera: a pendencia continua na lista de abertas.
+        for r in orfas:
+            print(f"[revisar] resposta em {r['em']} nao casa com pendencia "
+                  f"nenhuma (tempo errado, ou ela ja saiu no corte)")
+    print(f"[revisar] escreva o julgamento em {d/'anotacoes.json'} e as "
+          f"respostas em {d/'respostas.json'}")
 
 
 def _mapa_previa(iv):
@@ -3001,6 +3266,23 @@ def cmd_conferir(a):
     def diz(rot, x, y, txt):
         achados.append((para_previa(x), rot, x, y, txt))
 
+    # 0. Pendencia do revisao.txt que ninguem respondeu.
+    #
+    #    "Responda toda pendencia" era regra do prompt do /revisar e de
+    #    mais ninguem: o programa listava, numerava e ancorava cada `Pn`, e
+    #    depois nao perguntava se alguma tinha ficado sem resposta. E o
+    #    mesmo buraco de `anotacoes_desobedecidas` antes de ela existir -
+    #    julgamento que ninguem cobra e julgamento que um dia nao acontece.
+    #
+    #    Uma pendencia se responde de dois jeitos, e os dois valem: cortando
+    #    o trecho (a resposta e o proprio corte, e por isso `iv` entra na
+    #    conta) ou escrevendo no `respostas.json` - o unico jeito de dizer
+    #    "fica", que nao deixa marca em lugar nenhum.
+    pend = pendencias(stream, C, carrega_vocabulario(d))
+    sem, orfas = pendencias_sem_resposta(pend, carrega_respostas(d), iv)
+    for q in sem:
+        diz(q["falta"], q["s"], q["y"], f"{q['rot']}: {q['desc'][:64]}")
+
     # 1. Anotacao desobedecida. E o pior de todos: o julgamento humano foi
     #    escrito, foi lido, e sumiu na geometria sem uma linha de aviso.
     for x, y, vivo, motivo, mao in anotacoes_desobedecidas(
@@ -3013,22 +3295,74 @@ def cmd_conferir(a):
     # 2. Fala marcada para sair que continua tocando. Silencio nao entra:
     #    metade da pausa fica colada em cada lado de proposito
     #    (pausa_alvo/2), entao ele "sobrevive" sempre, por desenho.
+    #    O limite de 0,15s tem um cego, e ele e exatamente o caso que o
+    #    editor avisa na tela: palavra mais curta que as duas folgas de
+    #    0,06 sobrevive INTEIRA sem nunca chegar a 0,15s. MEDIDO nos 10
+    #    fluxos de work/: dois casos, um `eu` de 0,08s (as de espadas,
+    #    516,0s) e um `na` de 0,06s dentro de uma anotacao (IMG_0247,
+    #    351,1s) - poucos, e os dois sao a palavra inteira continuando a
+    #    tocar depois de alguem mandar tira-la. So a passada mecanica nao
+    #    via: `Sessao.avisos` pergunta isso desde sempre, mas so de quem
+    #    abre o editor.
     for t in stream:
         if not t["cut"] or t["k"] == "silencio":
             continue
         vivo = sum(max(0.0, min(t["e"], b) - max(t["s"], aa)) for aa, b in iv)
-        if vivo > 0.15:
+        larg = t["e"] - t["s"]
+        inteira = larg > 0.02 and vivo >= larg - 0.02
+        if vivo > 0.15 or inteira:
             diz("FALA CORTADA SOBREVIVE", t["s"], t["e"],
-                f"{vivo:.2f}s | {t.get('why','')[:24]} | {t['t'][:30]!r}")
+                f"{vivo:.2f}s{' INTEIRA' if inteira else ''} | "
+                f"{t.get('why','')[:24]} | {t['t'][:30]!r}")
 
     # 3. Ilha curta. Nem sempre e defeito - uma palavra sozinha entre dois
     #    cortes pode ser exatamente o que a anotacao pediu -, mas e sempre
     #    duas emendas em volta de pouca coisa, e vale um ouvido.
+    #    `sobrepostos` entra aqui, e nao no revisao.txt, porque e aqui que
+    #    ele tem consequencia. MEDIDO nos 10 fluxos: das 31 invasoes, 3
+    #    produzem ilha curta - e sao essas 3 que alguem precisa ouvir. As
+    #    outras 28 eram pergunta sem resposta possivel no passe de
+    #    julgamento (27 delas envolvem palavra que o alinhador ja marcou
+    #    com `~`; 8 sao entre dois tokens que ja saem inteiros).
+    choques = sobrepostos(stream)
     for x, y in iv:
         if y - x < C["corte"]["ilha_minima"]:
             pals = " ".join(t["t"] for t in stream if t["k"] == "palavra"
                             and not t["cut"] and t["e"] > x and t["s"] < y)
-            diz("ILHA CURTA", x, y, f"{y-x:.2f}s | {pals[:40]!r}")
+            briga = any(min(stream[ia]["e"], stream[ib]["e"]) > x
+                        and max(stream[ia]["s"], stream[ib]["s"]) < y
+                        for ia, ib in choques)
+            diz("ILHA CURTA", x, y, f"{y-x:.2f}s | {pals[:40]!r}"
+                + (" | duas recuperacoes disputam este audio" if briga
+                   else ""))
+
+    # 3b. Arrasto que se mandou podar e continua tocando.
+    #
+    #     `marca_arrastadas` corta a CAUDA da palavra arrastada, mas esse
+    #     corte passa pelo `minimo` como qualquer outro: cauda menor que
+    #     `minimo` + `folga_palavra` (0,34s) e descartada, e o arrasto fica
+    #     inteiro sem que nada diga.
+    #
+    #     MEDIDO nos 10 fluxos de work/, 76 caudas: 64 deixam 0,06-0,14s,
+    #     que e a folga que `_respeita_palavras` devolve por construcao; 1
+    #     sai inteira; e 11 sobrevivem 100% - todas com cauda de 0,25-0,30s,
+    #     abaixo do piso geometrico. Mais 3 sobram por outro motivo (0,36 a
+    #     0,47s, em regiao que o alinhador embaralhou). Sao essas 14 que
+    #     esta linha acha, e era por elas que a categoria `cauda arrastada`
+    #     perguntava as 76 no revisao.txt - perguntar todas escondia estas.
+    #
+    #     O limite e o mesmo 0,15s de `anotacoes_desobedecidas`, e pela
+    #     mesma razao: a folga de borda de cada lado soma ~0,12s por
+    #     desenho, e acima disso e outra coisa.
+    for t in stream:
+        if t["cut"] or not t.get("cauda"):
+            continue
+        ca, cb = t["cauda"]
+        vivo = sum(max(0.0, min(cb, b) - max(ca, aa)) for aa, b in iv)
+        if vivo > 0.15:
+            diz("ARRASTO SOBREVIVE", ca, cb,
+                f"{vivo:.2f}s de {cb-ca:.2f}s | {t['t'][:20]!r} | "
+                f"{t.get('why','')[:20]}")
 
     # 4. Palavra mantida raspada pela borda. Contra os tempos do alinhador
     #    isto tem de dar zero - `_respeita_palavras` garante. Fica como
@@ -3084,6 +3418,12 @@ def cmd_conferir(a):
     L = [f"# {Path(a.video).stem} | {len(iv)} emendas | "
          f"{hhmmss(mantido)} de {hhmmss(dur)}",
          "# ouca na ordem: a coluna PREVIA e o tempo no .m4a.",
+         "# PENDENCIA SEM RESPOSTA = o revisao.txt perguntou e ninguem "
+         "respondeu; o primeiro numero da coluna `fonte` e o `em` do "
+         "respostas.json.",
+         "# PENDENCIA NAO OBEDECIDA = voce respondeu 'sai' e o trecho "
+         "continua tocando - o respostas.json registra, quem corta e a "
+         "anotacao.",
          "# ANOTACAO NAO OBEDECIDA = voce mandou cortar e nao saiu. Sempre bug.",
          "# ANOTACAO REABERTA A MAO = voce mesmo trouxe de volta, no editor.",
          "# FALA CORTADA SOBREVIVE = o programa marcou para sair e continua ali.",
@@ -3091,11 +3431,17 @@ def cmd_conferir(a):
          "# PALAVRA RASPADA = borda comeu pedaco de palavra mantida.",
          "# REPETICAO AUDIVEL = a mesma palavra duas vezes seguidas no "
          "corte; o corte pode ter criado a gagueira.",
+         "# ARRASTO SOBREVIVE = a poda de cauda arrastada nao coube no "
+         "corte; o rabo continua audivel (conserto: montagem.json).",
          ""]
     for p, rot, x, y, txt in achados:
         L.append(f"{hhmmss(p)}  {rot:24s} fonte {x:8.2f}-{y:<8.2f} {txt}")
     if not achados:
         L.append("nada suspeito")
+
+    for r in orfas:
+        L.append(f"# nota: a resposta em {r['em']} nao casa com pendencia "
+                 f"nenhuma - tempo errado, ou ela ja saiu no corte.")
 
     p = d / "conferir.txt"
     p.write_text("\n".join(L) + "\n", encoding="utf-8")

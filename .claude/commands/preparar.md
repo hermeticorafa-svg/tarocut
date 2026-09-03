@@ -63,7 +63,8 @@ e `args: VIDEO`). Siga as fases de lá, na ordem:
    resposta para cada, mais a varredura corrida atrás do que não tem marca
    nenhuma (tentativa abandonada, raciocínio refeito com outras palavras,
    bocejo lido como palavra);
-3. escrever `anotacoes.json`, ancorando borda em `words.json`;
+3. escrever `anotacoes.json`, ancorando borda em `words.json`, e
+   `respostas.json`, uma linha por pendência que fica;
 4. o laço de `analyze --force` / `draft --force` / `conferir` até zero
    `ANOTACAO NAO OBEDECIDA`, triando também as outras linhas;
 5. o relatório.
@@ -82,9 +83,25 @@ o `work/<video>/conferir.txt` refletir o estado final combinado:
 venv\Scripts\python.exe tarocut.py conferir VIDEO
 ```
 
-Não gera nada, é rápido (lê o corte já calculado, não recalcula). Confirme
-de novo: zero `ANOTACAO NAO OBEDECIDA`. Se sobrar alguma, isso é bug — pare
-e reporte, não force o passo 4.
+Não gera nada, é rápido (lê o corte já calculado, não recalcula). **Dois
+critérios binários, e os dois têm de dar zero:**
+
+- zero `ANOTACAO NAO OBEDECIDA` — se sobrar alguma, isso é bug: pare e
+  reporte, não force o passo 4.
+- zero `PENDENCIA SEM RESPOSTA` e zero `PENDENCIA NAO OBEDECIDA` — a
+  primeira é pergunta sem resposta; a segunda é resposta `sai` cujo trecho
+  continua tocando (o `respostas.json` registra a decisão, quem corta é a
+  anotação). Se sobrar alguma das duas, o passe de julgamento não
+  terminou. Volte, decida, e escreva a linha no
+  `work/<video>/respostas.json` (ver fase 3 do `/revisar`). Não é bug: é
+  uma pergunta que o programa fez e ninguém respondeu, e ela chega assim
+  até aqui de propósito — o passo 4 vai repetir o aviso, porque **terminar
+  este comando com uma pendência em aberto e em silêncio é o defeito que
+  este passo existe para impedir**.
+
+Se o vídeo foi julgado antes do `respostas.json` existir, as pendências
+antigas aparecem todas em aberto na primeira vez. Isso é verdade, não
+falso alarme: aquelas perguntas nunca tiveram resposta registrada.
 
 Olhe também as linhas `REPETICAO AUDIVEL`: são a mesma palavra duas vezes
 seguidas no corte, e boa parte delas o **corte criou** ao juntar duas
@@ -103,7 +120,7 @@ texto.
 
 ## Fechar
 
-Termine dizendo onde estão os três arquivos, com caminho completo:
+Termine dizendo onde estão os arquivos, com caminho completo:
 
 - `work/<video>/transcript.md` — abra no seu editor de texto para o ajuste
   fino manual (apagar trecho, ou trocar `⟦ ⟧` por `⟨ ⟩` para forçar manter
@@ -111,7 +128,9 @@ Termine dizendo onde estão os três arquivos, com caminho completo:
 - `work/<video>/entendimento.md` — o que o passe de julgamento entendeu da
   aula. Leia a primeira linha: se ele entendeu o vídeo errado, os cortes
   dele estão suspeitos
-- `work/<video>/anotacoes.json` — o que o passe de julgamento decidiu
+- `work/<video>/anotacoes.json` — o que o passe de julgamento mandou sair
+- `work/<video>/respostas.json` — a resposta de cada pendência, inclusive
+  as que ficaram (o único registro de que alguém olhou e decidiu manter)
 - o `.m4a` de áudio gerado no passo 4 — para ouvir enquanto edita
 
 E que os próximos passos, se/quando quiser, são o `editor` no navegador
