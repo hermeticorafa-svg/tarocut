@@ -54,13 +54,24 @@ transcrição que não existe.
 ## Passo 2 — passe de julgamento
 
 Invoque a skill `revisar` com o mesmo vídeo (`Skill` com `skill: "revisar"`
-e `args: VIDEO`). Siga as cinco fases de lá — leitura do
-`revisao.txt`, julgamento, escrita em `anotacoes.json`, o laço de
-`analyze --force` / `draft --force` / `conferir` até zero `ANOTACAO NAO
-OBEDECIDA`, e o relatório final.
+e `args: VIDEO`). Siga as fases de lá, na ordem:
 
-Não pule nem resuma essa parte por fora: é a única etapa deste pipeline
-que **julga conteúdo**; tudo o resto é mecânico.
+1. **entender a aula** — ler o `revisao.txt` inteiro, ler o verbete da
+   carta em `material/guia-taro-de-yala.md` e escrever
+   `work/<video>/entendimento.md`;
+2. **julgar** — a lista fechada de `PENDENCIAS` do `revisao.txt`, uma
+   resposta para cada, mais a varredura corrida atrás do que não tem marca
+   nenhuma (tentativa abandonada, raciocínio refeito com outras palavras,
+   bocejo lido como palavra);
+3. escrever `anotacoes.json`, ancorando borda em `words.json`;
+4. o laço de `analyze --force` / `draft --force` / `conferir` até zero
+   `ANOTACAO NAO OBEDECIDA`, triando também as outras linhas;
+5. o relatório.
+
+Não pule nem resuma essa parte por fora, e **não pule a fase 1 para ganhar
+tempo**: é a única etapa deste pipeline que **julga conteúdo**, e julgar
+conteúdo sem ter entendido a aula é o que deixou um bocejo inteiro passar
+no 7 de espadas. Tudo o resto aqui é mecânico.
 
 ## Passo 3 — conferir, de novo, para o registro
 
@@ -74,6 +85,11 @@ venv\Scripts\python.exe tarocut.py conferir VIDEO
 Não gera nada, é rápido (lê o corte já calculado, não recalcula). Confirme
 de novo: zero `ANOTACAO NAO OBEDECIDA`. Se sobrar alguma, isso é bug — pare
 e reporte, não force o passo 4.
+
+Olhe também as linhas `REPETICAO AUDIVEL`: são a mesma palavra duas vezes
+seguidas no corte, e boa parte delas o **corte criou** ao juntar duas
+frases. Cada uma custa um tropeço na hora de ouvir e um ajuste à mão
+depois; resolvê-las aqui é mais barato que no editor.
 
 ## Passo 4 — exportar áudio
 
@@ -92,6 +108,9 @@ Termine dizendo onde estão os três arquivos, com caminho completo:
 - `work/<video>/transcript.md` — abra no seu editor de texto para o ajuste
   fino manual (apagar trecho, ou trocar `⟦ ⟧` por `⟨ ⟩` para forçar manter
   algo já marcado)
+- `work/<video>/entendimento.md` — o que o passe de julgamento entendeu da
+  aula. Leia a primeira linha: se ele entendeu o vídeo errado, os cortes
+  dele estão suspeitos
 - `work/<video>/anotacoes.json` — o que o passe de julgamento decidiu
 - o `.m4a` de áudio gerado no passo 4 — para ouvir enquanto edita
 

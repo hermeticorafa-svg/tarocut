@@ -47,10 +47,21 @@ cd C:\Users\marip\Videos\tarocut
 venv\Scripts\python.exe tarocut.py run "C:\Users\marip\Videos\IMG_0247.MOV"
 ```
 
-**2. Passe de julgamento** — o Claude lê a transcrição e acrescenta o que
-nenhuma regra pega: interrupções, raciocínio refeito com outras palavras,
-trechos em que ela se perde. Sai em `work/<video>/anotacoes.json`, que
-sobrevive a re-análises: é uma vez por vídeo, para sempre.
+**2. Passe de julgamento** — o Claude **entende a aula** e só depois corta.
+Ele lê a transcrição inteira, procura no livro do Yala
+(`material/guia-taro-de-yala.md`) o verbete da carta de que o vídeo trata,
+escreve o que entendeu em `work/<video>/entendimento.md` — e é com isso na
+cabeça que acrescenta o que nenhuma regra pega: interrupções, raciocínio
+refeito com outras palavras, tentativa abandonada antes da frase que
+vingou, bocejo que o transcritor leu como palavra. Sai em
+`work/<video>/anotacoes.json`, que sobrevive a re-análises: é uma vez por
+vídeo, para sempre.
+
+Essa ordem — entender, depois cortar — não é formalidade. O que mais
+escapava não tinha marca nenhuma do lado: um bocejo inteiro atravessou o 7
+de espadas porque foi transcrito como uma palavra que não existe
+("despeçoso") no meio de uma frase normal. Só desconfia disso quem sabe do
+que o vídeo fala.
 
 **Rode numa janela nova do Claude Code, com o comando `/revisar`:**
 
@@ -71,7 +82,11 @@ a sua conferência, quando quiser olhar com os próprios olhos.
 
 O `tarocut.py revisar` existe só para isso: escreve um `revisao.txt` que
 colapsa o que já está cortado em marcadores de duração. Um vídeo de 10 min
-cabe em ~1,3 mil tokens, contra 32 mil do `stream.json`.
+cabe em ~1,3 mil tokens, contra 32 mil do `stream.json`. O arquivo abre com
+uma lista `## PENDENCIAS` numerada — cada item é uma coisa que o programa
+sabe que não sabe resolver (um som que ninguém leu, um pedaço de áudio
+colado numa palavra, uma leitura de baixa confiança), e o passe de
+julgamento tem de responder por todas, uma a uma, no relatório.
 
 **2b. Conferir** — logo depois do passe, sempre:
 

@@ -1,7 +1,7 @@
 ---
-description: Passe de julgamento de um vídeo do tarocut - lê a transcrição, escreve anotacoes.json e confere que o corte obedeceu
+description: Passe de julgamento de um vídeo do tarocut - entende a aula, lê a transcrição, escreve anotacoes.json e confere que o corte obedeceu
 argument-hint: <caminho do vídeo ou nome curto, ex. IMG_0247>
-allowed-tools: Bash(venv/Scripts/python.exe:*), Read, Write, Edit
+allowed-tools: Bash(venv/Scripts/python.exe:*), Bash(grep:*), Read, Write, Edit
 ---
 
 Faça o passe de julgamento do vídeo: **$ARGUMENTS**
@@ -9,155 +9,251 @@ Faça o passe de julgamento do vídeo: **$ARGUMENTS**
 Você é a única parte deste programa que lê o que ela DISSE. Todo o resto
 decide por regra e por energia de áudio. O que você acrescenta é o que
 nenhuma heurística pega: interrupção, raciocínio refeito com outras
-palavras, trecho em que ela se perde.
+palavras, trecho em que ela se perde, som que não é fala nenhuma e passou
+por palavra.
+
+**O que "pronto" quer dizer aqui.** O produto deste passe é um áudio que o
+Rafael possa ouvir do começo ao fim sem tropeçar, e um `transcript.md` em
+que o que sobrou para o editor de milissegundo seja *só* milissegundo. Um
+bocejo que sobrevive, uma tentativa abandonada que fica junto da boa, uma
+frase que não fecha: cada um desses é trabalho manual que este passe devia
+ter poupado. É por isso que a fase 1 existe.
+
+## A regra que manda em todas as outras
+
+**Compreensão vem antes de corte.** Este passe não é uma caça a marcadores.
+Marcador aponta para onde *o programa* desconfia; ele não sabe do que a
+aula trata, e portanto não desconfia justamente do que só faz sentido para
+quem sabe. No 7 de espadas um bocejo inteiro (quem ouviu descreveu como "ai
+que horror", bocejado) foi transcrito como a palavra inexistente
+"despeçoso", ficou no meio de "das pessoas [despeçoso] envolvidas na
+questão" e atravessou um passe de julgamento inteiro — não havia marca
+nenhuma do lado dele, e não precisava haver: o texto sozinho já não fazia
+sentido para quem soubesse do que aquele vídeo falava.
 
 ## A economia deste comando
 
 Este comando existe para rodar numa janela limpa. Cada resposta relê a
-conversa inteira, então **leia só dois arquivos**: `work/<video>/revisao.txt`
-e `work/<video>/conferir.txt`. Nada mais.
+conversa inteira, então **leia poucos arquivos, e nenhum grande**:
 
-Não abra `stream.json` (32 mil tokens contra 1,3 mil do `revisao.txt`), não
-abra `transcript.md`, não abra `tarocut.py`. Se sentir falta de algo que só
-o código explica, isso é sinal de que você está tentando consertar um bug —
-veja a fase 5.
+- `work/<video>/revisao.txt` — a transcrição compactada. É a sua fonte.
+- `work/<video>/conferir.txt` — o resultado da geometria, na fase 4.
+- **um trecho** de `material/guia-taro-de-yala.md` — só a seção da carta de
+  que a aula trata (ver fase 1). Nunca o arquivo inteiro (67 mil caracteres).
+- `work/<video>/words.json` — só janelas dele, com `-c`, para ancorar borda
+  (ver fase 3). Nunca inteiro.
 
-Essa proibição é sobre **julgar** conteúdo, não sobre **cortar** com
-precisão: `work/<video>/words.json` fica de fora dela. Veja a fase 3 —
-colocar borda de anotação sem abrir esse arquivo foi a causa raiz de um
-passe inteiro saído errado no IMG_0247_bruto.
+Não abra `stream.json` (32 mil tokens contra ~1,3 mil do `revisao.txt`),
+não abra `transcript.md`, não abra `tarocut.py`. Se sentir falta de algo
+que só o código explica, isso é sinal de que você está tentando consertar
+um bug — veja a fase 5.
 
 Rode tudo da pasta do projeto, com o Python do venv. O nome curto
 (`IMG_0247`) funciona tanto quanto o caminho completo.
 
-## Fase 1 — gerar e ler
+---
+
+## Fase 1 — entender a aula ANTES de julgar (obrigatória)
 
 ```
 venv\Scripts\python.exe tarocut.py revisar $ARGUMENTS
 ```
 
-Leia o `work/<video>/revisao.txt` que sair. O cabeçalho explica as marcas;
-as que mais importam para você:
+### 1a. Leia o `revisao.txt` inteiro, uma vez, sem anotar nada
 
-- `[?? N.Ns]` — som alto que ninguém conseguiu ler, **mantido de propósito**
-  para você decidir. Toda ocorrência precisa de uma resposta sua: sai ou
-  fica.
-- `[!Ns/N palavras]` — o que sobra ali é fala rarefeita. Quase sempre é
-  parada longa, retomada ou ela se perdendo. Olhe cada um.
-- `[-N.Ns VOZ]` — vai sair, mas tem som alto dentro. Confira que não é
-  frase inteira prestes a sumir.
-- `[cauda arrastada Nx]` — a palavra foi dita arrastada ("quêêêê...",
-  "eeee...", Nx mais longa que o normal) e a poda automática já cortou
-  o rabo, mas só até uma folga fixa (`manter` em `config.toml`, hoje
-  1,6x a duração esperada — de propósito generosa, para não arriscar
-  comer fala de verdade). **Isso quer dizer que pode sobrar arrasto
-  audível mesmo depois da poda.** Medido no 7 de espadas: um "que" com
-  esta marca ainda tocava ~0,4s de vogal arrastada. Toda ocorrência
-  merece conferência (ver "Corrigindo com base em áudio já ouvido" no
-  fim deste arquivo para como checar sem precisar ouvir o vídeo
-  inteiro) — e se sobrar som, **a anotação não pode ir em
-  `anotacoes.json`**, ver fase 3.
-- `[duracao impossivel (Nx): X.Xs de fala nao transcrita]` — a palavra
-  ao lado é real e fica, mas X.Xs de áudio colado nela nunca virou
-  texto: quase sempre bocejo, resmungo ou eco do microfone que o
-  Whisper não leu. Quando um `[texto reconstruído]` entre colchetes
-  aparecer logo depois, ele é uma segunda tentativa de transcrever essa
-  mesma fala não lida, de confiança **ainda mais baixa** que a hesitação
-  comum (ver a regra sobre texto reconstruído na fase 2) — cheque se
-  ele faz sentido no assunto da aula antes de aceitá-lo como fala real.
-  Foi assim que um bocejo inteiro (relatado por quem ouviu o áudio como
-  "ai que horror", bocejado) sobreviveu inteiro no 7 de espadas,
-  reconstruído como a palavra sem sentido nenhum "despeçoso" e mantido:
-  o texto ao redor ("das pessoas [despeçoso] envolvidas na questão") já
-  denunciava, mas antes desta marca existir nada apontava para aquela
-  palavra específica dentro de uma linha inteira de texto normal.
+Do início ao fim. Não pare em marcador, não abra `words.json`, não escreva
+anotação. Você está aqui só para saber do que a aula trata.
 
-E uma regra dura:
+O cabeçalho explica as marcas. As que mais importam:
 
+- `## PENDENCIAS` — a lista numerada do que o programa **sabe que não sabe
+  resolver**. Cada `Pn` precisa de uma resposta sua, e as respostas vão no
+  relatório da fase 5. Elas aparecem também ancoradas no texto como `[P7]`,
+  para você ver cada uma no contexto em que caiu.
+- `[rec: ...]` — **texto reconstruído**: não saiu da transcrição do vídeo.
+  O Whisper não leu nada ali e o programa re-transcreveu o pedaço isolado.
+  É a leitura de menor confiança do arquivo, e é onde bocejo, resmungo e eco
+  de microfone se disfarçam de palavra. Quando a pendência disser
+  `<== X nao existe no material do curso`, a leitura é quase certamente
+  invenção — mas a ausência desse aviso **não** é atestado de que a leitura
+  presta: "Disse percebe" tem duas palavras reais e não quer dizer nada.
+- `[-N.Ns]` / `[-N.Ns VOZ]` — já marcado para corte; o `VOZ` avisa que há
+  som alto lá dentro. Confira que não é frase inteira prestes a sumir.
 - `palavra~` — o tempo dessa palavra **não é confiável**; o alinhador
   recusou o próprio resultado. Ela pode estar segundos longe de onde
   aparece. **Nunca ancore borda de corte numa palavra com `~`.** Se o
-  trecho que você quer cortar começa ou termina numa delas, ancore no
-  `[-N.Ns]` mais próximo e deixe a fase 4 ajustar.
+  trecho que você quer cortar começa ou termina numa delas, ancore na
+  palavra limpa mais próxima (fase 3).
 
-**Antes de marcar qualquer coisa, leia o `revisao.txt` inteiro uma vez, do
-início ao fim, sem anotar nada — só para entender do que a aula trata.**
-Julgamento de conteúdo (interrupção, retomada, ela se perdendo) só é
-confiável com o assunto na cabeça; sem isso a fase 2 vira caça a marcador
-isolado, e é assim que um trecho comum passa batido só porque não tinha
-`[??]` nem `~` do lado. Não precisa escrever esse resumo em lugar nenhum —
-é para você, não para o relatório.
+### 1b. Descubra de que carta a aula trata e leia o que o livro diz dela
 
-**Use esse resumo como filtro ativo, não como pano de fundo.** Para cada
-frase, sobretudo dentro ou perto de um `[texto reconstruído]` entre
-colchetes, pergunte: isso faz sentido dado do que a aula trata? Um "ai que
-horror" bocejado no meio da explicação de uma carta não tem nada a ver com
-astúcia, isolamento ou território — não precisa de marca nenhuma do lado
-para ser suspeito, precisa só de alguém que sabe do que a aula fala. Foi a
-falta exatamente disso — ler o vídeo inteiro para entender o assunto e usar
-esse entendimento para filtrar cada frase, não só caçar marcador — que
-deixou um bocejo inteiro passar no 7 de espadas: nenhuma marca antiga
-apontava para ele (por isso os marcadores de cauda arrastada e duração
-impossível acima existem agora), mas o texto sozinho já não fazia sentido
-algum para quem sabia do que o vídeo tratava.
+Quase todo vídeo deste curso é sobre uma carta (o nome do arquivo costuma
+dizer: `7 de espadas`, `as de espadas`). Ache a seção dela no guia:
+
+```
+grep -n "^7 de Espadas" material/guia-taro-de-yala.md
+```
+
+e leia essa seção com `Read` (`offset` na linha achada, `limit` de 6 a 20
+linhas). O guia é organizado assim: `ARCANOS MAIORES` com uma seção por
+carta terminando em `PALAVRAS-CHAVE:`, e `ARCANOS MENORES` divididos em
+`COPAS`, `PAUS`, `ESPADAS`, `OUROS`, cada carta num parágrafo que começa
+com o nome dela e um `:`.
+
+Se o vídeo enumera várias cartas ou fala de um tipo (as rainhas, os
+arcanos menores), leia o cabeçalho do naipe e as duas ou três cartas mais
+citadas — não o livro todo.
+
+**Por que isto não é enfeite.** O verbete do 7 de Espadas diz "astúcia,
+tato, diplomacia e esperteza" e "uma mulher Guna negocia com o homem
+branco". Com essas duas linhas na cabeça, "pessoa cuna", "kunayala" e
+"Samblas, Panamá" se confirmam como fala boa na hora, e "ai que horror"
+lido como "despeçoso" fica órfão no parágrafo. Sem elas, as duas coisas
+parecem igualmente estranhas — e o revisor passa batido nas duas, ou pior,
+corta a boa.
+
+### 1c. Escreva `work/<video>/entendimento.md`
+
+Curto — 15 a 30 linhas. Sem enfeite, é ferramenta de trabalho:
+
+```markdown
+# <video> — o que esta aula diz
+
+**Carta:** 7 de Espadas
+**O que o guia diz:** astúcia, tato, diplomacia, esperteza; desconforto de
+falsidade; planos irreais. Imagem: mulher Guna negociando com o homem branco.
+
+**Tese da aula:** <uma frase: o que ela quer que a pessoa entenda>
+
+**Roteiro:**
+1. 0-20s — abre com o nome da carta e o tema (astúcia/esperteza)
+2. 21-63s — quem é a pessoa da imagem: povo Guna, Kuna Yala, San Blas
+3. ...
+
+**O que esta aula NÃO é sobre:** <2 ou 3 assuntos vizinhos que ela não
+toca — serve de filtro: frase que cai fora disso é suspeita>
+```
+
+Este arquivo é para você, agora, e para quem reler o `anotacoes.json` daqui
+a seis meses. **Escrevê-lo é o que separa ter lido de ter entendido** — a
+versão antiga deste comando pedia o resumo "de cabeça, não precisa
+escrever", e foi assim que a fase 2 virou caça a marcador isolado.
+
+---
 
 ## Fase 2 — julgar
 
-**Depois do resumo, releia sentença por sentença, sem pular nada — inclusive
-o que já parece "a versão boa".** Achar uma retomada grande não fecha a
-questão para o texto ao redor: no IMG_0247_bruto a retomada de 78,5-158,5s
-foi encontrada, anotada e obedecida, e mesmo assim sobrou uma retomada
-MENOR e mais curta bem no início da versão mantida ("Em Yala, todas...
-[pausa] em Yala, todas as rainhas...") e outra no meio ("personagens
-políticos ou da cultura, enfim, personagens políticos, artistas, enfim.")
-- nenhuma delas tinha `[??]`, `~` ou qualquer marca especial; só apareciam
-lendo a frase inteira com atenção. **Proximidade de um defeito já achado
-não é evidência de que o resto está limpo** - se qualquer coisa, é sinal
-de que ela estava incomodada com aquele trecho e pode ter mexido nele mais
-de uma vez.
+Duas varreduras. **As duas, sempre**, e nesta ordem.
 
-Procure, nesta ordem:
+### 2a. Varredura das pendências (fechada)
 
-1. **Interrupção** — alguém entra, ela fala com outra pessoa, cachorro,
-   celular. Sai inteiro. **Cuidado com o texto reconstruído** (token
-   `hesitacao` recuperado por `resolve_suspeitos`/`marca_ecos`, sem tempo de
-   Whisper original): ele veio de uma re-transcrição isolada e curta, e o
-   próprio programa às vezes marca a leitura como incerta (`why` diz "nao e
-   fala" ou parecido). Não vire esse texto uma cena na sua cabeça sem
-   ressalva - no IMG_0247_bruto um "Mãe! Mais do que..." recuperado virou
-   "alguém grita Mãe! interrompendo" no `motivo`, e o áudio real (ouvido
-   depois) era a Mariana fazendo um "oooh" de voz fofinha, nada a ver com
-   interrupção de terceiro. Se o texto reconstruído for sua única evidência
-   e a leitura for de baixa confiança, escreva o `motivo` com ressalva
-   ("provavelmente X, mas texto recuperado com baixa confiança") em vez de
-   afirmar, e considere marcar para "vale ouvido" na fase 4 em vez de só
-   confiar no texto.
-2. **Raciocínio refeito com outras palavras** — ela diz uma coisa, para, e
-   diz de novo trocando as palavras. Repetição literal o programa já pega
-   sozinho; esta não casa, e por isso é sua.
-3. **Ela se perde** — começa uma frase que não vai a lugar nenhum e retoma
-   depois. Descarte a tentativa, guarde a boa. Inclui falar baixinho,
-   tateando o raciocínio antes de falar "para valer" ("deixa eu ver se...",
-   "tipo assim...", frase que não fecha gramaticalmente) - o texto sozinho
-   pode não denunciar isso (lê normal), é o padrão de frase incompleta ou
-   deveras hesitante que denuncia.
-4. **Fim e começo** — sobra de gravação: ela ajeitando a câmera, olhando
-   para os lados, saindo de quadro.
-5. Os `[?? N.Ns]` e `[!Ns/N palavras]` que ainda não estiverem cobertos.
-6. **`[disputa N.Ns]`** — não é julgamento de conteúdo, é aviso de
-   geometria: duas recuperações automáticas (duração impossível +
-   retomada colapsada) brigaram pelo mesmo áudio ali. Quase sempre o texto
-   ao redor está certo (é uma frase real, só malalinhada) — mas o corte
-   pode sair fragmentado (uma palavra solta entre duas emendas). Não dá
-   pra saber pelo texto; rode `tarocut.py audio $ARGUMENTS` e ouça esse
-   ponto específico antes de aceitar. Se soar errado, isso é achado para
-   o programador (fase 5), **não** anotação — anotação é para o que você
-   decide que não deveria estar no vídeo, não para consertar um defeito
-   de corte.
+Percorra `P1`, `P2`, ... `Pn` na ordem. Para cada uma, três coisas:
 
-Na dúvida, **deixe ficar**. Cacoete que sobra se resolve com uma anotação
-depois; frase apagada não se resolve, porque ninguém fica sabendo que
-existiu.
+1. Ache a `[Pn]` no texto corrido e leia a frase inteira em volta.
+2. Pergunte, com o `entendimento.md` na cabeça: **isso faz sentido nesta
+   aula?** Não "é uma palavra em português?", mas "é uma coisa que ela
+   diria aqui, agora, sobre esta carta?".
+3. Decida: **sai**, **fica**, ou **vale ouvido**. Registre a decisão — a
+   fase 5 pede uma linha por pendência.
+
+Pode agrupar no relatório o que se decide junto ("P2, P3, P5 e P8: cauda
+arrastada em conjunção curta, ficam"). O que não pode é sobrar pendência
+sem resposta.
+
+Como decidir cada tipo:
+
+- **texto reconstruído** — o teste é de sentido, não de gramática. Se não
+  encaixa no assunto, **o que sai é ele**, não a palavra vizinha real. Se
+  for sua única evidência de alguma coisa (uma interrupção, por exemplo),
+  escreva o `motivo` com ressalva em vez de afirmar: no IMG_0247_bruto um
+  "Mãe! Mais do que..." recuperado virou "alguém grita Mãe! interrompendo"
+  no `motivo`, e o áudio real era a Mariana fazendo um "oooh" de voz
+  fofinha.
+- **fala não transcrita** (`X.Xs colados em 'palavra'`) — a palavra é real
+  e fica; o áudio colado nela é que é o problema. É a assinatura clássica
+  do bocejo. Se o `[rec: ...]` vizinho não fizer sentido, ele é o candidato.
+- **cauda arrastada** — a poda automática já tirou o rabo, mas só até uma
+  folga fixa e generosa. Pode sobrar arrasto audível. Vale ouvido; e
+  **se o que você quer aparar cabe dentro de uma única palavra, isso não é
+  anotação** — vai para `montagem.json`, ver fase 3.
+- **som alto sem texto** (`[??]`) — o microfone ouviu e ninguém leu.
+  Mantido de propósito para você decidir. Sai ou fica.
+- **disputa** — não é julgamento de conteúdo, é aviso de geometria: duas
+  recuperações automáticas brigaram pelo mesmo áudio. Quase sempre o texto
+  em volta está certo, mas o corte pode sair fragmentado. Ouça
+  (`tarocut.py audio $ARGUMENTS`) antes de aceitar. Se soar errado, é
+  achado para o programador (fase 5), **não** anotação.
+- **fala rarefeita** — muito tempo e pouca palavra. Quase sempre parada
+  longa, retomada, ou ela se perdendo.
+
+### 2b. Varredura corrida (aberta) — é aqui que mora o que você veio buscar
+
+A varredura 2a só cobre o que o programa conseguiu suspeitar. **A maioria
+dos defeitos que chegaram ao Rafael não tinha marca nenhuma.** Releia o
+texto do começo ao fim, sentença por sentença, **inclusive o que já parece
+"a versão boa"**, e em cada **pausa** (`[-N.Ns]`, `[pausa N.Ns]`, `[rec:]`)
+faça as três perguntas:
+
+**(i) A frase antes da pausa fecha?** Se ela termina em preposição,
+conjunção, artigo ou relativo — "…de", "…que", "…para uma", "…e" — ou se
+para no meio de uma ideia, é candidata a tentativa abandonada. Também
+conta a frase que fecha gramaticalmente mas não diz nada ("não saber se
+tem mesmo uma boa" — adjetivo sem substantivo).
+
+**(ii) O que vem depois refaz o que veio antes?** Este é o caso que o
+Rafael relatou como o mais frequente: *ela repete a mesma linha de
+pensamento uma ou mais vezes até chegar na frase certa, e as tentativas
+estão vindo junto*. Repetição **literal** o programa já pega sozinho; a
+que é sua é a refeita **com outras palavras**, que não casa por comparação
+de texto:
+
+> "Eles têm uma relação autônoma," … "eles são um povo autônomo em relação
+> ao governo do Panamá"
+
+> "ainda que não seja uma categoria, realmente" … "ainda que não haja uma
+> categoria de gênero"
+
+> "na vida do lente" … "na vida da pessoa que está" … "na vida de quem
+> está abrindo o jogo"
+
+**A boa é a última.** Descarte as anteriores inteiras — o começo abandonado
+*e* a bagunça até a retomada. Deixar a primeira "porque também está certa"
+é o que faz a mesma ideia aparecer duas vezes seguidas no áudio.
+
+**Achar uma retomada não fecha a questão para o texto em volta.** No
+IMG_0247_bruto a retomada de 78,5-158,5s foi encontrada, anotada e
+obedecida, e mesmo assim sobrou uma retomada MENOR no início da versão
+mantida ("Em Yala, todas… [pausa] em Yala, todas as rainhas…") e outra no
+meio ("personagens políticos ou da cultura, enfim, personagens políticos,
+artistas, enfim."). Nenhuma tinha `[??]`, `~` ou marca especial.
+Proximidade de um defeito já achado não é evidência de que o resto está
+limpo — se alguma coisa, é sinal de que ela estava incomodada com aquele
+trecho e mexeu nele mais de uma vez.
+
+**(iii) Tudo nesta frase pertence a esta aula?** Compare com o
+`entendimento.md` e com as palavras-chave do guia. Um "ai que horror"
+bocejado no meio da explicação de uma carta não tem nada a ver com astúcia,
+isolamento ou território. Não precisa de marca do lado para ser suspeito;
+precisa só de alguém que sabe do que a aula fala.
+
+Procure ainda, na mesma passada:
+
+- **Interrupção** — alguém entra, ela fala com outra pessoa, cachorro,
+  celular. Sai inteiro.
+- **Ela tateando antes de falar "para valer"** — "deixa eu ver se…", "tipo
+  assim…", frase que não fecha gramaticalmente, fala baixinha. O texto
+  sozinho pode ler normal; o que denuncia é o padrão de frase incompleta ou
+  deveras hesitante.
+- **Fim e começo** — sobra de gravação: ela ajeitando a câmera, olhando
+  para os lados, saindo de quadro.
+
+Na dúvida sobre CONTEÚDO, **deixe ficar**: cacoete que sobra se resolve com
+uma anotação depois; frase apagada não se resolve, porque ninguém fica
+sabendo que existiu. Na dúvida sobre uma TENTATIVA que você já identificou
+como tentativa, **corte inteira**: meia tentativa é pior que nenhuma, e é
+exatamente o farelo que sobra para o editor limpar à mão.
+
+---
 
 ## Fase 3 — escrever
 
@@ -188,7 +284,7 @@ por sorte não deu errado, mas era pura sorte.
 palavra(s) inteira(s) ou o silêncio entre elas.** `encaixa_anotacoes`
 encolhe qualquer borda que caia no meio de uma palavra até a fronteira
 dela; se `ini` e `fim` caem **dentro da mesma palavra** (por exemplo,
-tentando tirar só o rabo arrastado de um `[cauda arrastada Nx]`), as duas
+tentando tirar só o rabo arrastado de uma `cauda arrastada`), as duas
 bordas encolhem para o mesmo ponto, a anotação vira largura zero e
 **desaparece em silêncio** — nem erro, nem aviso, ela só some do arquivo
 lido. Medido no 7 de espadas: duas anotações escritas para aparar cauda
@@ -202,14 +298,15 @@ palavra e sem mínimo — é a mesma camada que o editor usa para os botões
 de mais e menos.
 
 Abra **`work/<video>/words.json`** — a proibição da fase 1 não cobre esse
-arquivo. Cada palavra tem `s`/`e` (início/fim, em segundos, precisão de
-milissegundo) medidos de verdade, não estimados. Rode algo como:
+arquivo, desde que você leia janelas dele e não o arquivo todo. Cada
+palavra tem `s`/`e` (início/fim, em segundos, precisão de milissegundo)
+medidos de verdade, não estimados:
 
 ```
 venv\Scripts\python.exe -c "import json; ws=json.load(open('work/IMG_0247/words.json',encoding='utf-8'))['words']; [print(w['s'],w['e'],w['w']) for w in ws if 55<w['s']<75]"
 ```
 
-para listar as palavras num intervalo e achar as que cercam o corte. Then:
+Então:
 
 - ache as duas palavras **limpas** (sem `align_rejeitado` — é o `~` do
   `revisao.txt`) mais próximas dos dois lados do corte, e ancore no
@@ -224,8 +321,8 @@ para listar as palavras num intervalo e achar as que cercam o corte. Then:
   não encostar nela;
 - `[-N.Ns]` no `revisao.txt` ainda serve para saber ONDE olhar em
   `words.json` (é silêncio já cortado, então a região certa para procurar
-  a palavra limpa mais próxima) — só não basta mais sozinho para decidir
-  o número.
+  a palavra limpa mais próxima) — só não basta sozinho para decidir o
+  número.
 
 **`anotacoes.json` é sagrado.** Se o arquivo já existir:
 
@@ -236,6 +333,8 @@ para listar as palavras num intervalo e achar as que cercam o corte. Then:
 - mover `ini`/`fim` de uma anotação antiga é permitido **só** quando a fase
   4 provar que ela não foi obedecida — e aí diga no relatório o que moveu e
   por quê.
+
+---
 
 ## Fase 4 — fechar o laço (não pule)
 
@@ -295,20 +394,24 @@ Ajuste, rode `conferir` de novo. **No máximo 3 rodadas.** Se na terceira
 ainda sobrar, pare e reporte o que sobrou — laço infinito é pior que achado
 honesto.
 
-**As outras linhas do `conferir` (`ILHA CURTA`, `FALA CORTADA SOBREVIVE`,
-`PALAVRA RASPADA`) você TRIA todas, não só as que caem dentro de um trecho
-que você anotou.** `revisar` e `conferir` existem justamente para nada
-passar batido; "não é minha responsabilidade" foi como uma ilha curta de
-0,36s real (uma palavra solta entre duas emendas, no meio de uma disputa de
-recuperação automática — ver `[disputa]` na fase 2) escapou do IMG_0246 e
-só apareceu porque alguém ouviu o `audio` por fora do processo. Para cada
-linha, decida e registre na fase 5:
+**As outras linhas do `conferir` você TRIA todas**, não só as que caem
+dentro de um trecho que você anotou. `revisar` e `conferir` existem
+justamente para nada passar batido; "não é minha responsabilidade" foi como
+uma ilha curta de 0,36s real (uma palavra solta entre duas emendas, no meio
+de uma disputa de recuperação automática) escapou do IMG_0246 e só apareceu
+porque alguém ouviu o `audio` por fora do processo. Para cada linha, decida
+e registre na fase 5:
 
+- **`REPETICAO AUDIVEL`** — a mesma palavra duas vezes seguidas no corte.
+  Metade destes casos **o corte criou**: no IMG_0248 a anotação de
+  343,7-350,4s ("três tentativas da mesma oração") encosta o "que" de
+  antes no "que" de depois. Isso é *seu*, e o conserto costuma ser mover
+  uma borda de anotação para engolir uma das duas ocorrências.
 - **desenho, não defeito** — a maioria. `FALA CORTADA SOBREVIVE` de
   0,1–0,4s é quase sempre o `minimo`/`ilha_minima` decidindo que a emenda
-  não vale o pulo na tela (ver `config.toml`); confirme o tamanho e siga.
+  não vale o pulo na tela; confirme o tamanho e siga.
 - **vale ouvido** — sobra grande, ou uma `ILHA CURTA` com uma palavra
-  isolada entre dois cortes (sinal de `[disputa]`, ver fase 2). Rode
+  isolada entre dois cortes (sinal de `disputa`). Rode
   `tarocut.py audio $ARGUMENTS` e escute esse ponto antes de decidir.
 - **defeito confirmado** — vai para "achados para o programador" na fase
   5, nunca para o `motivo` de uma anotação (isso não é julgamento de
@@ -317,14 +420,22 @@ linha, decida e registre na fase 5:
 Se precisar traduzir um tempo da prévia em áudio para o tempo da fonte:
 `tarocut.py conferir $ARGUMENTS --em 3:05`.
 
+---
+
 ## Fase 5 — relatório
 
-Termine com três blocos curtos:
+Termine com quatro blocos curtos:
 
-1. **O que anotei** — uma linha por anotação: tempo, o que sai, por quê.
-2. **O que o `conferir` diz** — confirme "zero ANOTACAO NAO OBEDECIDA", ou
-   liste o que sobrou e por quê você parou.
-3. **Achados para o programador** — se alguma coisa parecer defeito de
+1. **A aula, em uma frase** — copiada do `entendimento.md`. Serve para o
+   Rafael conferir de relance se você entendeu o vídeo certo; se não
+   entendeu, todo o resto do passe está suspeito.
+2. **Pendências** — uma linha por `Pn` (agrupadas quando a decisão é a
+   mesma): saiu, ficou, ou vale ouvido. **Nenhuma pode faltar.**
+3. **O que anotei** — uma linha por anotação: tempo, o que sai, por quê.
+4. **O que o `conferir` diz** — confirme "zero ANOTACAO NAO OBEDECIDA", ou
+   liste o que sobrou e por que você parou. Some a triagem das outras
+   linhas.
+5. **Achados para o programador** — se alguma coisa parecer defeito de
    código, escreva aqui, **nunca dentro do campo `motivo`**.
 
 Essa última regra existe porque já aconteceu: duas das 19 anotações do
@@ -333,6 +444,8 @@ IMG_0247 são diagnóstico de código escrito em prosa dentro do `motivo`
 55.43..."). O arquivo passou a mentir sobre o motivo do corte, e o achado
 não chegou a quem podia consertar. Julgamento de conteúdo vai no arquivo;
 defeito de programa vai no relatório.
+
+---
 
 ## Corrigindo com base em áudio já ouvido
 
@@ -349,6 +462,9 @@ importantes em relação às fases 1-5:
   `tarocut.py conferir $ARGUMENTS --em <tempo>` antes de tocar em
   qualquer arquivo. Calcular isso de cabeça, ou assumir que os relógios
   batem, é a maneira mais rápida de anotar o trecho errado.
+- **Se já existir `entendimento.md`, leia-o em vez de refazer a fase 1.**
+  Se não existir, faça a 1b (o verbete da carta no guia) mesmo assim: é
+  barato e é o que decide se um trecho suspeito é fala boa ou ruído.
 - **A proibição de abrir `stream.json` e `words.json` inteiros da fase 1
   não se aplica aqui do mesmo jeito.** Aquela regra existe para não
   gastar 32 mil tokens julgando um vídeo do zero; aqui você já sabe
@@ -380,14 +496,14 @@ importantes em relação às fases 1-5:
   backup de `anotacoes.json` uma vez nesta sessão
   (`anotacoes.json.bak-AAAAMMDD-HHMM`), nunca apague ou reescreva
   anotação existente, ancore em `words.json` como sempre — e lembre da
-  regra nova da fase 3: se o corte cai dentro de uma única palavra
-  (aparar uma cauda arrastada, por exemplo), vai para
-  `montagem.json`/`cortes`, não para `anotacoes.json`. Feche o laço com
-  `analyze --force` (só se houver fala real na anotação) + `draft
-  --force` + `conferir` do mesmo jeito, e trie as linhas restantes do
-  `conferir` do mesmo jeito da fase 4 — inclusive as que não têm nada a
-  ver com o que o Rafael relatou, porque ele só ouviu o que sobrevive no
-  corte de hoje, não os pontos que já eram suspeitos antes.
+  regra da fase 3: se o corte cai dentro de uma única palavra (aparar
+  uma cauda arrastada, por exemplo), vai para `montagem.json`/`cortes`,
+  não para `anotacoes.json`. Feche o laço com `analyze --force` (só se
+  houver fala real na anotação) + `draft --force` + `conferir` do mesmo
+  jeito, e trie as linhas restantes do `conferir` do mesmo jeito da fase
+  4 — inclusive as que não têm nada a ver com o que o Rafael relatou,
+  porque ele só ouviu o que sobrevive no corte de hoje, não os pontos que
+  já eram suspeitos antes.
 - **Se um tempo relatado não bater com nada suspeito na região**, isso
   não vira anotação no chute. Diga no relatório que não achou o defeito
   descrito naquele ponto e o que checou, para o Rafael confirmar o tempo

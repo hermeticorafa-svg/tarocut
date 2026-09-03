@@ -32,6 +32,7 @@ mesmos comandos.
 | `editor.py` | servidor do editor: a sessão, os gestos, o que a tela pergunta |
 | `editor.html` | a tela: a transcrição, os quatro botões, o motor de áudio |
 | `teste_editor.py` | as promessas do editor que quebram em silêncio |
+| `teste_revisao.py` | as promessas do passe de julgamento que quebram em silêncio |
 | `lexico.py` | gera `lexicon/terms.txt` a partir do livro do Yala |
 | `.claude/commands/revisar.md` | o passe de julgamento: o que o Claude lê e o que ele tem de conferir depois |
 | `.claude/commands/preparar.md` | run + revisar + conferir + audio num comando só, pronto pro editor de texto |
@@ -40,7 +41,8 @@ mesmos comandos.
 
 Estado por vídeo em `work/<video>/`: `meta.json`, `audio.wav`, `words.json`,
 `stream.json` (a fonte da verdade), `transcript.md`, `revisao.txt`,
-`anotacoes.json`, `montagem.json`, `correcoes.json`.
+`conferir.txt`, `entendimento.md` (o que o passe de julgamento entendeu da
+aula), `anotacoes.json`, `montagem.json`, `correcoes.json`.
 
 As três camadas de decisão humana empilham nesta ordem, que é a ordem em
 que foram tomadas: `transcript.md` (apagar texto) → `anotacoes.json` (o
@@ -139,6 +141,59 @@ folga: 0,06 é o erro de fronteira medido do alinhador. O `Sessao.avisos`
 pergunta e a tela diz; o conserto é a pessoa terminar com o botão de menos,
 que passa por cima da geometria.
 
+**O passe de julgamento julga o que ENTENDEU, não o que está marcado.** O
+`revisao.txt` abre com um bloco `## PENDENCIAS`: a lista numerada de tudo
+que o programa sabe que não sabe resolver (texto reconstruído, fala não
+transcrita colada numa palavra, cauda arrastada, `[??]`, disputa, fala
+rarefeita), cada item ancorado no texto como `[Pn]`. Isso fecha metade do
+problema — a metade que o programa consegue suspeitar. A outra metade não
+tem marca nenhuma e só aparece para quem sabe do que a aula trata: por isso
+a fase 1 do `/revisar` lê o verbete da carta em
+`material/guia-taro-de-yala.md` e escreve `work/<video>/entendimento.md`
+antes de qualquer corte. Foi a falta disso que deixou um bocejo inteiro
+("ai que horror", bocejado) atravessar o 7 de espadas transcrito como a
+palavra inexistente "despeçoso", no meio de uma frase de texto normal.
+
+`carrega_vocabulario` é a versão mecânica e fraca da mesma pergunta: junta
+as palavras da própria aula, do guia do Yala e do léxico, e marca quando um
+texto RECONSTRUÍDO E MANTIDO inventa palavra que não existe em lugar nenhum
+do material. Medido nos 10 fluxos de `work/`: quatro alarmes no total, os
+quatro verdadeiros ("despeçoso", "Disse percebe", "Núrope", "Os pardes").
+Não corta nada e não pode: 3 mil palavras tiradas de um livro e de dez
+vídeos não são o português.
+
+**Gaguejada se mede pela próxima palavra AUDÍVEL, não pela próxima do
+fluxo.** `proxima_audivel` pula o que já está marcado para sair, porque o
+que some não separa nada para quem escuta. E a comparação é por `chave_ac`,
+COM acento — sem isso "e é" vira repetição e o programa come a conjunção.
+Não há piso de tamanho de palavra: houve (`len > 2`) e ele não protegia
+nada, só deixava passar "de de", "no no", "um um" e "ou ou", que são
+exatamente as gaguejadas que sobravam nos vídeos de calibração. Quem faz
+esse trabalho são o acento e o `GAGUEJADA_MAX` (1,5 s).
+
+A mesma pergunta é refeita no `conferir` (`REPETICAO AUDIVEL`) sobre o
+corte PRONTO, e a distância ali se mede na PRÉVIA, não na fonte: metade
+desses casos não existia no fluxo — foi o corte que criou a vizinhança. No
+IMG_0248 a anotação de 343,7-350,4 s encosta o "que" de antes no "que" de
+depois, 6,4 s de distância na fonte e 0,12 s no que se ouve.
+
+**Testado e RECUSADO: separar fala de bocejo pela acústica.** Duas medidas
+foram implementadas e jogadas fora — taxa de picos silábicos no envelope e
+razão de energia de modulação em 2,5-9 Hz. Contra os 191 trechos
+recuperados de `work/`, fala de verdade e vocalização sustentada se
+sobrepõem por inteiro (fala: mediana 0,33 pico/sílaba e 0,48 de modulação,
+p10 em 0,17 e 0,14; o bocejo do 7 de espadas cai dentro dessa faixa). Não
+insista por aí: o que separa os dois é o SENTIDO do texto, não a forma do
+som. O espectrograma continua útil para uma pergunta diferente — "isso é um
+som sustentado ou dois pulsos?" -, e essa está no `/revisar`.
+
+**Testado e RECUSADO: avisar quando a emenda deixa a frase pendurada** (o
+trecho mantido termina em preposição ou conjunção). Medido: 13 a 19 por
+vídeo, e quase todas são emenda no meio de frase, que é o normal - a pausa
+foi encurtada e a frase continua do outro lado. Alarme que dispara em 20%
+das emendas é papel de parede, mesmo problema do alarme de "emenda em ponto
+alto do envelope" descrito no `cmd_conferir`.
+
 **`align` é etapa separada por medição:** 72% dos fins de palavra do Whisper
 caem tarde (mediana +27 ms). Cortar pelos tempos do Whisper come o "s" final.
 
@@ -198,6 +253,14 @@ teste_editor.py`** roda nos três vídeos de calibração e checa o que quebra
 calado: o mais desfaz o menos exato, ocultar a palavra tira a palavra (ou
 avisa que não tirou), e o corte que a tela mostrou é byte a byte o que o
 `render` relê do disco.
+
+Mexeu na marcação ou no `revisao.txt`? **`venv\Scripts\python.exe
+teste_revisao.py`**, o irmão dele para a outra metade: a gaguejada pela
+próxima palavra audível (com acento, com ENFASE, com o limite de tempo), o
+aviso de palavra inventada, e as duas promessas do `revisao.txt` — toda
+pergunta sem resposta automática vira pendência numerada, e toda pendência
+está ancorada no texto. Foi este teste que achou a `[disputa]` sumindo
+quando caía num token cortado.
 
 **Rode `conferir` antes de ouvir.** Ele lê o corte pela mesma função do
 `render` e lista só o suspeito: anotação desobedecida, fala cortada que

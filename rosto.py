@@ -224,9 +224,20 @@ def amostras_anotadas(video, out_dir, n=6, taxa=TAXA):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        sys.exit("uso: rosto.py <video>")
+    # `--amostras` existe porque `amostras_anotadas` era codigo morto: uma
+    # ferramenta util (foi ela que gerou work/IMG_0301/rosto_amostras/)
+    # sem nenhum jeito de rodar sem editar o arquivo. Ou se apaga, ou se
+    # liga na linha de comando - apagar era jogar fora a unica maneira de
+    # ver o que o detector esta vendo.
+    if len(sys.argv) not in (2, 3) or (len(sys.argv) == 3
+                                       and sys.argv[2] != "--amostras"):
+        sys.exit("uso: rosto.py <video> [--amostras]")
     video = Path(sys.argv[1])
     wdir = ROOT / "work" / video.stem
     wdir.mkdir(parents=True, exist_ok=True)
-    rastreia(video, wdir)
+    if len(sys.argv) == 3:
+        saidas = amostras_anotadas(video, wdir / "rosto_amostras")
+        for x in saidas:
+            print(f"[rosto] {x}")
+    else:
+        rastreia(video, wdir)

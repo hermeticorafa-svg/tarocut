@@ -233,6 +233,59 @@ def carrega_termos():
     return canon, uma, frase
 
 
+GUIA = ROOT / "material" / "guia-taro-de-yala.md"
+RE_PALAVRA = re.compile(r"[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'-]*")
+
+
+def carrega_vocabulario(d):
+    """Todas as palavras que se sabe existirem: as que a propria aula usa,
+    as do guia do Yala e as do lexico.
+
+    Serve para UMA pergunta, e so no relatorio: quando o Whisper
+    re-transcreve um trecho isolado e devolve texto, esse texto e uma
+    leitura de confianca baixa. Se a leitura inventa uma palavra que nao
+    existe em lugar nenhum do material do curso nem no resto da propria
+    aula, quase sempre nao havia palavra ali - havia bocejo, resmungo ou
+    eco de microfone.
+
+    MEDIDO nos 10 fluxos de work/: dos tokens recuperados que o programa
+    MANTEM, so quatro tem palavra fora deste vocabulario, e os quatro sao
+    exatamente os suspeitos ja conhecidos - "despeçoso" (o bocejo do 7 de
+    espadas, relatado como "ai que horror"), "Disse percebe", "Núrope" e
+    o par disputado "Os pardes"/"Os pássaros". Nenhuma frase real da
+    lista. Nos tokens ja cortados a taxa de alarme e alta (14%), e por
+    isso a marca so vale para o que FICA: o que ja vai sair nao precisa
+    de segunda opiniao.
+
+    Isto NAO corta nada e nao pode cortar: um dicionario de 3 mil palavras
+    tirado de um livro e da fala de dez videos nao e o portugues. E uma
+    seta para o passe de julgamento olhar, do mesmo tipo que o [??]."""
+    vocab = set()
+    for arq in (GUIA, ROOT / "lexicon" / "terms.txt",
+                ROOT / "lexicon" / "fillers.txt",
+                ROOT / "lexicon" / "marcadores.txt"):
+        if arq.exists():
+            for w in RE_PALAVRA.findall(arq.read_text(encoding="utf-8")):
+                k = chave(w)
+                if k:
+                    vocab.add(k)
+    wp = d / "words.json"
+    if wp.exists():
+        for w in jload(wp).get("words", []):
+            k = chave(w["w"])
+            if k:
+                vocab.add(k)
+    return vocab
+
+
+def fora_do_vocabulario(txt, vocab):
+    """As palavras de `txt` que ninguem mais no material usa. Ignora as
+    curtas: com 1-3 letras a chance de ser sigla, onomatopeia ou pedaco de
+    palavra e alta demais para o aviso valer alguma coisa."""
+    return [w for w in txt.split()
+            if len(chave(w)) > 3 and chave(w) not in vocab]
+
+
 def corrige_frases(words, frase):
     """Troca erros de varias palavras no lugar. Quando a correcao tem o
     mesmo numero de palavras, substitui uma a uma; quando nao tem, poe o
@@ -531,11 +584,46 @@ def _e_lacuna(t):
 ENFASE = {"nao", "sim", "muito", "bem", "so", "ja", "mais", "menos",
           "devagar", "calma", "obrigada", "isso"}
 
+# Quanto tempo pode separar duas palavras iguais para que ainda sejam a
+# MESMA gaguejada. Acima disso sao duas ocorrencias da palavra em frases
+# diferentes: no IMG_0247 um "e" as 249,6s e outro as 262,8s ficam colados
+# no corte, mas na fonte ha 13s entre eles - quem gagueja nao espera 13s.
+GAGUEJADA_MAX = 1.5
+
+
+def proxima_audivel(stream, i):
+    """Indice da proxima palavra que a pessoa VAI OUVIR depois de `i`.
+
+    Nao e `stream[i + 1]`: entre duas palavras cabem pausa e hesitacao ja
+    marcadas para sair, e o que some nao separa nada para quem escuta. Foi
+    por olhar so o vizinho imediato que sobreviveram "no ... no"
+    (IMG_0248, 488,0s) e "um, ... um" (as de espadas, 557,3s) - entre as
+    duas metades da gagueira havia um token cortado, e a regra concluia
+    que nao eram vizinhas.
+
+    Devolve None quando o que vem antes da proxima palavra FICA (pausa ou
+    hesitacao mantida) ou quando a propria palavra seguinte ja esta
+    cortada: nos dois casos elas nao ficam vizinhas no corte, e a pergunta
+    nao se aplica."""
+    j = i + 1
+    while j < len(stream):
+        t = stream[j]
+        if t["k"] == "palavra":
+            return None if t["cut"] else j
+        if not t["cut"]:
+            return None
+        j += 1
+    return None
+
 
 def marca_cacoetes(stream, sempre, contextual):
     """Marca cacoetes. Os ambiguos (é, e, então, né...) so caem quando
     estao ILHADOS entre pausas - senao cortariamos a conjuncao 'e' em
-    'cavaleiros e cavaleiras' e a frase desmontaria."""
+    'cavaleiros e cavaleiras' e a frase desmontaria.
+
+    Duas passadas, e a ordem importa: a gaguejada pergunta qual e a
+    proxima palavra AUDIVEL, e so depois da primeira passada as muletas
+    do meio ja estao marcadas para sair."""
     n = 0
     for i, t in enumerate(stream):
         if t["k"] != "palavra" or t["cut"]:
@@ -548,18 +636,38 @@ def marca_cacoetes(stream, sempre, contextual):
             t["cut"], t["why"] = True, "cacoete"
         elif eh_alongada(t["t"]):
             t["cut"], t["why"] = True, "alongamento"
-        elif k in contextual and ant is not None and pro is not None \
-                and _e_lacuna(ant) and _e_lacuna(pro):
+        elif k in contextual and ant is not None and pro is not None                 and _e_lacuna(ant) and _e_lacuna(pro):
             t["cut"], t["why"] = True, "muleta isolada"
-        elif (pro is not None and pro["k"] == "palavra"
-              and chave(t["t"]) and chave(pro["t"]) == chave(t["t"])
-              and chave(t["t"]) not in ENFASE and len(chave(t["t"])) > 2):
-            # palavra identica repetida em sequencia ("cavaleiras,
-            # cavaleiras") e gagueira, nao escolha. Corta a primeira e
-            # deixa a segunda. ENFASE protege o uso retorico ("nao, nao").
-            t["cut"], t["why"] = True, "gaguejada"
         if t["cut"]:
             n += 1
+
+    # Palavra identica repetida em sequencia ("cavaleiras, cavaleiras") e
+    # gagueira, nao escolha. Corta a primeira e deixa a segunda; ENFASE
+    # protege o uso retorico ("nao, nao").
+    #
+    # A comparacao e por `chave_ac`, COM acento. Sem isso "e é" (conjuncao
+    # mais verbo) vira repeticao e o programa come a conjuncao - e o mesmo
+    # motivo pelo qual `chave_ac` existe.
+    #
+    # NAO ha piso de tamanho de palavra. Ja houve (`len > 2`) e ele nao
+    # protegia nada: as gagueiras que sobravam nos videos de calibracao
+    # eram justamente "de de" (7 de espadas, 179,1s), "no no" (IMG_0248,
+    # 488,0s), "um, um" (as de espadas, 557,3s) e "ou ou" (IMG_0247,
+    # 355,9s), todas de uma ou duas letras. Quem faz o trabalho que o piso
+    # fazia mal sao o acento e o GAGUEJADA_MAX.
+    #
+    # MEDIDO nos 10 fluxos de work/: corta 6 tokens novos no total, e os 6
+    # sao gagueira de verdade - nenhuma palavra de conteudo na lista.
+    for i, t in enumerate(stream):
+        if t["k"] != "palavra" or t["cut"] or not chave_ac(t["t"]):
+            continue
+        j = proxima_audivel(stream, i)
+        if j is None or chave_ac(stream[j]["t"]) != chave_ac(t["t"]):
+            continue
+        if chave(t["t"]) in ENFASE or stream[j]["s"] - t["e"] > GAGUEJADA_MAX:
+            continue
+        t["cut"], t["why"] = True, "gaguejada"
+        n += 1
     return n
 
 # ------------------------------------------ marcacao: tentativas de fala
@@ -2264,8 +2372,15 @@ def _base(video, rotulo, ignorar_transcript=False, aplicar_mont=True,
         db, hop, _ = envelope(wav)
     # relê as anotacoes do disco: editar anotacoes.json e rodar previa
     # deve funcionar sem refazer a analise inteira
-    anot = encaixa_anotacoes(stream,
-                             carrega_anotacoes(d) or S.get("anotacoes", []))
+    # O `or` que morava aqui sobre lista vazia era mais um caminho para
+    # julgamento humano sumir em silencio, so que ao contrario: APAGAR
+    # todas as anotacoes do arquivo fazia o programa cair na copia velha
+    # gravada dentro do stream.json e reimpor exatamente as anotacoes que
+    # a pessoa acabara de tirar. Se o arquivo existe, ele manda - mesmo
+    # vazio. A copia do stream.json so vale quando nao ha arquivo nenhum.
+    anot = (carrega_anotacoes(d) if (d / "anotacoes.json").exists()
+            else S.get("anotacoes", []))
+    anot = encaixa_anotacoes(stream, anot)
     if anot:
         print(f"[{rotulo}] {len(anot)} trechos anotados aplicados")
     mont = carrega_montagem(d)
@@ -2548,9 +2663,11 @@ def cmd_revisar(a):
     d = wdir(a.video)
     S = jload(d / "stream.json")
     st, dur = S["stream"], S["dur"]
-    raros = rarefeitos(st, cfg()["revisao"])
+    C = cfg()
+    raros = rarefeitos(st, C["revisao"])
     bagunca = fora_de_ordem(st)
     choques = sobrepostos(st)
+    vocab = carrega_vocabulario(d)
 
     L = [f"# {Path(a.video).stem} | {hhmmss(dur)} | tempos em segundos",
          "# [-N.Ns] = ja marcado para corte, trecho quieto. Texto solto =",
@@ -2558,71 +2675,150 @@ def cmd_revisar(a):
          "# [-N.Ns VOZ] = marcado para corte MESMO havendo som alto ali",
          "# dentro. O transcritor nao leu, mas o microfone ouviu: pode ser",
          "# frase inteira prestes a sumir. Confira antes de deixar passar.",
-         "# [?? N.Ns] = som alto que ninguem conseguiu ler, MANTIDO de",
-         "# proposito para voce decidir. Diga se sai ou fica.",
+         "# [rec: ...] = texto RECONSTRUIDO. Nao saiu da transcricao do",
+         "# video: o programa re-transcreveu aquele pedaco isolado porque",
+         "# o Whisper nao tinha lido nada ali. E a leitura de MENOR",
+         "# confianca do arquivo inteiro, e e onde bocejo e resmungo se",
+         "# disfarcam de palavra. Va sempre pelo sentido: se nao encaixa",
+         "# no assunto da aula, o candidato a sair e ele, nao o vizinho.",
          "# palavra~ = o tempo dessa palavra nao e confiavel (o alinhador",
          "# recusou o proprio resultado e caiu no tempo grosseiro do",
          "# Whisper). NAO ancore borda de corte numa palavra com ~: ela",
          "# pode estar segundos longe de onde aparece aqui.",
-         "# [!Ns/N palavras] = o que SOBRA ali e fala rarefeita (o normal e",
-         "# ~2,5 palavras/s): parada longa que o detector de pausas nao viu.",
-         "# [disputa N.Ns] = duas recuperacoes automaticas (duracao",
-         "# impossivel + retomada colapsada) brigaram pelo mesmo audio.",
-         "# Nenhuma teve o inicio embaralhado sozinha, entao isto nao vira",
-         "# ~ nem [aviso fora de ordem] - mas o resultado pode ser uma",
-         "# palavra solta entre dois cortes (ILHA CURTA no conferir). Ouca",
-         "# com tarocut.py audio antes de aceitar o corte automatico ali.",
-         "# [cauda arrastada Nx] = a palavra foi dita arrastada (Nx mais",
-         "# longa que o normal) e a poda automatica ja cortou o rabo, mas so",
-         "# ate uma folga fixa - pode sobrar arrasto audivel do mesmo jeito.",
-         "# Ouca esse ponto; se sobrar som, a anotacao cobre so o que a poda",
-         "# nao alcancou (normalmente uns poucos decimos apos a palavra).",
-         "# [duracao impossivel (Nx): X.Xs de fala nao transcrita] = a",
-         "# palavra e real e fica, mas X.Xs de audio colados nela nao",
-         "# viraram texto - quase sempre bocejo, resmungo ou eco do",
-         "# microfone. Se o [texto reconstruido] vizinho nao fizer sentido",
-         "# no contexto da aula, ele e o candidato a sair, nao a palavra.",
-         "# Procure: retomadas com outras palavras, interrupcoes, trechos",
-         "# em que ela se perde. Responda com trechos [inicio, fim, motivo]."]
+         "# [Pn] = pendencia numero n, listada em PENDENCIAS logo abaixo.",
+         "# Procure, alem das pendencias: retomadas com outras palavras,",
+         "# interrupcoes, trechos em que ela se perde. Responda com",
+         "# trechos [inicio, fim, motivo]."]
     if bagunca:
         L.append(f"# aviso: {bagunca} palavras com tempo fora de ordem - o "
                  f"alinhador embaralhou")
         L.append("# esses trechos, e ali o [-N.Ns] pode faltar mesmo "
                  "havendo parada.")
-    if choques:
-        L.append(f"# aviso: {len(choques)} disputa(s) de recuperacao "
-                 f"automatica marcadas [disputa] abaixo - confira com audio.")
-    L.append("")
 
-    # ancora cada aviso no primeiro token MANTIDO que cai dentro dele: e o
-    # unico ponto do texto corrido onde ele pode aparecer.
-    marca = {}
-    for x, y, s, n in raros:
+    # ------------------------------------------------------ pendencias
+    # Tudo o que o programa sabe que NAO sabe resolver sozinho vira um
+    # item numerado aqui em cima, alem de aparecer ancorado no texto.
+    #
+    # Antes cada uma destas marcas so existia no meio do texto corrido, e
+    # a instrucao "toda ocorrencia precisa de uma resposta sua" dependia
+    # de quem lia ir catando marca por marca ate o fim. Nao foi o que
+    # aconteceu: no 7 de espadas um bocejo inteiro atravessou o passe de
+    # julgamento disfarcado de palavra reconstruida e so apareceu quando
+    # o Rafael ouviu o audio. Lista numerada se confere; marca solta no
+    # meio de 200 linhas de texto nao se confere.
+    # A explicacao de cada categoria vai UMA vez, no cabecalho do bloco,
+    # e so das categorias que apareceram. Repeti-la em cada item custava
+    # 100 caracteres por linha num arquivo que existe para ser pequeno -
+    # e o passe de julgamento le todas as linhas de qualquer jeito.
+    EXPLICA = {
+        "cauda arrastada":
+            "a poda ja tirou o rabo, mas so ate a folga fixa do "
+            "config.toml: pode sobrar arrasto audivel. Ouca.",
+        "fala nao transcrita":
+            "audio colado numa palavra REAL que nunca virou texto - quase "
+            "sempre bocejo, resmungo ou eco de microfone.",
+        "texto reconstruido":
+            "leitura de baixa confianca de um trecho que o Whisper nao "
+            "leu. Se nao faz sentido no assunto da aula, e ELE que sai.",
+        "som alto sem texto":
+            "ninguem conseguiu ler e o programa manteve de proposito, "
+            "para voce decidir. Sai ou fica?",
+        "disputa":
+            "duas recuperacoes automaticas brigaram pelo mesmo audio; o "
+            "corte pode sair fragmentado. So o ouvido resolve.",
+        "fala rarefeita":
+            "o que SOBRA ali e pouca fala em muito tempo: parada longa, "
+            "retomada, ou ela se perdendo.",
+    }
+
+    # Tudo o que o programa sabe que NAO sabe resolver sozinho vira um
+    # item numerado aqui em cima, alem de aparecer ancorado no texto.
+    #
+    # Antes cada uma destas marcas so existia no meio do texto corrido, e
+    # a instrucao "toda ocorrencia precisa de uma resposta sua" dependia
+    # de quem lia ir catando marca por marca ate o fim. Nao foi o que
+    # aconteceu: no 7 de espadas um bocejo inteiro atravessou o passe de
+    # julgamento disfarcado de palavra reconstruida e so apareceu quando
+    # o Rafael ouviu o audio. Lista numerada se confere; marca solta no
+    # meio de 200 linhas de texto nao se confere.
+    pend = []
+
+    def ancora(i):
+        """O token MANTIDO mais proximo de `i`, para onde a marca `[Pn]`
+        vai no texto corrido.
+
+        Token cortado nao e impresso, entao marca posta nele some sem
+        deixar rastro. Era o caso de TODA `[disputa]`: `sobrepostos`
+        devolve o par que se invade sem olhar `cut`, e nos quatro videos
+        de calibracao pelo menos um dos avisos caia num token ja marcado
+        para sair - o revisao.txt saia sem ele, e a fase 2 do
+        `/revisar` mandava procurar uma marca que nao existia no
+        arquivo."""
+        for k in range(i, len(st)):
+            if not st[k]["cut"]:
+                return k
+        for k in range(i, -1, -1):
+            if not st[k]["cut"]:
+                return k
+        return None
+
+    def pergunta(i, rot, desc):
+        pend.append({"i": i, "rot": rot, "desc": desc})
+
+    for x, y, sob, n in raros:
+        # ancora no primeiro token MANTIDO que cai dentro: e o unico ponto
+        # do texto corrido onde ele pode aparecer.
         for i, t in enumerate(st):
             if not t["cut"] and t["e"] > x and t["s"] < y:
-                marca[i] = f"[!{s:.0f}s/{n} palavras]"
+                pergunta(i, "fala rarefeita",
+                         f"{sob:.0f}s com so {n} palavra(s)")
                 break
 
-    # disputa de recuperacao: ancora no segundo token do par (o que invade),
-    # que e o que aparece "de surpresa" lendo o texto em ordem.
+    # disputa de recuperacao: ancora no segundo token do par (o que
+    # invade), que e o que aparece "de surpresa" lendo o texto em ordem.
     for ia, ib in choques:
-        sobra = st[ia]["e"] - st[ib]["s"]
-        marca[ib] = marca.get(ib, "") + f"[disputa {sobra:.1f}s]"
+        pergunta(ib, "disputa", f"{st[ia]['e']-st[ib]['s']:.1f}s")
 
-    # cauda arrastada (poda automatica, `marca_arrastadas`) e duracao
-    # impossivel (fala nao transcrita escondida DENTRO de uma palavra real)
-    # nunca apareciam aqui: a palavra saia igual a qualquer outra, sem
-    # nenhum sinal. Foi assim que um "que" arrastado sobrou audivel no 7 de
-    # espadas (a poda so tira a partir de `manter`x o esperado, e as vezes
-    # isso ainda e arrasto de verdade) e um bocejo inteiro colado a
-    # "das"/"pessoas" passou direto - dois defeitos de CONTEUDO que ninguem
-    # via porque o revisor olhava para uma palavra comum. Ver fase 2 do
-    # revisar.md: as duas marcas pedem ouvido, nao so leitura.
     for i, t in enumerate(st):
-        if (t["k"] == "palavra" and not t["cut"]
-                and t["why"].startswith(("cauda arrastada",
-                                          "duracao impossivel"))):
-            marca[i] = marca.get(i, "") + f"[{t['why']}]"
+        if t["cut"]:
+            continue
+        if t["k"] == "hesitacao":
+            if str(t["t"]).startswith("??"):
+                pergunta(i, "som alto sem texto",
+                         f"{t['e']-t['s']:.1f}s")
+            else:
+                fora = fora_do_vocabulario(t["t"], vocab)
+                extra = ("  <== " + ", ".join(fora) + " nao existe no "
+                         "material do curso: leitura provavelmente errada"
+                         if fora else "")
+                pergunta(i, "texto reconstruido",
+                         f"{t['t']!r} ({t['e']-t['s']:.1f}s){extra}")
+        elif t["k"] == "palavra" and t["why"].startswith("cauda arrastada"):
+            pergunta(i, "cauda arrastada",
+                     f"{t['t']!r} {t['why'].split()[-1]}")
+        elif t["k"] == "palavra" and t["why"].startswith("duracao impossivel"):
+            pergunta(i, "fala nao transcrita",
+                     f"{t['why'].split(': ')[-1].replace(' de fala nao '
+                     'transcrita', '')} colados em {t['t']!r}")
+
+    pend.sort(key=lambda q: (st[q["i"]]["s"], q["i"]))
+    marca = {}
+    for n, q in enumerate(pend, 1):
+        q["n"] = n
+        j = ancora(q["i"])
+        if j is not None:
+            marca[j] = marca.get(j, "") + f"[P{n}]"
+
+    if pend:
+        L.append("")
+        L.append(f"## PENDENCIAS ({len(pend)}) - responda cada uma no "
+                 f"relatorio: sai ou fica, e por que")
+        for rot in sorted({q["rot"] for q in pend}):
+            L.append(f"#  {rot} = {EXPLICA[rot]}")
+        for q in pend:
+            L.append(f"P{q['n']:<3d} {st[q['i']]['s']:7.1f}s  "
+                     f"{q['rot']}: {q['desc']}")
+    L.append("")
 
     # Palavras cujo tempo o alinhador recusou. Sem isto o revisao.txt mente
     # com cara de verdade: no IMG_0247 um "As" impresso em 80,0s foi falado
@@ -2644,7 +2840,7 @@ def cmd_revisar(a):
     # O microfone e a segunda opiniao sobre o que esta indo embora: um
     # [-1.8s] de silencio e um [-1.8s] de frase eram impressos igual.
     db, hop, _ = envelope(d / "audio.wav")
-    limiar = limiar_voz(db, cfg()["silencio"]["limiar_fala_db"])
+    limiar = limiar_voz(db, C["silencio"]["limiar_fala_db"])
 
     linha, ini, cortado, alto = [], None, 0.0, 0.0
     for i, t in enumerate(st):
@@ -2671,8 +2867,14 @@ def cmd_revisar(a):
             linha.append(marca[i])
         if t["k"] == "palavra":
             linha.append(t["t"] + ("~" if i in duvida else ""))
+        elif t["k"] == "silencio":
+            linha.append(f"[pausa {t['e']-t['s']:.1f}s]")
         else:
-            linha.append(f"[{t['t'][:14]}]")
+            # texto reconstruido vai INTEIRO. Truncar em 14 caracteres era
+            # esconder metade da prova: o que denuncia bocejo lido como
+            # palavra e a frase nao fechar sentido, e meia frase nao fecha
+            # sentido nenhum por definicao.
+            linha.append(f"[rec: {t['t']}]")
         if len(" ".join(linha)) > 130:
             L.append(f"{ini:6.1f} " + " ".join(linha))
             linha, ini = [], None
@@ -2683,6 +2885,7 @@ def cmd_revisar(a):
     p.write_text("\n".join(L) + "\n", encoding="utf-8")
     n = len("\n".join(L))
     print(f"[revisar] {p}  ({n} caracteres, ~{n//4} tokens)")
+    print(f"[revisar] {len(pend)} pendencia(s) exigem resposta explicita")
     print(f"[revisar] escreva o julgamento em {d/'anotacoes.json'}")
 
 
@@ -2795,6 +2998,38 @@ def cmd_conferir(a):
             diz("PALAVRA RASPADA", t["s"], fe,
                 f"perde {1000*(largura-vivo):.0f}ms | {t['t'][:20]!r}")
 
+    # 5. Gagueira que sobra AUDIVEL. `marca_cacoetes` pergunta isso no
+    #    fluxo, antes de qualquer geometria; aqui a pergunta e refeita
+    #    sobre o corte PRONTO, porque metade destes casos nao existia no
+    #    fluxo - foi o corte que criou a vizinhanca. MEDIDO: no IMG_0248
+    #    a anotacao de 343,7-350,4s ("tres tentativas da mesma oracao")
+    #    encosta o "que" de antes no "que" de depois, 0,12s de distancia
+    #    na previa e 6,4s na fonte; no IMG_0247 a de 249,7s faz o mesmo
+    #    com dois "e". Nenhuma das duas aparece em lugar nenhum hoje.
+    #
+    #    A distancia se mede na PREVIA, nao na fonte: e la que a pessoa
+    #    ouve as duas palavras coladas. Por `chave_ac`, com acento, pela
+    #    mesma razao da `marca_cacoetes` ("e é" nao e repeticao).
+    vivas = []
+    for t in stream:
+        if t["cut"] or t["k"] != "palavra":
+            continue
+        largura = fim_util(t) - t["s"]
+        if largura <= 0:
+            continue
+        vivo = sum(max(0.0, min(fim_util(t), b) - max(t["s"], aa))
+                   for aa, b in iv)
+        if vivo > largura * 0.5:
+            vivas.append(t)
+    for x, y in zip(vivas, vivas[1:]):
+        k = chave_ac(x["t"])
+        if not k or k != chave_ac(y["t"]) or chave(x["t"]) in ENFASE:
+            continue
+        if para_previa(y["s"]) - para_previa(fim_util(x)) > GAGUEJADA_MAX:
+            continue
+        diz("REPETICAO AUDIVEL", x["s"], y["e"],
+            f"{x['t']!r} + {y['t']!r} | {y['s']-x['e']:.2f}s na fonte")
+
     # ORDEM DE ESCUTA, nao ordem de categoria. Quem confere ouve o .m4a do
     # comeco ao fim uma vez so; uma lista agrupada por tipo de defeito obriga
     # a pular para tras seis vezes.
@@ -2807,6 +3042,8 @@ def cmd_conferir(a):
          "# FALA CORTADA SOBREVIVE = o programa marcou para sair e continua ali.",
          "# ILHA CURTA = pouca coisa entre dois cortes; nem sempre e defeito.",
          "# PALAVRA RASPADA = borda comeu pedaco de palavra mantida.",
+         "# REPETICAO AUDIVEL = a mesma palavra duas vezes seguidas no "
+         "corte; o corte pode ter criado a gagueira.",
          ""]
     for p, rot, x, y, txt in achados:
         L.append(f"{hhmmss(p)}  {rot:24s} fonte {x:8.2f}-{y:<8.2f} {txt}")
