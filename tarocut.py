@@ -511,7 +511,7 @@ def carrega_marcadores():
     return sorted(out, key=len, reverse=True)
 
 
-def marca_instrucoes(stream, marcadores, respiro, max_volta=25.0):
+def marca_instrucoes(stream, marcadores, ci):
     """Corta onde ela MANDA cortar.
 
     Gravando sozinha, a Mariana narra a propria edicao: "nao, corta essa
@@ -524,6 +524,7 @@ def marca_instrucoes(stream, marcadores, respiro, max_volta=25.0):
     comecou."""
     if not marcadores:
         return 0
+    respiro, max_volta = ci["respiro"], ci["volta_max"]
     idx = [i for i, t in enumerate(stream) if t["k"] == "palavra"]
     keys = [chave(stream[i]["t"]) for i in idx]
     n = 0
@@ -554,13 +555,17 @@ def marca_instrucoes(stream, marcadores, respiro, max_volta=25.0):
     return n
 
 
-def marca_ecos(stream, janela=6):
+def marca_ecos(stream, janela):
     """Trecho recuperado que REPETE uma palavra vizinha e retomada.
 
     Passa sobre o fluxo inteiro, uma vez, para todo trecho de texto
     recuperado - venha ele de lacuna entre palavras ou de palavra com
     duracao impossivel. A regra ja existiu so num dos dois caminhos, e pelo
-    outro escapava "como se [como seja...] existisse uma tradicao"."""
+    outro escapava "como se [como seja...] existisse uma tradicao".
+
+    `janela` (quantos tokens de cada lado contam como "vizinho") vem do
+    config: e ela que decide se um trecho recuperado sai ou fica, e numero
+    que decide corte nao mora no codigo."""
     n = 0
     for i, t in enumerate(stream):
         if t["k"] != "hesitacao" or t["cut"] or not chave(t["t"]):
@@ -583,12 +588,6 @@ def _e_lacuna(t):
 # Palavras cuja repeticao imediata e enfase deliberada, nao gagueira.
 ENFASE = {"nao", "sim", "muito", "bem", "so", "ja", "mais", "menos",
           "devagar", "calma", "obrigada", "isso"}
-
-# Quanto tempo pode separar duas palavras iguais para que ainda sejam a
-# MESMA gaguejada. Acima disso sao duas ocorrencias da palavra em frases
-# diferentes: no IMG_0247 um "e" as 249,6s e outro as 262,8s ficam colados
-# no corte, mas na fonte ha 13s entre eles - quem gagueja nao espera 13s.
-GAGUEJADA_MAX = 1.5
 
 
 def proxima_audivel(stream, i):
@@ -616,7 +615,7 @@ def proxima_audivel(stream, i):
     return None
 
 
-def marca_cacoetes(stream, sempre, contextual):
+def marca_cacoetes(stream, sempre, contextual, cc):
     """Marca cacoetes. Os ambiguos (é, e, então, né...) so caem quando
     estao ILHADOS entre pausas - senao cortariamos a conjuncao 'e' em
     'cavaleiros e cavaleiras' e a frase desmontaria.
@@ -654,7 +653,7 @@ def marca_cacoetes(stream, sempre, contextual):
     # eram justamente "de de" (7 de espadas, 179,1s), "no no" (IMG_0248,
     # 488,0s), "um, um" (as de espadas, 557,3s) e "ou ou" (IMG_0247,
     # 355,9s), todas de uma ou duas letras. Quem faz o trabalho que o piso
-    # fazia mal sao o acento e o GAGUEJADA_MAX.
+    # fazia mal sao o acento e o [cacoete].gaguejada_max do config.
     #
     # MEDIDO nos 10 fluxos de work/: corta 6 tokens novos no total, e os 6
     # sao gagueira de verdade - nenhuma palavra de conteudo na lista.
@@ -664,7 +663,8 @@ def marca_cacoetes(stream, sempre, contextual):
         j = proxima_audivel(stream, i)
         if j is None or chave_ac(stream[j]["t"]) != chave_ac(t["t"]):
             continue
-        if chave(t["t"]) in ENFASE or stream[j]["s"] - t["e"] > GAGUEJADA_MAX:
+        if (chave(t["t"]) in ENFASE
+                or stream[j]["s"] - t["e"] > cc["gaguejada_max"]):
             continue
         t["cut"], t["why"] = True, "gaguejada"
         n += 1
@@ -672,8 +672,7 @@ def marca_cacoetes(stream, sempre, contextual):
 
 # ------------------------------------------ marcacao: tentativas de fala
 
-def detecta_tentativas(stream, min_ngram=3, janela_s=30.0, max_span=15.0,
-                       max_palavras=12):
+def detecta_tentativas(stream, ct, min_ngram=None):
     """Objetivo 3: ela comeca uma frase, para, recomeca, ate acertar.
 
     Procura a mesma sequencia de >=min_ngram palavras reaparecendo pouco
@@ -693,7 +692,16 @@ def detecta_tentativas(stream, min_ngram=3, janela_s=30.0, max_span=15.0,
          onde ela travou.
 
     Ainda assim isto e uma proposta conservadora: o caso duvidoso e melhor
-    resolvido lendo o texto (comando `review`)."""
+    resolvido lendo o texto (comando `revisar`).
+
+    `ct` e o bloco [tentativa] do config.toml - os quatro numeros moravam
+    aqui como default de parametro, que e um segundo lugar decidindo gosto
+    de corte. `min_ngram` sobrescreve o do config e existe por um motivo
+    so: o `revisar` roda esta mesma varredura mais frouxa para PERGUNTAR,
+    sem cortar nada (ver `cmd_revisar`)."""
+    min_ngram = ct["min_ngram"] if min_ngram is None else min_ngram
+    janela_s, max_span = ct["janela"], ct["span_max"]
+    max_palavras = ct["palavras_max"]
     idx = [i for i, t in enumerate(stream) if t["k"] == "palavra"]
     keys = [chave(stream[i]["t"]) for i in idx]
     n = len(idx)
@@ -1128,14 +1136,13 @@ def cmd_analyze(a):
                 rot = f"?? {l['dur']:.1f}s"
             add("hesitacao", rot, l["s"], l["e"], cortar, motivo)
 
-    n_cac = marca_cacoetes(stream, sempre, contextual)
+    n_cac = marca_cacoetes(stream, sempre, contextual, C["cacoete"])
     n_arr = marca_arrastadas(stream, sempre, C)
     if n_arr:
         print(f"[analyze] palavras arrastadas: {n_arr}")
-    cadeias = detecta_tentativas(stream)
+    cadeias = detecta_tentativas(stream, C["tentativa"])
     n_tent = marca_tentativas(stream, cadeias)
-    n_inst = marca_instrucoes(stream, carrega_marcadores(),
-                              C["instrucao"]["respiro"])
+    n_inst = marca_instrucoes(stream, carrega_marcadores(), C["instrucao"])
     if n_inst:
         print(f"[analyze] marcadores verbais de corte: {n_inst} tokens "
               f"(ela pediu para cortar)")
@@ -1147,7 +1154,7 @@ def cmd_analyze(a):
     # chama de novo depois desta linha; apagar antes dela deixava o arquivo
     # para tras em toda pasta de trabalho.
     (d / "_clip.wav").unlink(missing_ok=True)
-    n_eco = marca_ecos(stream)
+    n_eco = marca_ecos(stream, C["cacoete"]["eco_janela"])
     if n_eco:
         print(f"[analyze] retomadas colapsadas: {n_eco}")
     n_prot = protege_enumeracoes(stream, C["contagem"])
@@ -2527,6 +2534,13 @@ def _plano(a, rotulo):
                   f"obedecida - {vivo:.2f}s continuam no video: "
                   f"{motivo[:60]}")
     confere_pelo_whisper(d, C, stream, iv, rotulo)
+    # Corte que nao deixa nada nao e corte, e o ffmpeg so diz isso com um
+    # erro de `concat=n=0` que nao ajuda ninguem. Acontece quando uma
+    # anotacao (ou uma sequencia delas) cobre o video inteiro.
+    if not iv:
+        sys.exit(f"[{rotulo}] abortado: o corte nao deixou nenhum trecho. "
+                 f"Provavelmente uma anotacao cobre o video inteiro - veja "
+                 f"{d/'anotacoes.json'}.")
     return C, d, dur, iv
 
 
@@ -2729,6 +2743,11 @@ def cmd_revisar(a):
         "fala rarefeita":
             "o que SOBRA ali e pouca fala em muito tempo: parada longa, "
             "retomada, ou ela se perdendo.",
+        "retomada?":
+            "ela repete duas palavras pouco depois. Pode ser tentativa "
+            "abandonada (corte a PRIMEIRA, fique com a ultima) ou anafora "
+            "de proposito ('na carta da Rainha... na carta do Rei'). So o "
+            "sentido separa as duas - o programa nao corta isto sozinho.",
     }
 
     # Tudo o que o programa sabe que NAO sabe resolver sozinho vira um
@@ -2778,6 +2797,33 @@ def cmd_revisar(a):
     # invade), que e o que aparece "de surpresa" lendo o texto em ordem.
     for ia, ib in choques:
         pergunta(ib, "disputa", f"{st[ia]['e']-st[ib]['s']:.1f}s")
+
+    # Retomada que o corte automatico NAO pegou. `detecta_tentativas` corta
+    # com `min_ngram` do config (3 palavras identicas); aqui ela roda de
+    # novo com `min_ngram_aviso` (2) so para PERGUNTAR.
+    #
+    # Por que perguntar em vez de cortar: MEDIDO nos 10 fluxos de work/, o
+    # limiar de 2 acha 9 das retomadas que uma pessoa anotou a mao no
+    # IMG_0246/0247/0248/7 de espadas/as de espadas - "personagens
+    # politicos ou da cultura, enfim,", "pessoas mesmo, que aparecem",
+    # "uma coisa sendo representada,", "na vida do consulante", "nao
+    # precisa, nao precisa" - e mais 4 que sao ANAFORA, nao retomada: "na
+    # Carta da Rainha, por exemplo, ... na Carta do Rei e o Rio", "nao e
+    # isolado, nao e so ler", "estando em troca, estando em relacao". As
+    # quatro sao conteudo de verdade e cortar qualquer uma seria o pior
+    # defeito deste programa. A diferenca entre as duas coisas nao esta na
+    # forma - esta no sentido, e quem le o sentido e o passe de julgamento.
+    #
+    # Sobram 0 a 4 perguntas por video, cada uma com o texto citado.
+    for c in detecta_tentativas(st, C["tentativa"],
+                                C["tentativa"]["min_ngram_aviso"]):
+        pals = [st[j] for j in range(c["ini"], c["fim"])
+                if st[j]["k"] == "palavra"]
+        if not pals or sum(1 for t in pals if not t["cut"]) <= len(pals) / 2:
+            continue        # ja esta saindo: nao ha o que perguntar
+        pergunta(c["ini"], "retomada?",
+                 f"volta a dizer {c['repetido']!r} {c['dur']:.1f}s depois. "
+                 f"Descartaria: {c['descartado'][:70]!r}")
 
     for i, t in enumerate(st):
         if t["cut"]:
@@ -3025,7 +3071,8 @@ def cmd_conferir(a):
         k = chave_ac(x["t"])
         if not k or k != chave_ac(y["t"]) or chave(x["t"]) in ENFASE:
             continue
-        if para_previa(y["s"]) - para_previa(fim_util(x)) > GAGUEJADA_MAX:
+        if (para_previa(y["s"]) - para_previa(fim_util(x))
+                > C["cacoete"]["gaguejada_max"]):
             continue
         diz("REPETICAO AUDIVEL", x["s"], y["e"],
             f"{x['t']!r} + {y['t']!r} | {y['s']-x['e']:.2f}s na fonte")
@@ -3166,6 +3213,7 @@ def cmd_audio(a):
                         "-/filter_complex", str(g), "-map", "[ac]",
                         "-c:a", "pcm_s16le", "-ar", "48000", str(bruto)])
     if r.returncode != 0:
+        bruto.unlink(missing_ok=True)
         sys.exit("[audio] ffmpeg falhou no corte")
 
     af, entrada_lufs = _loudnorm(bruto, ca)

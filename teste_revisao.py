@@ -44,9 +44,10 @@ def teste_gaguejada():
     escapou de verdade nos videos de calibracao."""
     print("\n== gaguejada (marca_cacoetes, 2a passada)")
     sempre, contextual = set(), set()
+    cc = tc.cfg()["cacoete"]
 
     def corta(fluxo):
-        tc.marca_cacoetes(fluxo, sempre, contextual)
+        tc.marca_cacoetes(fluxo, sempre, contextual, cc)
         return [i for i, t in enumerate(fluxo) if t["cut"]]
 
     # 1. vizinhas imediatas, palavra de 2 letras: era o caso do `len > 2`,
@@ -84,7 +85,7 @@ def teste_gaguejada():
     f = [tok("palavra", "que", 1.0, 1.2),
          tok("silencio", "", 1.2, 9.0, cut=True),
          tok("palavra", "que", 9.0, 9.2)]
-    diz(corta(f) == [1], "acima de GAGUEJADA_MAX nao e gaguejada")
+    diz(corta(f) == [1], "acima de cacoete.gaguejada_max nao e gaguejada")
 
     # 7. a palavra seguinte ja esta cortada por outro motivo: nao sobra
     #    vizinha nenhuma, entao nao ha o que colar.
@@ -176,7 +177,8 @@ def teste_repeticao_audivel(video):
         k = tc.chave_ac(x["t"])
         if not k or k != tc.chave_ac(y["t"]) or tc.chave(x["t"]) in tc.ENFASE:
             continue
-        if para_previa(y["s"]) - para_previa(tc.fim_util(x)) <= tc.GAGUEJADA_MAX:
+        if (para_previa(y["s"]) - para_previa(tc.fim_util(x))
+                <= C["cacoete"]["gaguejada_max"]):
             achados.append((x["s"], x["t"]))
     a = argparse.Namespace(video=video, em=None, ignorar_transcript=False)
     with contextlib.redirect_stdout(io.StringIO()):

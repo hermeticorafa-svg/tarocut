@@ -198,7 +198,7 @@ def expande_por_energia(words, db, hop, limiar, teto=0.12):
     return words
 
 
-def descarta_ruins(words, deriva_max=1.5, log=print):
+def descarta_ruins(words, deriva_max, log=print):
     """Alinhamento tem seu proprio jeito de errar, sobretudo na borda de
     bloco. Onde o score for pessimo, o valor do Whisper e menos ruim.
 
@@ -212,7 +212,11 @@ def descarta_ruins(words, deriva_max=1.5, log=print):
     e nunca saem de ordem - medido, ZERO inversoes nos tres videos.
 
     Dai as duas travas novas: quem discorda do Whisper por mais que
-    `deriva_max`, ou quem acaba comecando antes da palavra anterior, perde
+    `deriva_max` (sem valor padrao de proposito: o numero mora em
+    [alinhamento].deriva_max do config.toml e em lugar nenhum mais -
+    default aqui seria um segundo lugar decidindo a mesma coisa, que e
+    como o piso de ruido chegou a viver com 12.0 no braco neste
+    arquivo), ou quem acaba comecando antes da palavra anterior, perde
     o alinhamento e volta para o tempo do Whisper. Custa 1-3% das palavras
     em precisao de fronteira; evita o erro que custou uma frase.
 

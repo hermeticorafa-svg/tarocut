@@ -54,6 +54,11 @@ excesso_suspeito = 1.2
 # faz parte da bagunca. Foi por parar numa hesitacao de 0,5s que sobrou um
 # "As" orfao no comeco do IMG_0248, virando "as met--".
 respiro = 0.8
+# Teto de seguranca dessa volta: se nao aparecer respiro nenhum ate aqui,
+# para de voltar. Sem ele, um marcador dito no meio de um trecho corrido
+# comeria minutos para tras. Morava como default de parametro dentro do
+# `marca_instrucoes` - numero que decide corte nao mora no codigo.
+volta_max = 25.0
 
 [hesitacao]
 # Caracteres falados por segundo abaixo do qual o trecho NAO e fala: e
@@ -88,6 +93,54 @@ guarda_db           = 25.0   # pico, em dB acima do limiar de fala
 max_palavras_seg    = 5.0
 # rejeita re-transcricao com log-prob medio pior que isto
 min_logprob         = -1.10
+
+[tentativa]
+# "Ela comeca uma frase, para, recomeca, ate acertar." Procura a mesma
+# sequencia de >= `min_ngram` palavras reaparecendo pouco depois; a
+# primeira ocorrencia (e a bagunca ate a ultima) e tentativa, a ultima e a
+# boa. Estes quatro numeros moravam como default de parametro dentro de
+# `detecta_tentativas` - gosto de corte decidido no codigo, que e
+# exatamente o que este arquivo existe para impedir.
+#
+# O PERIGO e confundir tentativa com PARALELISMO DIDATICO, que esta aula
+# tem aos montes ("que ta relacionado ao elemento fogo / agua / ar /
+# terra"). Repeticao mecanica nao distingue os dois; quem distingue sao os
+# tres filtros de `detecta_tentativas` (a retomada vem depois de um
+# respiro, o trecho descartado e curto, e ha uma pausa dentro dele).
+min_ngram    = 3     # palavras identicas em sequencia para virar corte
+janela       = 30.0  # ate quantos segundos adiante procurar a retomada
+span_max     = 15.0  # trecho descartado maior que isto nao e tentativa
+palavras_max = 12    # nem trecho com mais palavras que isto
+
+# O MESMO detector, mais frouxo, so para PERGUNTAR no revisao.txt: nunca
+# corta nada. MEDIDO nos 10 fluxos de work/: em 2 palavras ele acha 9 das
+# retomadas que uma pessoa anotou a mao (entre elas "personagens politicos
+# ou da cultura, enfim,", "pessoas mesmo, que aparecem" e "nao precisa,
+# nao precisa") e mais 4 que sao anafora de proposito ("na Carta da
+# Rainha, por exemplo, ... na Carta do Rei e o Rio"). Como cortar anafora
+# seria apagar conteudo em silencio - o pior defeito deste programa -, o
+# limiar frouxo so vira pendencia numerada, e quem decide e quem le o
+# sentido. Custo: 0 a 4 perguntas por video.
+min_ngram_aviso = 2
+
+[cacoete]
+# Os dois numeros que decidem corte de cacoete e que moravam no codigo.
+
+# Quanto tempo pode separar duas palavras iguais para que ainda sejam a
+# MESMA gaguejada ("de de", "no ... no"). Acima disso sao duas ocorrencias
+# da palavra em frases diferentes: no IMG_0247 um "e" aos 249,6s e outro
+# aos 262,8s ficam colados DEPOIS do corte, mas na fonte ha 13s entre eles,
+# e ninguem gagueja com 13s de intervalo. Vale nos dois lugares que fazem
+# essa pergunta - `marca_cacoetes`, no fluxo, e o alarme REPETICAO AUDIVEL
+# do `conferir`, no corte pronto (la a distancia se mede na PREVIA).
+gaguejada_max = 1.5
+
+# Quantos tokens de cada lado o `marca_ecos` olha para decidir se um trecho
+# RECUPERADO (texto que o Whisper nao tinha lido) so repete o que ja se diz
+# ali do lado - e portanto e retomada colapsada, e sai. Janela maior corta
+# mais; janela menor deixa passar o caso que criou esta funcao, o "como se
+# [como seja...] existisse uma tradicao".
+eco_janela = 6
 
 [contagem]
 # A contagem corrida de cartas ("As, dois, tres... dez") tem que correr

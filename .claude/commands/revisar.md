@@ -178,6 +178,17 @@ Como decidir cada tipo:
   anotação** — vai para `montagem.json`, ver fase 3.
 - **som alto sem texto** (`[??]`) — o microfone ouviu e ninguém leu.
   Mantido de propósito para você decidir. Sai ou fica.
+- **retomada?** — o programa achou a mesma dupla de palavras repetida
+  pouco depois e **não cortou nada**, porque a esta distância a repetição
+  tanto pode ser tentativa abandonada quanto anáfora de propósito. As duas
+  têm a MESMA forma; o que as separa é o sentido, e é por isso que a
+  pergunta chega até você. Tentativa: "pessoas mesmo, que aparecem" …
+  "pessoas mesmo, com as quais a gente se encontra no caminho" — a segunda
+  substitui a primeira, corte a primeira inteira. Anáfora: "na Carta da
+  Rainha, por exemplo … na Carta do Rei é o Rio" — as duas dizem coisas
+  diferentes, fica tudo. Na dúvida, releia a frase inteira em volta do
+  `[Pn]`: se as duas versões cabem juntas no mesmo parágrafo sem soar
+  repetitivo, é anáfora.
 - **disputa** — não é julgamento de conteúdo, é aviso de geometria: duas
   recuperações automáticas brigaram pelo mesmo áudio. Quase sempre o texto
   em volta está certo, mas o corte pode sair fragmentado. Ouça

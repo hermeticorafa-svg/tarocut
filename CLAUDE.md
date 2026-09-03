@@ -68,6 +68,15 @@ contra o quê foi calibrado e o que aconteceu quando estava errado. Não mexa
 num valor para fazer um sintoma sumir. Meça primeiro, num vídeo real, e
 **atualize o comentário com a nova medição** — o comentário é o valor.
 
+E **todo número que decide corte mora lá**, não como valor padrão de
+parâmetro. Cinco moravam: os quatro de `detecta_tentativas` (hoje
+`[tentativa]`), a janela do `marca_ecos` e o limite de gaguejada (hoje
+`[cacoete]`), o `volta_max` do `marca_instrucoes` e o `deriva_max` do
+`alinhar.descarta_ruins`. Default de parâmetro é um segundo lugar decidindo
+a mesma coisa, e foi assim que o piso de ruído chegou a viver com `12.0` no
+braço dentro do `alinhar.py`. O que fica no código é o que decide *forma de
+regra*, não taxa: `ENFASE`, `HALLU`, `RE_NUM`.
+
 **`anotacoes.json` é sagrado.** É o passe de julgamento: caro de produzir, uma
 vez por vídeo, para sempre. Nunca regenere, sobrescreva ou apague. Ele
 sobrevive a `run --force` de propósito.
@@ -153,6 +162,15 @@ a fase 1 do `/revisar` lê o verbete da carta em
 antes de qualquer corte. Foi a falta disso que deixou um bocejo inteiro
 ("ai que horror", bocejado) atravessar o 7 de espadas transcrito como a
 palavra inexistente "despeçoso", no meio de uma frase de texto normal.
+
+Uma das pendências é `retomada?`: a MESMA `detecta_tentativas` rodada com
+`min_ngram_aviso` (2 palavras em vez de 3), só para perguntar. Medido nos 10
+fluxos de `work/`, o limiar frouxo acha 9 das retomadas que uma pessoa
+anotou à mão — e mais 4 que são anáfora de propósito ("na Carta da Rainha,
+por exemplo… na Carta do Rei é o Rio"). Cortar anáfora seria apagar
+conteúdo em silêncio, e a diferença entre as duas coisas não está na forma,
+está no sentido. Por isso o limiar frouxo **vira pergunta, nunca corte**:
+0 a 4 por vídeo, cada uma com o texto citado.
 
 `carrega_vocabulario` é a versão mecânica e fraca da mesma pergunta: junta
 as palavras da própria aula, do guia do Yala e do léxico, e marca quando um
