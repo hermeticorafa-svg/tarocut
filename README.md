@@ -33,6 +33,12 @@ As marcas na lista: `✎` transcript editado à mão, `★` anotações do Claud
 
 ## O fluxo
 
+Atalho: `/preparar <video>` faz os passos 1, 2, 2b e 3b (áudio) de uma vez,
+numa janela nova do Claude Code — sobra o `transcript.md` pronto pro seu
+editor de texto. Veja `.claude/commands/preparar.md`. Os passos abaixo são
+o mesmo fluxo, um a um, para quando quiser rodar (ou entender) cada um na
+mão.
+
 **1. Passada mecânica** — transcreve e propõe os cortes que dão para decidir
 sozinho: pausas, alongamentos, gaguejadas, repetição literal.
 

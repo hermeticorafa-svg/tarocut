@@ -2054,6 +2054,176 @@ def grafo_cartas(iv, C, cartas, resumo_rosto, w_fonte, h_fonte,
     return "\n".join(L)
 
 
+def _agrupa_camadas_enumeracao(eventos):
+    """Eventos (um por MENCAO) -> camadas de overlay (uma por POSICAO de
+    pilha distinta - lado+profundidade+carta). Nao e a mesma coisa: a
+    mesma carta (ou categoria) pode voltar a ocupar a mesma posicao de
+    pilha numa sessao de enumeracao POSTERIOR (dentro de uma sessao so,
+    nunca se repete - profundidade so cresce, nunca volta atras), e cada
+    ocorrencia continua precisando do seu proprio fade de saida.
+
+    Por que uma camada por posicao, e nao uma por ocorrencia (a primeira
+    versao desta funcao): o `overlay` deste ffmpeg e caro por CAMADA,
+    nao so por pixel - MEDIDO no IMG_0246, o unico video de teste deste
+    modo: 26 eventos (uma camada cada, sem esta funcao) renderizaram a
+    0,6 fps, quase 50 min para 2 min de previa em 360p/15fps. As mesmas
+    26 mencoes cabem em so 11 posicoes de pilha distintas nesse video -
+    menos camadas, menos overlay, previa em minutos como o resto do
+    modo com principal.
+
+    Cada ocorrencia de uma camada precisa "religar" o alfa para 1 antes
+    do proprio fade de saida - sem isso, o `fade=t=out` da ocorrencia
+    anterior deixaria a imagem transparente para sempre, inclusive na
+    ocorrencia seguinte. `grafo_cartas_enumeracao` faz isso encadeando
+    um `fade=t=in` bem curto (nao e um fade de estilo, so restaura o
+    alfa) antes de cada `fade=t=out` - por isso devolve a lista de
+    ocorrencias por camada, nao so a janela unida."""
+    camadas, ordem = {}, []
+    for ev in eventos:
+        chave = (ev["lado"], ev["prof"], ev["carta"])
+        if chave not in camadas:
+            camadas[chave] = {"lado": ev["lado"], "prof": ev["prof"],
+                               "carta": ev["carta"], "ocorrencias": []}
+            ordem.append(chave)
+        camadas[chave]["ocorrencias"].append(
+            {"ini": ev["ini"], "fim": ev["fim"],
+             "fade_ini": ev["fade_ini"], "fade_dur": ev["fade_dur"]})
+    return [camadas[k] for k in ordem]
+
+
+def grafo_cartas_enumeracao(iv, C, camadas, janelas_sessao, resumo_rosto,
+                              w_fonte, h_fonte, imgs, escala=None, fps=None,
+                              hw=False):
+    """Como `grafo_cartas()`, mas para o modo `--sem-principal` (layout 4,
+    empilhamento - ver `_agrupa_cartas_enumeracao`): sem carta fixa, duas
+    pilhas que alternam de lado e crescem a cada mencao nova.
+
+    Correcao do Rafael em 02/09, contra frame de video editado a mao: a
+    1a versao empilhava verticalmente com a carta pequena (0,32 de
+    altura) para caber 4 sem estourar o topo do quadro - errado. A pilha
+    e HORIZONTAL: a carta usa o MESMO tamanho do layout 1 (`cartas.
+    carta_altura`, quase borda a borda), e cada mencao nova desliza para
+    o CENTRO em vez de subir - a pilha da esquerda cresce a partir da
+    borda esquerda, a da direita a partir da borda direita. Altura
+    constante (`y_base`), so o X muda com a profundidade.
+
+    `camadas` vem de `_agrupa_camadas_enumeracao` (uma por POSICAO de
+    pilha, nao por mencao - ver a nota la sobre por que isso importa
+    para o tempo de render). `imgs` e um Path por camada, na MESMA
+    ordem de `camadas` - convencao de quem chama isto: input 0=video,
+    1..N=uma imagem por camada, nessa ordem.
+
+    `janelas_sessao` e a lista de (inicio, fim) por sessao de enumeracao,
+    devolvida por `_agrupa_cartas_enumeracao` - e a janela em que o crop
+    do layout 3 (Mariana centralizada) fica ativo, a mesma ideia de
+    `grafo_cartas`/`_janela_layout3`, so que aqui uma sessao pode ter
+    varias cartas em vez de uma so secundaria.
+
+    Mesmas notas de `hw`/`escala` de `grafo_cartas()` - nao duplicadas
+    aqui, ver aquela docstring."""
+    cc, ce = C["cartas"], C["cartas"]["enumeracao"]
+    L = _grafo_corte(iv, C)
+
+    ult_base = "vc"
+    w_trab, h_trab = w_fonte, h_fonte
+    if escala:
+        h_trab = escala
+        w_trab = round(w_fonte * escala / h_fonte / 2) * 2
+        if hw:
+            L.append(f"[vc]scale_qsv=w={w_trab}:h={h_trab},"
+                      f"hwdownload,format=p010le" +
+                      (f",fps={fps}" if fps else "") + "[vs];")
+        else:
+            L.append(f"[vc]scale={w_trab}:{h_trab}" +
+                      (f",fps={fps}" if fps else "") + "[vs];")
+        ult_base = "vs"
+    elif hw:
+        L.append("[vc]hwdownload,format=p010le[vd];")
+        ult_base = "vd"
+
+    def _janela(a, b):
+        return f"between(t\\,{a:.3f}\\,{b:.3f})"
+
+    x, y, lw, lh = _janela_layout3(resumo_rosto, cc["crop_margem"])
+    ativo = "+".join(_janela(a, b) for a, b in janelas_sessao) \
+        if janelas_sessao else "0"
+    cw, ch = lw * w_trab, lh * h_trab
+    cx0, cy0 = x * w_trab, y * h_trab
+    L.append(
+        f"[{ult_base}]crop=w='if({ativo},{cw:.1f},{w_trab})':"
+        f"h='if({ativo},{ch:.1f},{h_trab})':"
+        f"x='if({ativo},{cx0:.1f},0)':y='if({ativo},{cy0:.1f},0)'[base];"
+    )
+
+    # Mesmo tamanho da carta principal (layout 1) - ver nota no
+    # docstring. `ce["carta_altura"]` nao existe mais de proposito: duas
+    # constantes para o mesmo numero e como ter dois lugares que decidem
+    # [corte], so que em pixel (mesmo raciocinio de `_grafo_corte`).
+    altura_px = max(2, int(h_trab * cc["carta_altura"]))
+    margem_px = int(w_trab * cc["carta_margem"])
+    # fracao da LARGURA do quadro (nao da altura - a pilha e horizontal
+    # agora), quanto cada carta desliza para o centro em relacao a
+    # anterior do mesmo lado.
+    deslocamento_px = int(w_trab * ce["deslocamento"])
+    y_base = (h_trab - altura_px) // 2
+
+    # Nao e um fade de estilo - "religa" o alfa a 1 no comeco de CADA
+    # ocorrencia da camada (ver `_agrupa_camadas_enumeracao`), curto o
+    # bastante para nao se distinguir do corte seco que e a entrada de
+    # toda carta secundaria neste programa (`grafo_cartas` faz o mesmo
+    # corte seco, so que sem precisar disso porque a principal nunca
+    # repete a mesma camada).
+    #
+    # `alpha=1` nos dois: sem isso `fade` desbota a COR (para preto), nao
+    # o alfa - a carta vira um retangulo preto solido em vez de ficar
+    # transparente. E os dois com `enable=` preso a janela DESSA MESMA
+    # ocorrencia (nao so o `t=in`, ver nota antiga abaixo deste bloco):
+    # sem isso, `fade=t=out` fica "alfa 0 para sempre" dali em diante -
+    # nao so ate a proxima ocorrencia, mas alem dela tambem - e quando o
+    # `t=in` seguinte termina sua propria rampa e volta a so repassar o
+    # que vem de tras (e assim que `fade` funciona depois do fim da
+    # rampa), o que ele repassa e esse alfa zerado, nunca o opaco. MEDIDO
+    # no IMG_0246: com `t=in` sozinho guardado (t=out sem `enable`), a
+    # 1a ocorrencia de cada camada aparecia certo e a 2a NUNCA aparecia -
+    # so um flash de 50ms na propria rampa, sumindo de novo em seguida.
+    # Com os dois presos a janela da ocorrencia, fora dela o par inteiro
+    # vira passthrough e quem aparece por baixo e o `format=yuva420p` de
+    # base (alfa 255 constante) - e o `enable` do PROPRIO overlay, nao
+    # este alfa, quem decide se a camada e desenhada fora dali.
+    POP = 0.05
+
+    ult = "base"
+    for i, (camada, img) in enumerate(zip(camadas, imgs), start=1):
+        # `camadas` esta em ordem cronologica de 1a ocorrencia (ver
+        # `_agrupa_camadas_enumeracao`), e profundidade so cresce dentro
+        # de um lado - por isso a carta mais nova de cada pilha SEMPRE
+        # vem depois na cadeia de overlay, ou seja, sempre por cima da
+        # anterior do mesmo lado. Nao precisa reordenar para isso.
+        desloc = camada["prof"] * deslocamento_px
+        xpos = str(margem_px + desloc) if camada["lado"] == "esquerda" else \
+            f"W-{margem_px + desloc}-w"
+        prox = f"ce{i}"
+
+        fades, janelas = [], []
+        for oc in camada["ocorrencias"]:
+            janela_oc = _janela(oc["ini"], oc["fim"])
+            fades.append(f"fade=t=in:st={oc['ini']:.3f}:d={POP}:alpha=1:"
+                          f"enable='{janela_oc}'")
+            fades.append(f"fade=t=out:st={oc['fade_ini']:.3f}:"
+                          f"d={oc['fade_dur']:.3f}:alpha=1:"
+                          f"enable='{janela_oc}'")
+            janelas.append(janela_oc)
+
+        L.append(f"[{i}:v]scale=-2:{altura_px},format=yuva420p,"
+                  f"{','.join(fades)}[carta{i}];")
+        L.append(f"[{ult}][carta{i}]overlay=x={xpos}:y={y_base}:"
+                  f"enable='{'+'.join(janelas)}'[{prox}];")
+        ult = prox
+
+    L.append(f"[{ult}]null[vo]")
+    return "\n".join(L)
+
+
 def _base(video, rotulo, ignorar_transcript=False, aplicar_mont=True,
           aplicar_corr=True):
     """Tudo o que precede o calculo dos trechos: le o fluxo analisado e
@@ -2402,6 +2572,16 @@ def cmd_revisar(a):
          "# ~ nem [aviso fora de ordem] - mas o resultado pode ser uma",
          "# palavra solta entre dois cortes (ILHA CURTA no conferir). Ouca",
          "# com tarocut.py audio antes de aceitar o corte automatico ali.",
+         "# [cauda arrastada Nx] = a palavra foi dita arrastada (Nx mais",
+         "# longa que o normal) e a poda automatica ja cortou o rabo, mas so",
+         "# ate uma folga fixa - pode sobrar arrasto audivel do mesmo jeito.",
+         "# Ouca esse ponto; se sobrar som, a anotacao cobre so o que a poda",
+         "# nao alcancou (normalmente uns poucos decimos apos a palavra).",
+         "# [duracao impossivel (Nx): X.Xs de fala nao transcrita] = a",
+         "# palavra e real e fica, mas X.Xs de audio colados nela nao",
+         "# viraram texto - quase sempre bocejo, resmungo ou eco do",
+         "# microfone. Se o [texto reconstruido] vizinho nao fizer sentido",
+         "# no contexto da aula, ele e o candidato a sair, nao a palavra.",
          "# Procure: retomadas com outras palavras, interrupcoes, trechos",
          "# em que ela se perde. Responda com trechos [inicio, fim, motivo]."]
     if bagunca:
@@ -2428,6 +2608,21 @@ def cmd_revisar(a):
     for ia, ib in choques:
         sobra = st[ia]["e"] - st[ib]["s"]
         marca[ib] = marca.get(ib, "") + f"[disputa {sobra:.1f}s]"
+
+    # cauda arrastada (poda automatica, `marca_arrastadas`) e duracao
+    # impossivel (fala nao transcrita escondida DENTRO de uma palavra real)
+    # nunca apareciam aqui: a palavra saia igual a qualquer outra, sem
+    # nenhum sinal. Foi assim que um "que" arrastado sobrou audivel no 7 de
+    # espadas (a poda so tira a partir de `manter`x o esperado, e as vezes
+    # isso ainda e arrasto de verdade) e um bocejo inteiro colado a
+    # "das"/"pessoas" passou direto - dois defeitos de CONTEUDO que ninguem
+    # via porque o revisor olhava para uma palavra comum. Ver fase 2 do
+    # revisar.md: as duas marcas pedem ouvido, nao so leitura.
+    for i, t in enumerate(st):
+        if (t["k"] == "palavra" and not t["cut"]
+                and t["why"].startswith(("cauda arrastada",
+                                          "duracao impossivel"))):
+            marca[i] = marca.get(i, "") + f"[{t['why']}]"
 
     # Palavras cujo tempo o alinhador recusou. Sem isto o revisao.txt mente
     # com cara de verdade: no IMG_0247 um "As" impresso em 80,0s foi falado
@@ -2812,6 +3007,94 @@ def _agrupa_spans_cartas(mencoes, iv, cc):
     return [s for s in spans if s["fim"] > s["ini"]]
 
 
+def _agrupa_cartas_enumeracao(mencoes, iv, cc, ce):
+    """Mencoes (tempo de FONTE) -> eventos de exibicao em DUAS pilhas
+    (esquerda/direita), tempo de SAIDA. So para o modo `--sem-principal`
+    (ver CLAUDE.md / cmd_cartas): Mariana enumerando varias cartas ou
+    TIPOS de carta em sequencia, sem nenhuma ser o tema do video - por
+    isso nao ha carta fixa a esquerda, e cada mencao nova alterna de
+    lado e empilha sobre a anterior do MESMO lado.
+
+    "Sessao de enumeracao": mencoes cujo intervalo desde a anterior (de
+    QUALQUER carta - a pergunta e "ha quanto tempo nenhuma carta e
+    mencionada", nao mais por identidade como em `_agrupa_spans_cartas`)
+    fica dentro de `persistencia` ficam juntas. A 1a mencao de uma sessao
+    vai para esquerda/profundidade 0, a 2a para direita/0, a 3a para
+    esquerda/1 (empilha sobre a 1a), a 4a para direita/1, e por diante.
+    Uma sessao nova comeca do zero porque a anterior ja sumiu da tela ha
+    `persistencia` segundos sem mencao - nao ha pilha para continuar.
+
+    Mencao de uma carta que JA esta empilhada nesta sessao (pedido do
+    Rafael em 02/09: nao pode repetir carta na tela ao mesmo tempo) e
+    ignorada - nao gera evento, nao consome profundidade nem lado. So
+    volta a poder aparecer numa sessao NOVA (a anterior ja sumiu de vez).
+
+    Saida em duas fases, pedido do Rafael em 02/09: a pilha da DIREITA
+    (a mais nova) fica so ate `persistencia` depois da ultima mencao da
+    sessao e comeca a sumir; a da ESQUERDA (a mais velha) so comeca a
+    sumir quando a direita ja tiver sumido de vez, `fade_saida` segundos
+    depois. Risco conhecido, nao medido no unico video de teste: se uma
+    sessao nova comecar antes da anterior terminar de sumir (gap so um
+    pouco maior que `persistencia`), as duas pilhas se sobrepoem por um
+    instante - a de cima (a nova, desenhada por cima) cobre a que ainda
+    esta sumindo embaixo, entao o efeito visivel e pequeno, mas fica
+    registrado aqui para quem for medir isso num video que bata nesse
+    caso."""
+    pontos = sorted(
+        (_tempo_saida(m["s"], iv), _tempo_saida(m["e"], iv), m["carta"])
+        for m in mencoes)
+
+    persist, atraso, fade_saida = cc["persistencia"], cc["atraso"], ce["fade_saida"]
+
+    sessoes = []
+    for ini, fim, carta in pontos:
+        if sessoes and ini - sessoes[-1][-1]["fim"] <= persist:
+            sessoes[-1].append({"carta": carta, "ini": ini, "fim": fim})
+        else:
+            sessoes.append([{"carta": carta, "ini": ini, "fim": fim}])
+
+    LADOS = ("esquerda", "direita")
+    eventos, janelas_sessao = [], []
+    for sessao in sessoes:
+        ultima_fim = sessao[-1]["fim"]
+        dir_ini = ultima_fim + persist
+        dir_fim = dir_ini + fade_saida
+        esq_ini = dir_fim
+        esq_fim = esq_ini + fade_saida
+        fade_por_lado = {"direita": (dir_ini, dir_fim),
+                          "esquerda": (esq_ini, esq_fim)}
+
+        prof = {"esquerda": 0, "direita": 0}
+        # Pedido do Rafael em 02/09: a MESMA carta nao pode estar na tela
+        # duas vezes ao mesmo tempo (acontecia quando ela voltava a ser
+        # mencionada depois de ja empilhada nesta sessao - as duas
+        # ocorrencias ficam visiveis juntas ate o fim da sessao, ver
+        # docstring). `na_pilha` e por SESSAO, nao por lado: a pergunta e
+        # "essa carta ja esta em alguma das duas pilhas", nao qual lado.
+        # A mencao repetida e so ignorada - nao consome profundidade nem
+        # alterna o lado (`n_exibidas`, nao `i`, decide o lado de quem
+        # realmente aparece), como se ela nao tivesse acontecido para
+        # fins de empilhamento. Sessao NOVA (a de tras ja sumiu da tela)
+        # zera `na_pilha` de novo - repetir la e uma carta nova entrando.
+        na_pilha, n_exibidas = set(), 0
+        for ev in sessao:
+            if ev["carta"] in na_pilha:
+                continue
+            lado = LADOS[n_exibidas % 2]
+            fade_ini, fim_lado = fade_por_lado[lado]
+            eventos.append({"carta": ev["carta"], "lado": lado,
+                             "prof": prof[lado], "ini": ev["fim"] + atraso,
+                             "fim": fim_lado, "fade_ini": fade_ini,
+                             "fade_dur": fade_saida})
+            prof[lado] += 1
+            na_pilha.add(ev["carta"])
+            n_exibidas += 1
+        janelas_sessao.append((sessao[0]["fim"] + atraso, esq_fim))
+
+    eventos = [e for e in eventos if e["fim"] > e["ini"]]
+    return eventos, janelas_sessao
+
+
 def _resolve_carta(texto):
     import baralho
     alvo = baralho.chave(texto)
@@ -2823,25 +3106,85 @@ def _resolve_carta(texto):
 
 
 def _catalogo_img(nome):
+    """Imagem para o OVERLAY, nao para o casador de mencao: le de
+    tarodeyala-borda/ (copia com 1px de borda preta, gerada por
+    `bordar_cartas.py`), nunca de tarodeyala/ - `baralho.catalogo()`
+    continua apontando pro original porque e dali que vem o nome de
+    arquivo que casa com a fala (ver docstring de baralho.py)."""
     import baralho
     for c in baralho.catalogo():
         if c["nome"] == nome:
-            return c["img"]
+            img = c["img"].parent.parent / "tarodeyala-borda" / c["img"].name
+            if not img.exists():
+                sys.exit(f"[cartas] falta borda para '{nome}' ({img}) - "
+                         f"rode bordar_cartas.py")
+            return img
     sys.exit(f"[cartas] carta '{nome}' sumiu do catalogo entre a deteccao "
              f"e o render - baralho completo/ mudou no meio do caminho?")
 
 
+def _roda_previa_cartas(d, a, meta, gscript_hw, gscript_sw, entradas, mantido):
+    """Ultimo trecho comum a `cmd_cartas`, os dois modos: ffmpeg com o
+    grafo (QSV primeiro, software se aquele falhar) e o mpv, se pedido.
+    Extraida porque so os grafos e as entradas diferem entre 'carta
+    principal' e '--sem-principal' - o resto (por que 360p/15fps, por que
+    dois grafos, por que QSV primeiro) e a mesma explicacao, nao duas."""
+    saida = d / "cartas_previa.mp4"
+
+    def _saidas(gscript):
+        return (["-/filter_complex", str(gscript), "-map", "[vo]", "-map", "[ao]",
+                 "-t", f"{mantido:.3f}",
+                 "-c:v", "libx264", "-preset", "fast", "-crf", "28",
+                 "-c:a", "aac", "-b:a", "128k", str(saida)])
+
+    print(f"[cartas] gerando previa lo-res...", flush=True)
+    # QSV primeiro: decode de software do IMG_0301 inteiro (5,5min) levou
+    # mais de 30min so nesta etapa, contra minutos com QSV - MEDIDO no
+    # checkpoint 4. Se a combinacao hwaccel+filtros nao colar nesta versao
+    # do ffmpeg, cai para software antes de desistir - mesma rede de
+    # seguranca do rosto.amostra_frames().
+    r = subprocess.run([FFMPEG, "-y", "-v", "error", "-stats",
+                        "-hwaccel", "qsv"] + entradas + _saidas(gscript_hw))
+    if r.returncode != 0:
+        r = subprocess.run([FFMPEG, "-y", "-v", "error", "-stats"]
+                            + entradas + _saidas(gscript_sw))
+    if r.returncode != 0 or not saida.exists():
+        sys.exit("[cartas] ffmpeg falhou na previa - veja graph_cartas*.txt")
+    print(f"[cartas] previa pronta: {saida}  "
+          f"({saida.stat().st_size/1e6:.1f} MB)")
+    mpv = _find_mpv()
+    if mpv and not a.sem_abrir:
+        subprocess.run([mpv, "--force-window=yes",
+                        f"--force-media-title=previa cartas {Path(a.video).name}",
+                        str(saida)])
+
+
 def cmd_cartas(a):
     """Checkpoint 3 + 4 do plano 'adicionar cartas': acha as mencoes de
-    carta na fala, decide a principal, monta a agenda de quando uma
-    secundaria entra em tela (`cartas.json`) e renderiza uma previa
-    barata (baixa resolucao) para aprovar antes do `render` de verdade
-    bakear isso em qualidade final. Video sem carta principal detectavel
-    nao escreve `cartas.json` nem gera previa - fica como generalistico,
-    fora do escopo desta feature por ora."""
+    carta na fala e renderiza uma previa barata (baixa resolucao) para
+    aprovar antes do `render` de verdade bakear isso em qualidade final.
+    Video sem carta reconhecida na fala nao escreve `cartas.json` nem
+    gera previa - fica como generalistico, fora do escopo desta feature
+    por ora.
+
+    Dois modos, mutuamente exclusivos:
+
+    - Padrao: decide uma carta PRINCIPAL (a mais mencionada, ou `--carta`)
+      e fica fixa a esquerda a partir do fade de entrada; secundarias
+      entram a direita quando mencionadas (`grafo_cartas`, layouts 1/3).
+
+    - `--sem-principal`: pedido do Rafael em 02/09, para video que
+      enumera VARIAS cartas ou TIPOS de carta (rainhas, reis, pajens...)
+      sem nenhuma ser o tema - nao ha "a mais mencionada" que faca
+      sentido fixar. Cada mencao alterna de lado e empilha sobre a
+      anterior do mesmo lado (`grafo_cartas_enumeracao`, layout 4)."""
     import baralho
     C, d, stream, dur, db, hop, anot, mont, corr = _base(a.video, "cartas")
     iv = intervalos(stream, C, dur, db, hop, anot, mont)
+
+    if a.carta and a.sem_principal:
+        sys.exit("[cartas] --carta e --sem-principal se contradizem: um "
+                 "fixa a principal, o outro diz que nao ha principal")
 
     # Casador so olha token que SOBREVIVE ao corte (stream[i]['cut'] ja
     # tem transcript.md/anotacoes/montagem aplicados por _base): uma
@@ -2854,6 +3197,66 @@ def cmd_cartas(a):
         print(f"[cartas] nenhuma carta reconhecida na fala - "
               f"parece video generalistico, nada a fazer aqui")
         (d / "cartas.json").unlink(missing_ok=True)
+        return
+
+    meta = jload(d / "meta.json")
+    w_fonte, h_fonte = meta["w"], meta["h"]
+
+    import rosto
+    rjson = d / "rosto.json"
+    if not rjson.exists() or a.force:
+        rosto.rastreia(Path(a.video), d)
+    resumo_rosto = jload(rjson)["resumo"]
+
+    if a.sem_principal:
+        cc, ce = C["cartas"], C["cartas"]["enumeracao"]
+        eventos, janelas_sessao = _agrupa_cartas_enumeracao(mencoes, iv, cc, ce)
+
+        if not eventos:
+            print("[cartas] nenhuma sequencia de enumeracao sobrou depois "
+                  "do atraso/persistencia - o video fica no enquadramento "
+                  "original o tempo todo")
+            (d / "cartas.json").unlink(missing_ok=True)
+            return
+
+        print(f"[cartas] --sem-principal: {len(eventos)} carta(s) em "
+              f"{len(janelas_sessao)} sequencia(s) de enumeracao "
+              f"(tempo de SAIDA, ja cortado):")
+        for e in eventos:
+            print(f"  {hhmmss(e['ini'])} -> {hhmmss(e['fim'])}  "
+                  f"{e['lado']:8s} prof {e['prof']}  {e['carta']}")
+
+        cartas = {"modo": "enumeracao", "eventos": eventos,
+                  "sessoes": [[a, b] for a, b in janelas_sessao]}
+        jdump(cartas, d / "cartas.json")
+
+        # Uma camada de overlay por POSICAO de pilha, nao por mencao - ver
+        # a nota em `_agrupa_camadas_enumeracao` sobre por que isso e o
+        # que faz esta previa terminar em minutos, nao quase uma hora.
+        camadas = _agrupa_camadas_enumeracao(eventos)
+        print(f"[cartas] {len(eventos)} mencao(oes) cabem em "
+              f"{len(camadas)} posicao(oes) de pilha distintas "
+              f"({len(camadas)} camada(s) de overlay)")
+        imgs = [_catalogo_img(c["carta"]) for c in camadas]
+        gscript_hw = d / "graph_cartas_qsv.txt"
+        gscript_hw.write_text(
+            grafo_cartas_enumeracao(iv, C, camadas, janelas_sessao,
+                                     resumo_rosto, w_fonte, h_fonte, imgs,
+                                     escala=360, fps=15, hw=True),
+            encoding="utf-8")
+        gscript_sw = d / "graph_cartas.txt"
+        gscript_sw.write_text(
+            grafo_cartas_enumeracao(iv, C, camadas, janelas_sessao,
+                                     resumo_rosto, w_fonte, h_fonte, imgs,
+                                     escala=360, fps=15, hw=False),
+            encoding="utf-8")
+
+        mantido = sum(b - x for x, b in iv)
+        entradas = ["-i", str(meta["src"])]
+        for img in imgs:
+            entradas += ["-loop", "1", "-i", str(img)]
+
+        _roda_previa_cartas(d, a, meta, gscript_hw, gscript_sw, entradas, mantido)
         return
 
     contagem = {}
@@ -2884,16 +3287,6 @@ def cmd_cartas(a):
         print("[cartas] nenhuma carta secundaria mencionada nesta edicao - "
               "o video fica todo no layout 1")
 
-    # ---- previa: barata, sempre gerada (README: o gargalo e decodificar
-    # 4K60, e a previa sai em resolucao baixa) ----
-    import rosto
-    rjson = d / "rosto.json"
-    if not rjson.exists() or a.force:
-        rosto.rastreia(Path(a.video), d)
-    resumo_rosto = jload(rjson)["resumo"]
-
-    meta = jload(d / "meta.json")
-    w_fonte, h_fonte = meta["w"], meta["h"]
     principal_img = _catalogo_img(principal)
     nomes_sec = list(dict.fromkeys(s["carta"] for s in spans))
     secundarias_imgs = [(nome, _catalogo_img(nome)) for nome in nomes_sec]
@@ -2921,37 +3314,11 @@ def cmd_cartas(a):
         encoding="utf-8")
 
     mantido = sum(b - x for x, b in iv)
-    saida = d / "cartas_previa.mp4"
     entradas = (["-i", str(meta["src"]), "-loop", "1", "-i", str(principal_img)]
                 + [x for _, p in secundarias_imgs
                    for x in ("-loop", "1", "-i", str(p))])
 
-    def _saidas(gscript):
-        return (["-/filter_complex", str(gscript), "-map", "[vo]", "-map", "[ao]",
-                 "-t", f"{mantido:.3f}",
-                 "-c:v", "libx264", "-preset", "fast", "-crf", "28",
-                 "-c:a", "aac", "-b:a", "128k", str(saida)])
-
-    print(f"[cartas] gerando previa lo-res...", flush=True)
-    # QSV primeiro: decode de software do IMG_0301 inteiro (5,5min) levou
-    # mais de 30min so nesta etapa, contra minutos com QSV - MEDIDO no
-    # checkpoint 4. Se a combinacao hwaccel+filtros nao colar nesta versao
-    # do ffmpeg, cai para software antes de desistir - mesma rede de
-    # seguranca do rosto.amostra_frames().
-    r = subprocess.run([FFMPEG, "-y", "-v", "error", "-stats",
-                        "-hwaccel", "qsv"] + entradas + _saidas(gscript_hw))
-    if r.returncode != 0:
-        r = subprocess.run([FFMPEG, "-y", "-v", "error", "-stats"]
-                            + entradas + _saidas(gscript_sw))
-    if r.returncode != 0 or not saida.exists():
-        sys.exit("[cartas] ffmpeg falhou na previa - veja graph_cartas*.txt")
-    print(f"[cartas] previa pronta: {saida}  "
-          f"({saida.stat().st_size/1e6:.1f} MB)")
-    mpv = _find_mpv()
-    if mpv and not a.sem_abrir:
-        subprocess.run([mpv, "--force-window=yes",
-                        f"--force-media-title=previa cartas {Path(a.video).name}",
-                        str(saida)])
+    _roda_previa_cartas(d, a, meta, gscript_hw, gscript_sw, entradas, mantido)
 
 
 def cmd_render(a):
@@ -3115,6 +3482,10 @@ def main():
     ct.add_argument("--carta", default=None,
                     help="carta principal (ex.: '7 de espadas'); "
                          "sem isto, usa a mais mencionada na fala")
+    ct.add_argument("--sem-principal", action="store_true",
+                    help="layout 4 (empilhamento): sem carta fixa, para "
+                         "video que enumera varias cartas/tipos sem "
+                         "nenhuma ser o tema (ex.: rainhas, reis, pajens)")
     ct.add_argument("--force", action="store_true",
                     help="refaz o rastreio de rosto mesmo se ja tiver cache")
     ct.add_argument("--sem-abrir", action="store_true",

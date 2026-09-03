@@ -76,6 +76,27 @@ RE_CORTE = re.compile(
     r"^(cavaleira|cavaleiro|pajens|rainha|rei) de (copas|espadas|ouros|paus)$")
 RE_MAIOR = re.compile(r"^\d+\s*-\s*(.+)$")
 
+# Mencao de CATEGORIA - "as rainhas", "os reis", "os cavaleiros e
+# cavaleiras", "os pajens" - sem dizer o naipe. Comum quando Mariana fala
+# de varias cartas JUNTAS (tipo de carta, nao carta especifica) - o video
+# de teste deste modo (IMG_0246) enumera as quatro cartas da corte desse
+# jeito o video inteiro e nunca diz um naipe.
+#
+# Cada categoria aponta para a chave de UMA carta representante do
+# catalogo (a primeira em ordem alfabetica de arquivo, que por acaso e
+# sempre "de copas" quando existe, e "de espadas" para cavaleira, que nao
+# tem copas no baralho do Yala) - sempre a MESMA carta, de proposito: se a
+# representante mudasse a cada mencao, `_agrupa_spans_cartas` veria
+# "cartas" diferentes a cada vez e abriria/fecharia o overlay em vez de
+# fundir mencoes seguidas da mesma categoria.
+CATEGORIA_ALT = {
+    "cavaleira": ["cavaleira", "cavaleiras"],
+    "cavaleiro": ["cavaleiro", "cavaleiros"],
+    "pajens": ["pajem", "pajens"],
+    "rainha": ["rainha", "rainhas"],
+    "rei": ["rei", "reis"],
+}
+
 
 def catalogo():
     """Le baralho completo/tarodeyala/ e devolve uma carta por arquivo:
@@ -85,8 +106,11 @@ def catalogo():
     Uma carta pode ter mais de uma chave (numero por extenso E em digito,
     "pajem" E "pajens") porque a fala tem mais de um jeito certo de dizer
     a mesma carta; a lista existe para `acha_mencoes` casar qualquer um
-    deles."""
+    deles. A carta representante de cada titulo de corte ganha tambem as
+    chaves de CATEGORIA_ALT, de um so token (sem "de <naipe>") - ver nota
+    acima do dict."""
     cartas = []
+    representante = {}  # titulo ("rainha" etc.) -> indice em `cartas`
     for p in sorted(BARALHO.glob("*.jpg")):
         stem = chave(p.stem)  # chave() so baixa e tira acento/pontuacao;
         # nao precisa reimplementar o parsing por causa disso, os nomes de
@@ -109,6 +133,7 @@ def catalogo():
             nome = f"{titulo.capitalize()} de {naipe}"
             chaves = [(chave(a), "de", naipe_arq) for a in CORTE_ALT[titulo]]
             cartas.append({"nome": nome, "img": p, "chaves": chaves})
+            representante.setdefault(titulo, len(cartas) - 1)
             continue
 
         m = RE_MAIOR.match(stem)
@@ -120,6 +145,12 @@ def catalogo():
             continue
 
         print(f"[baralho] arquivo nao reconhecido, ignorado: {p.name}")
+
+    for titulo, alternativas in CATEGORIA_ALT.items():
+        idx = representante.get(titulo)
+        if idx is not None:
+            cartas[idx]["chaves"] += [(chave(a),) for a in alternativas]
+
     return cartas
 
 

@@ -34,6 +34,7 @@ mesmos comandos.
 | `teste_editor.py` | as promessas do editor que quebram em silêncio |
 | `lexico.py` | gera `lexicon/terms.txt` a partir do livro do Yala |
 | `.claude/commands/revisar.md` | o passe de julgamento: o que o Claude lê e o que ele tem de conferir depois |
+| `.claude/commands/preparar.md` | run + revisar + conferir + audio num comando só, pronto pro editor de texto |
 | `config.toml` | **todos** os números do gosto de corte |
 | `material/padroes-edicao.md` | medições contra os vídeos editados à mão |
 
@@ -143,6 +144,52 @@ caem tarde (mediana +27 ms). Cortar pelos tempos do Whisper come o "s" final.
 
 **Menos emendas é melhor que corte mais justo.** Cada emenda é um pulo na
 posição da cabeça dela. `minimo`, `ilha_minima` e `snap` existem para isso.
+
+**Adicionar cartas** (`cmd_cartas`, `baralho.py`, `rosto.py`) é comando à
+parte, não integrado ao `render`: acha menção de carta na fala
+(`baralho.acha_mencoes`, mesma técnica de `corrige_frases()` — tupla de
+`chave()`, a mais comprida primeiro) e gera uma prévia lo-res em
+`cartas_previa.mp4` para aprovar antes de qualquer coisa virar
+`config.toml` calibrado de verdade — só há vídeos de teste (IMG_0301 para
+o modo padrão, IMG_0246 para `--sem-principal`), zero medição contra
+edição à mão ainda. Duas menções de carta são a mesma: `baralho.catalogo()`
+dá a UMA carta representante de cada posto da corte (rainha/rei/pajem/
+cavaleiro/cavaleira) as chaves de categoria também, de um token só ("as
+rainhas" sem naipe) — por isso "rainha" sempre vira a mesma "Rainha de
+Copas", nunca uma rainha diferente a cada menção.
+
+Dois modos, mutuamente exclusivos (`--carta` força o primeiro,
+`--sem-principal` liga o segundo):
+
+- **Padrão** (layouts 1/3): uma carta PRINCIPAL fixa à esquerda o vídeo
+  inteiro (fade suave); secundárias entram à direita quando mencionadas,
+  corte seco (`grafo_cartas`, `_agrupa_spans_cartas`).
+- **`--sem-principal`** (layout 4, empilhamento): para vídeo que enumera
+  VÁRIAS cartas ou TIPOS de carta sem nenhuma ser o tema (pedido do
+  Rafael em 02/09, video-teste IMG_0246: "rainha, rei, cavaleiro,
+  cavaleira, pajens" ditos em sequência). Cada menção nova alterna de
+  lado e empilha sobre a anterior do mesmo lado; depois de
+  `persistencia` sem menção nenhuma, as duas pilhas saem em fade — a
+  direita primeiro, a esquerda por último (`grafo_cartas_enumeracao`,
+  `_agrupa_cartas_enumeracao`).
+
+**A imagem do overlay não é a imagem do catálogo.** `_catalogo_img` lê de
+`baralho completo/tarodeyala-borda/` (cópia com 1px de borda preta,
+gerada por `bordar_cartas.py` — rode de novo se `tarodeyala/` mudar),
+nunca de `tarodeyala/`. `baralho.catalogo()` continua apontando pro
+original: é dali que vem o nome de arquivo que casa mencão na fala, e
+misturar as duas pastas faria decisão de estilo visual (a borda) vazar
+pra decisão de casamento de texto.
+
+**`overlay` é caro por CAMADA, não só por pixel, nesta versão do ffmpeg.**
+MEDIDO no IMG_0246: uma camada por MENÇÃO (26 no vídeo de teste, sem
+juntar repetição de carta) renderizou a 0,6 fps — quase 50 min para 2 min
+de prévia em 360p/15fps, contra "minutos" do modo padrão (1-3 camadas).
+`_agrupa_camadas_enumeracao` junta menções que caem na MESMA posição de
+pilha (lado+profundidade+carta) numa camada só, com uma ocorrência (e um
+fade de saída) por menção — 11 camadas no mesmo vídeo. Se `--sem-principal`
+voltar a ficar lento, é aqui que se conta quantas camadas o vídeo pediu
+antes de mexer em qualquer outra coisa.
 
 ## Verificar uma mudança
 

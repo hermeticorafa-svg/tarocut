@@ -235,6 +235,50 @@ carta_margem    = 0.025
 # a janela de crop do layout 3 (Mariana centralizada) - fracao do quadro
 crop_margem     = 0.08
 
+[cartas.enumeracao]
+# Layout 4 (empilhamento), que o plano original de 'adicionar cartas'
+# deixou de fora. Pedido do Rafael em 02/09: quando o video NAO tem uma
+# carta principal - ela vai enumerando cartas ou TIPOS de carta (rainhas,
+# reis, cavaleiros...) sem nenhuma ser o tema - nao fixa nada a esquerda;
+# em vez disso, cada mencao nova alterna de lado (1a esquerda, 2a
+# direita, 3a esquerda empilhada sobre a 1a, 4a direita empilhada sobre a
+# 2a...) enquanto ela fica centralizada (mesmo crop do layout 3). So
+# entra neste modo com `cartas --sem-principal`; `atraso` e `persistencia`
+# de [cartas] continuam valendo (a pergunta "ha quanto tempo nenhuma
+# carta e mencionada" e a mesma, so que agora por QUALQUER carta, nao por
+# identidade - ver `_agrupa_cartas_enumeracao`). NAO CALIBRADO, mesmo
+# aviso do bloco acima - so um video de teste (IMG_0246) ate agora.
+
+# Nao ha `carta_altura` aqui: a 1a versao deste bloco empilhava
+# VERTICALMENTE com carta pequena (0,32) para caber 4 sem estourar o
+# topo do quadro. O Rafael corrigiu em 02/09, contra frame de video
+# editado a mao: a pilha e HORIZONTAL, e a carta usa o MESMO tamanho do
+# layout 1 (`cartas.carta_altura`, quase borda a borda) - duas
+# constantes para o mesmo numero e como ter dois lugares que decidem
+# [corte] (ver `_grafo_corte`), so que em pixel.
+#
+# quanto a carta de cima do empilhamento desliza para o CENTRO em
+# relacao a de baixo, fracao da LARGURA do quadro (a pilha e horizontal -
+# a esquerda cresce a partir da borda esquerda, a direita a partir da
+# borda direita).
+#
+# Correcao do Rafael em 02/09 (2a rodada, depois da 1a versao horizontal
+# ja aprovada): 0,07 revelava fatia demais da carta de baixo - a pilha e
+# so ILUSAO de profundidade, nao um leque que mostra a ilustracao da
+# carta de tras. E reduzir isto NAO aproxima uma pilha da outra da
+# metade do quadro - cada pilha continua ancorada na PROPRIA borda
+# (`margem_px` fixo), so o quanto ela CRESCE para dentro fica menor; e
+# por isso que empilhar mais tambem sobra mais espaco no centro para a
+# Mariana, nao o contrario. 0,012 (~1/6 do valor antigo): a carta de
+# baixo mal aparece, so uma borda fina dela - ver preview antes de mexer
+# de novo.
+deslocamento    = 0.012
+# duracao do fade de SAIDA de cada pilha - a entrada continua corte seco
+# (mesma convencao da carta secundaria do modo com principal), so a
+# saida pedida pelo Rafael em 02/09 e suave, direita primeiro depois
+# esquerda, uma fase apos a outra (nao se sobrepoem).
+fade_saida      = 0.4
+
 [alinhamento]
 # Quanto o alinhador (wav2vec2) pode discordar do Whisper sobre ONDE a
 # palavra comeca, em segundos, antes de perder a razao.

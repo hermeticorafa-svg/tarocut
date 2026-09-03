@@ -24,3 +24,6 @@ Thumbs.db
 
 # Dependências (se usar venv local)
 venv/
+
+# Baralho com borda: derivado de tarodeyala/, regerado por bordar_cartas.py
+baralho completo/tarodeyala-borda/
