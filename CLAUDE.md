@@ -38,6 +38,7 @@ mesmos comandos.
 | `.claude/commands/preparar.md` | run + revisar + conferir + audio num comando só, pronto pro editor de texto |
 | `config.toml` | **todos** os números do gosto de corte |
 | `material/padroes-edicao.md` | medições contra os vídeos editados à mão |
+| `correcoes-pendentes.md` | **histórico, não pendências.** O nome mente: as 8 correções de 01/09 estão todas feitas, e o arquivo virou o registro de por que cada uma foi feita |
 
 Estado por vídeo em `work/<video>/`: `meta.json`, `audio.wav`, `words.json`,
 `stream.json` (a fonte da verdade), `transcript.md`, `revisao.txt`,

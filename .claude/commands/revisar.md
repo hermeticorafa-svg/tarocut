@@ -435,7 +435,7 @@ Se precisar traduzir um tempo da prévia em áudio para o tempo da fonte:
 
 ## Fase 5 — relatório
 
-Termine com quatro blocos curtos:
+Termine com cinco blocos curtos:
 
 1. **A aula, em uma frase** — copiada do `entendimento.md`. Serve para o
    Rafael conferir de relance se você entendeu o vídeo certo; se não
