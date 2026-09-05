@@ -24,6 +24,12 @@ import tarocut as tc
 CALIBRACAO = ["IMG_0246", "IMG_0247", "IMG_0248"]
 
 
+def jload_lacunas(d):
+    """As lacunas medidas pelo analyze, direto do disco - a fonte contra a
+    qual se confere o casamento por tempo que o editor faz."""
+    return tc.jload(d / "stream.json").get("lacunas", [])
+
+
 def roda(video):
     d = tc.WORK / video
     mont = d / "montagem.json"
@@ -132,7 +138,202 @@ def roda(video):
             S.acao({"acao": "alterna", "sel": {"i0": oculto,
                                                "i1": oculto + 1}})
 
-        # 5. O QUE A TELA MOSTROU E O QUE O RENDER VAI VER. Se esta linha
+        # 4b. REABRIR VALE PARA QUALQUER TOKEN, NAO SO PARA PALAVRA.
+        #     A anotacao entra no corte como TRECHO DE TEMPO, e quem escava
+        #     token mantido de dentro de um trecho de tempo e o
+        #     `_respeita_palavras`. Enquanto a lista dele fosse so
+        #     `k == "palavra"`, reabrir uma `hesitacao` era um clique que
+        #     nao fazia nada: o token voltava a `cut=False`, a tela pintava
+        #     ele de volta, e o video continuava sem ele.
+        #
+        #     Aconteceu no "as de espadas": cinco tokens seguidos reabertos
+        #     dentro da mesma anotacao, quatro palavras voltaram inteiras e
+        #     a quinta - `hesitacao` de 6,06s - sobrou 0,06s, que era a
+        #     folga vazando da palavra vizinha. Meio pedido obedecido e mais
+        #     dificil de notar do que nenhum.
+        #
+        #     `hesitacao`, e nao `silencio`, porque e o caso que existe nos
+        #     tres videos e o que carrega fala (o `resolve_suspeitos` faz um
+        #     bloco so de varios segundos de audio); a regra no programa nao
+        #     olha `k` nenhum, olha o `why` de `MAO_MANTEM`.
+        mudo = next((i for i, t in enumerate(S.stream)
+                     if t["k"] == "hesitacao" and t["cut"]
+                     and str(t.get("why", "")).startswith("anotado")
+                     and sum(max(0.0, min(t["e"], y) - max(t["s"], x))
+                             for x, y in S.intervalos())
+                     < 0.5 * (t["e"] - t["s"])), None)
+        if mudo is None:
+            print("  --    sem hesitacao anotada para reabrir, pulado")
+        else:
+            t = S.stream[mudo]
+            larg = t["e"] - t["s"]
+            r = S.acao({"acao": "alterna", "sel": {"i0": mudo,
+                                                   "i1": mudo + 1}})
+            vivo = sum(max(0.0, min(t["e"], y) - max(t["s"], x))
+                       for x, y in S.intervalos())
+            diz(vivo > 0.99 * larg,
+                f"reabrir a hesitacao {t['t'][:18]!r} devolveu "
+                f"{vivo:.2f}s de {larg:.2f}s")
+            #  E o aviso tem de sumir junto: ele existe para dizer "voce
+            #  mandou e nao saiu", e continuar aceso depois de sair seria a
+            #  mesma mentira do outro lado.
+            diz(not [a for a in r["avisos"]
+                     if a.get("palavra") and abs(a["ini"] - t["s"]) < 0.01],
+                "e o aviso de que ela continuava fora sumiu")
+            #  O rotulo da lista "o que ouvir" escolhe entre NAO SAIU e NAO
+            #  VOLTOU por este campo. Sem ele a tela cai no primeiro dos
+            #  dois e diz o contrario do que aconteceu num restauro.
+            diz(all("estado" in a for a in r["avisos"] if a.get("palavra")),
+                "todo aviso de palavra diz QUAL pedido foi desobedecido")
+            S.acao({"acao": "alterna", "sel": {"i0": mudo, "i1": mudo + 1}})
+
+        # 5. VOZ SEM TEXTO CHEGA A TELA MARCADA COMO VOZ.
+        #    Ate 03/09/2026 um `hesitacao` sem texto e uma pausa eram o
+        #    mesmo tracinho cinza, com o mesmo title ("sem som aqui") - no
+        #    IMG_0247, 26 de pausa e 34 de voz, indistinguiveis. Se esta
+        #    linha cair, "parte do audio que nao vai para a transcricao"
+        #    volta a ser invisivel, que e a queixa que originou tudo isto.
+        pc = S.estado()["pecas"]["tokens"]
+        mudos = [i for i, t in enumerate(S.stream)
+                 if t["k"] == "hesitacao" and t["t"] == "hesitação"]
+        diz(bool(mudos) and all(pc[i]["voz"] and not pc[i]["txt"]
+                                for i in mudos),
+            f"as {len(mudos)} hesitacoes sem texto saem marcadas como voz")
+        #    Uma PAUSA tambem pode ser voz: quando a lacuna era `misto` e a
+        #    leitura foi recusada, o analyze trata a recusa como silencio e
+        #    o token sai rotulado pausa (e quando ela tem entre
+        #    `pausa_intocavel` e `isolar_min` de duracao, nem chega a ser
+        #    lida). Isso so vale se o casamento por tempo pegar a lacuna
+        #    CERTA - uma tolerancia frouxa marcaria como voz uma pausa
+        #    vizinha, e ai a marca passaria a mentir em vez de informar.
+        lacs = {(round(l["s"], 2), round(l["e"], 2)): l
+                for l in jload_lacunas(d)}
+        erradas = [i for i, t in enumerate(S.stream)
+                   if t["k"] == "silencio" and pc[i]["voz"]
+                   and lacs.get((round(t["s"], 2), round(t["e"], 2)),
+                                {}).get("tipo") not in ("fala", "misto")]
+        pausas_voz = sum(1 for i, t in enumerate(S.stream)
+                         if t["k"] == "silencio" and pc[i]["voz"])
+        diz(not erradas,
+            f"as {pausas_voz} pausas marcadas com voz casam com a lacuna "
+            f"que o analyze mediu ({len(erradas)} erradas)")
+
+        # 6. ESCREVER O QUE SE OUVE NUM VAO. E a outra metade da queixa:
+        #    ver a fala, ouvir a fala e nao ter onde escrever. O que quebra
+        #    calado aqui e o texto nao sobreviver ao disco (o
+        #    `confere_correcoes` recusa e o editor descarta em silencio) ou
+        #    a escrita MEXER NO CORTE - `correcoes.json` e sobre o que a
+        #    palavra DIZ, nunca sobre se ela sai do video.
+        if mudos:
+            i = mudos[0]
+            antes = json.dumps(S.intervalos())
+            r = S.acao({"acao": "corrigir", "i": i, "texto": "teste ouvido"})
+            diz(r["mudou"], f"vao de {S.stream[i]['s']:.2f}s aceitou texto")
+            diz(json.dumps(S.intervalos()) == antes,
+                "escrever nao mexeu num milissegundo do corte")
+            pc2 = S.estado()["pecas"]["tokens"]
+            diz(pc2[i]["txt"] == "teste ouvido" and not pc2[i]["vao"],
+                "o vao virou palavra na tela")
+            # o alarme que a propria escrita criaria, se ninguem cuidasse
+            pend = tc.pendencias(S.stream, S.C, tc.carrega_vocabulario(d))
+            diz(not any(q["i"] == i for q in pend),
+                "o programa nao pergunta de volta o que voce escreveu")
+            S2 = editor.Sessao(video)
+            diz(S2.stream[i]["t"] == "teste ouvido",
+                "o texto escrito sobreviveu ao disco")
+            S.acao({"acao": "desfazer", "sel": sel})
+            diz(S.stream[i]["t"] == "hesitação",
+                "desfazer devolveu o rotulo original")
+
+        # 7. PAUSA MUDA NAO ACEITA TEXTO. O contrario do item 6: onde nao
+        #    ha voz nao ha o que transcrever, e liberar a escrita ali daria
+        #    um jeito novo de por palavra onde nao houve palavra.
+        muda = next((i for i, t in enumerate(S.stream)
+                     if t["k"] == "silencio" and not S._voz[i]), None)
+        if muda is not None:
+            r = S.acao({"acao": "corrigir", "i": muda, "texto": "nao devia"})
+            diz(not r["mudou"] and S.stream[muda]["t"] != "nao devia",
+                "pausa sem voz recusa texto")
+
+        # 8. O PAINEL DIZ O MESMO QUE O `conferir`. Duas implementacoes da
+        #    mesma pergunta divergem, e a que diverge calada e sempre a que
+        #    ninguem esta olhando - foi por isso que os achados sairam do
+        #    `cmd_conferir` para uma funcao so.
+        iv = S.intervalos()
+        pend = tc.pendencias(S.stream, S.C, tc.carrega_vocabulario(d))
+        todos, _ = tc.achados_corte(S.stream, S.C, iv, S.anot, S.montagem(),
+                                    pend, tc.carrega_respostas(d), d)
+        painel = S.achados(iv)
+        # o painel tira o que o `avisos` ja diz melhor, e so isso
+        cobertos = [x for x in todos if x[1].startswith("ANOTACAO")]
+        diz(len(painel) + len(cobertos) == len(todos),
+            f"o painel mostra os {len(painel)} achados do conferir "
+            f"({len(cobertos)} ja estao nos avisos)")
+
+        # 9. QUEM MANDOU CORTAR ESTA PALAVRA. O riscado do julgamento
+        #    humano tem de cobrir exatamente os tokens que a anotacao
+        #    corta - se as duas contas divergirem, a folha passa a pintar
+        #    de azul uma palavra que a regra automatica tirou, ou (pior)
+        #    de cinza uma que uma pessoa mandou sair.
+        pc = S.estado()["pecas"]["tokens"]
+        pela_tela = {i for i, p in enumerate(pc) if p["anot"]}
+        pelo_corte = {i for i, t in enumerate(S.stream)
+                      for a in S.anot
+                      if not (t["e"] <= a["ini"] or t["s"] >= a["fim"])}
+        diz(pela_tela == pelo_corte,
+            f"{len(pela_tela)} tokens pintados como anotados, os mesmos "
+            f"que a anotacao corta")
+        if S.anot:
+            motivos = {p["anot"] for p in pc if p["anot"]}
+            diz(motivos <= {a["motivo"] for a in S.anot},
+                "cada palavra anotada carrega o motivo que a pessoa escreveu")
+
+        # 10. O RELOGIO DA PREVIA. Ele anota ouvindo o .m4a e digita
+        #     "1:29"; a folha e a fonte. A traducao e a mesma do
+        #     `conferir --em`, e o teste e o par: ida e volta caem no
+        #     mesmo lugar. Se isto divergir, o editor leva ele para o
+        #     lugar errado sem dizer nada - a familia de defeito que este
+        #     programa mais teve.
+        iv0 = S.intervalos()
+        para_fonte, para_previa = tc._mapa_previa(iv0)
+        mantido0 = sum(b - a for a, b in iv0)
+        erradas = []
+        for frac in (0.1, 0.35, 0.6, 0.9):
+            t = mantido0 * frac
+            r = S.em_previa(t)
+            if abs(para_previa(r["fonte"]) - t) > 0.01:
+                erradas.append(t)
+            tk = S.stream[r["i"]]
+            if not (tk["e"] > r["fonte"] - 1e-6):
+                erradas.append(t)
+        diz(not erradas,
+            f"quatro tempos do .m4a viraram fonte e voltaram iguais "
+            f"({len(erradas)} erradas)")
+        diz(S._m4a.name == f"{video}_previa.m4a"
+            and S._m4a.parent == S.src.parent,
+            f"o editor procura a previa onde o `audio` grava ({S._m4a.name})")
+
+        # 11. .m4a QUE NAO E MAIS ESTE CORTE. Mesmo numero da fase 0 do
+        #     `/anotar` (0,15 s): abaixo disso e o padding do AAC, acima e
+        #     edicao. Sem este aviso, o relogio da tela continuaria
+        #     respondendo com a maior seriedade sobre um arquivo que nao
+        #     existe mais - errado, e em silencio.
+        #     Aponta para um arquivo que EXISTE (o audio.wav ao lado) e
+        #     semeia o cache com a duracao: assim se mede a regra sem
+        #     gastar um ffprobe, e sem depender de haver .m4a no disco -
+        #     nenhum dos tres videos de calibracao tem um. O caminho do
+        #     ffprobe esta medido a mao nos dois .m4a que existem ("7 de
+        #     espadas" +0,02 s, "as de espadas" +0,05 s).
+        S._m4a = S.wav
+        S._m4a_chave = (S.wav.stat().st_mtime_ns, S.wav.stat().st_size)
+        S._m4a_dur = mantido0 + 0.07           # o padding medido do AAC
+        certo = S.previa_no_disco(mantido0)
+        S._m4a_dur = mantido0 + 0.40           # uma anotacao entrou depois
+        caduco = S.previa_no_disco(mantido0)
+        diz(certo["tem"] and not certo["velho"] and caduco["velho"],
+            "0,07 s de padding passa, 0,40 s de diferenca vira aviso")
+
+        # 12. O QUE A TELA MOSTROU E O QUE O RENDER VAI VER. Se esta linha
         #    cair, o editor virou uma segunda opiniao sobre o corte - que e
         #    exatamente o que ele nao pode ser.
         S.acao({"acao": "menos", "lado": "dir", "sel": sel, "unidade": 0.25})

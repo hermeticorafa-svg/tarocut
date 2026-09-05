@@ -189,6 +189,20 @@ Como decidir cada tipo:
   repetitivo, é anáfora.
 - **fala rarefeita** — muito tempo e pouca palavra. Quase sempre parada
   longa, retomada, ou ela se perdendo.
+- **texto nao explica o tempo** — a única pendência sobre trecho que **já
+  está cortado**, e por isso a única em que "não fazer nada" não é uma
+  posição neutra: se você não responder, saem N segundos que ninguém
+  ouviu. A regra cortou com toda a razão aparente — o texto dizia
+  "éé...", ou repetia a palavra vizinha — mas o tempo não cabe no texto.
+  É assim que fala real some: onde o Whisper não consegue ler, ele
+  escreve um cacoete curto e plausível no lugar do que foi dito. **Não dá
+  para responder pelo texto**, porque o texto é justamente o que está sob
+  suspeita: ouça o trecho (fase 3, `--em`) antes de deixá-lo sair. Se for
+  mesmo hesitação, responda `sai`; se houver fala ali, o conserto é um
+  `restauro` em `montagem.json` cobrindo o trecho, e depois anotações
+  cortando só os pedaços que são de fato silêncio. Medido nos 7 fluxos de
+  `work/`: 2 disparos, os dois no mesmo corte de 27,5s do "as de
+  espadas", em que 17,9s eram fala.
 
 **Três categorias saíram desta lista, e é bom saber por quê** — se você
 viu alguma num `revisao.txt` antigo, ela não sumiu por descuido:
@@ -413,15 +427,33 @@ rede de segurança `_respeita_palavras` devolve pra tela qualquer palavra que
 ainda esteja com `cut=False` no `stream.json`. Medido no IMG_0246_bruto: uma
 anotação de 47,6s cobrindo "Que foi, Rafudo? [...] Tadinho. [...] Sim."
 sobrou 2,72s — exatamente a soma das três palavras/frases reais dentro do
-trecho — até rodar `analyze --force` (que reconcilia com o `transcript.md`
-antes de você rodar `draft --force` de novo, então tenha isso a mão) e
-`draft --force` (o `analyze --force` troca o `stream.json`, e sem isso o
-`conferir` recusa por `transcript.md` desatualizado). Anotação só de
-silêncio/hesitação sem palavra real dentro não precisa disso.
+trecho — até rodar `analyze --force` e `draft --force` (o `analyze --force`
+troca o `stream.json`, e sem o `draft` depois dele o `conferir` recusa por
+`transcript.md` desatualizado). Anotação só de silêncio/hesitação sem
+palavra real dentro não precisa disso.
+
+**Este laço APAGA o que você tiver editado no `transcript.md`, e apaga em
+silêncio.** O `analyze` não lê aquele arquivo: `reconcilia` é chamado uma
+vez só, dentro do `_base` (`tarocut.py:2686`), que é o que `conferir`,
+`audio`, `render` e o editor usam para montar o corte — `cmd_analyze` não o
+chama. E o `cmd_draft` não tem cache nenhum: reescreve o `transcript.md` a
+partir do `stream.json` toda vez, com `--force` ou sem. Então quem apagou
+texto, ou trocou `⟦ ⟧` por `⟨ ⟩`, antes do laço perde a edição — o arquivo
+volta com as propostas automáticas, e a decisão não sai do corte com um
+aviso, sai sem nenhum.
+
+Por isso: **edite o `transcript.md` DEPOIS do laço, nunca antes.** Se já
+tinha editado, guarde o que mudou, refaça a edição no arquivo regenerado e
+confirme que ela está lá antes de rodar o `conferir` — o cabeçalho novo
+traz o selo de outro `stream`, e a marca antiga não sobrevive a ele.
+MEDIDO no "5 de espadas": `espadas...` da primeira frase saía por
+`alongamento` (a carta perdia o nome na abertura), foi resgatada com
+`⟨espadas...⟩`, e o `draft --force` da fase 4 devolveu o arquivo com
+`⟦espadas...⟧`. Só a segunda aplicação chegou ao corte.
 
 ```
 venv\Scripts\python.exe tarocut.py analyze $ARGUMENTS --force   # so se houver fala real na anotacao
-venv\Scripts\python.exe tarocut.py draft $ARGUMENTS --force     # idem, senao conferir recusa por transcript.md desatualizado
+venv\Scripts\python.exe tarocut.py draft $ARGUMENTS --force     # idem; reescreve o transcript.md do zero (releia o aviso acima)
 venv\Scripts\python.exe tarocut.py conferir $ARGUMENTS
 ```
 
@@ -429,7 +461,9 @@ venv\Scripts\python.exe tarocut.py conferir $ARGUMENTS
 Enquanto houver uma, você não terminou.
 
 Se ele abortar dizendo que o `transcript.md` está desatualizado, rode
-`tarocut.py draft $ARGUMENTS` e tente de novo.
+`tarocut.py draft $ARGUMENTS` e tente de novo — vale o mesmo aviso: esse
+`draft` reescreve o arquivo do zero, então reaplique nele o que você tiver
+editado à mão.
 
 Para cada `ANOTACAO NAO OBEDECIDA`, a linha diz `sobra Xs de Ys`. Diagnostique:
 
@@ -473,6 +507,18 @@ e registre na fase 5:
   (cauda menor que 0,34s é descartada pelo `minimo`) e o rabo continua
   audível. Conserto: `montagem.json`/`cortes`, não anotação — está dentro
   de uma palavra só.
+- **`PALAVRA ENTERRADA`** — pelo relógio do **Whisper**, uma palavra que
+  era para ficar está segundos dentro do buraco, longe da emenda. Quem
+  errou ali é o alinhador, não o corte, e por isso **mover a borda da
+  anotação não resolve**: ela está ancorada num tempo que a palavra não
+  ocupa. É a mesma família do `~`, medida contra o corte pronto — o
+  tempo da coluna `fonte` é o do Whisper, e é nele que se ouve. Foi um
+  destes que o Rafael ouviu como um "ou" estranho no meio do áudio do
+  "as de espadas" (a disputa "lâmina"/"mental,"). Conserto: ouvir e
+  fechar o vazamento em `montagem.json`/`cortes`. Aparece em todos os
+  vídeos (2 a 7 por vídeo, medido nos 7 fluxos): **não** é para tratar
+  cada linha como defeito, é para ouvir as que caem perto de trecho que
+  você anotou.
 - **`REPETICAO AUDIVEL`** — a mesma palavra duas vezes seguidas no corte.
   Metade destes casos **o corte criou**: no IMG_0248 a anotação de
   343,7-350,4s ("três tentativas da mesma oração") encosta o "que" de
@@ -574,7 +620,9 @@ importantes em relação às fases 1-5:
   uma cauda arrastada, por exemplo), vai para `montagem.json`/`cortes`,
   não para `anotacoes.json`. Feche o laço com `analyze --force` (só se
   houver fala real na anotação) + `draft --force` + `conferir` do mesmo
-  jeito, e trie as linhas restantes do `conferir` do mesmo jeito da fase
+  jeito — incluindo o aviso da fase 4 de que o `draft` reescreve o
+  `transcript.md` do zero, então reaplique nele o que estiver editado à
+  mão —, e trie as linhas restantes do `conferir` do mesmo jeito da fase
   4 — inclusive as que não têm nada a ver com o que o Rafael relatou,
   porque ele só ouviu o que sobrevive no corte de hoje, não os pontos que
   já eram suspeitos antes.

@@ -228,6 +228,76 @@ def teste_respostas():
     diz("resgatado" not in tc.MAO_MANTEM,
         "'resgatado' nao conta como decisao de mao")
 
+    # A pendencia `cortada` corre ao contrario de todas as outras: ela
+    # nasce sobre trecho que JA SAI, entao o corte nao responde nada. Se a
+    # conta nao invertesse junto, ela nasceria e sumiria da cobranca no
+    # mesmo instante - a pergunta mais silenciosa que este programa
+    # poderia ter.
+    c = dict(q, rot="texto nao explica o tempo", cortada=True, proprio=True,
+             s=42.45, x=42.45, y=62.99)
+    sem, _ = tc.pendencias_sem_resposta([c], [], [(0.0, 30.0)])
+    diz([x["falta"] for x in sem] == ["PENDENCIA SEM RESPOSTA"],
+        "pergunta sobre trecho ja cortado continua sendo cobrada")
+    sem, _ = tc.pendencias_sem_resposta([c], [], inteiro)
+    diz(not sem, "restaurar o trecho responde a pergunta")
+    r = [{"em": [42.45], "resposta": "sai", "nota": ""}]
+    sem, _ = tc.pendencias_sem_resposta([c], r, [(0.0, 30.0)])
+    diz(not sem, "'sai' com o trecho ja fora fecha a pergunta")
+    r = [{"em": [42.45], "resposta": "fica", "nota": ""}]
+    sem, _ = tc.pendencias_sem_resposta([c], r, [(0.0, 30.0)])
+    diz([x["falta"] for x in sem] == ["PENDENCIA NAO OBEDECIDA"],
+        "'fica' com o trecho ainda cortado vira PENDENCIA NAO OBEDECIDA")
+
+
+def teste_texto_explica_o_tempo():
+    """Corte automatico cujo TEMPO o texto que o justificou nao explica.
+
+    O caso real: no "as de espadas" um corte de 27,5s saiu inteiro sem
+    pendencia nenhuma porque tinha texto - so que o texto era "éé..."
+    repetido 200 vezes. Contando aquilo como 200 letras faladas, 20,5s de
+    uma vogal so davam ritmo de fala normal e nada tinha o que estranhar.
+    """
+    print("\n== texto que nao explica o tempo (pendencias)")
+    C = tc.cfg()
+    # ritmo_mediano precisa de 20 palavras: um fundo de fala normal, a
+    # 0,08 s/letra, que e a mediana medida nos videos de calibracao.
+    fundo = [tok("palavra", "palavra", 100.0 + i, 100.56 + i)
+             for i in range(24)]
+
+    def pend_de(t):
+        return [q["rot"] for q in tc.pendencias(fundo + [t], C, set())]
+
+    vogal = tok("palavra", "é" * 200, 42.45, 62.99, True, "alongamento")
+    diz("texto nao explica o tempo" in pend_de(vogal),
+        "20,5s de uma vogal so viram pergunta, mesmo com 200 letras")
+
+    # a mesma vogal, curta, e cacoete de verdade: 7 dos 8 alongamentos dos
+    # 7 fluxos de work/ tem menos de 1,2s e nenhum deles pode entrar aqui.
+    diz("texto nao explica o tempo" not in
+        pend_de(dict(vogal, e=43.35)),
+        "alongamento curto continua sendo so alongamento")
+
+    # decisao acustica nao entra: ela ja mediu o tempo por conta propria.
+    diz("texto nao explica o tempo" not in
+        pend_de(dict(vogal, why="voz sem texto 20.5s", t="hesitação")),
+        "corte decidido pela acustica nao e cobrado por texto")
+
+    # nem decisao de gente: cortar 20s de fala e direito de quem ouviu.
+    diz("texto nao explica o tempo" not in
+        pend_de(dict(vogal, why="anotado: ela se perde aqui")),
+        "anotacao humana nao vira pergunta")
+
+    # e o texto que DA conta do tempo nao vira pergunta nenhuma: 20,5s de
+    # uma tentativa longa transcrita inteira sao 20,5s explicados.
+    diz("texto nao explica o tempo" not in
+        pend_de(dict(vogal, t="palavra " * 32, why="tentativa")),
+        "texto que explica o tempo nao vira pergunta")
+
+    # `letras_uma_vez` e o que separa os dois casos, e nao pode ser
+    # `letras_faladas`: aquela conta as 200 letras e devolve fala fluente.
+    diz(tc.letras_uma_vez("é" * 200) == 1 and tc.letras_faladas("é" * 200) == 200,
+        "uma vogal sustentada conta como um som, nao como 200 letras")
+
 
 def teste_respostas_no_disco(video):
     """A pergunta tem de ser feita no caminho por onde todo mundo passa -
@@ -321,11 +391,53 @@ def teste_repeticao_audivel(video):
         f"({n} no relatorio, {len(achados)} no corte)")
 
 
+def teste_naolido():
+    """`??` e o programa dizendo que nao sabe o que foi dito ali - e um
+    trecho que ele ja decidiu MANTER por causa disso. As passadas que vem
+    depois decidem por TEXTO, e ali texto e o que nao existe; cortando,
+    levavam junto a pendencia, porque a lista pula token cortado. O trecho
+    sumia do video e da pergunta na mesma linha.
+
+    Um caso de verdade: 669,1s do "as de espadas", cortado como
+    `tentativa`. O wav2vec2 do `align`, decodificado livre, ouve
+    "...sica, e isso e t..." ali."""
+    print()
+    print("== corte no escuro (protege_naolidos)")
+
+    def guarda(why, texto="?? 1.1s"):
+        f = [tok("hesitacao", texto, 1.0, 2.1, True, why)]
+        tc.protege_naolidos(f)
+        return f[0]["cut"]
+
+    diz(guarda("tentativa") is False,
+        "regra de texto nao corta o que ninguem leu")
+    diz(guarda("retomada colapsada: ?? 1.1s") is False,
+        "eco tambem nao")
+    diz(guarda("anotado: ruido, corta") is True,
+        "anotacao continua cortando - e gente, nao regra")
+    diz(guarda("ela mandou cortar: corta isso") is True,
+        "'ela mandou cortar' continua cortando, pelo mesmo motivo")
+    diz(guarda("tentativa", texto="entao a gente") is True,
+        "token com texto lido segue a regra: a guarda so vale para `??`")
+
+    # o laco: protegido, ele volta a ser PERGUNTA. Sem isto a guarda so
+    # trocaria "sumiu calado" por "ficou calado".
+    f = [tok("palavra", "essa", 0.0, 0.9),
+         tok("hesitacao", "?? 1.1s", 1.0, 2.1, True, "tentativa"),
+         tok("palavra", "diferenca", 2.2, 3.0)]
+    tc.protege_naolidos(f)
+    pend = tc.pendencias(f, tc.cfg(), set())
+    diz(any(q["rot"] == "som alto sem texto" for q in pend),
+        "trecho protegido reaparece como pendencia no revisao.txt")
+
+
 def main():
     alvos = sys.argv[1:] or CALIBRACAO
     teste_gaguejada()
+    teste_naolido()
     teste_vocabulario()
     teste_respostas()
+    teste_texto_explica_o_tempo()
     for v in alvos:
         teste_pendencias(v)
         teste_repeticao_audivel(v)

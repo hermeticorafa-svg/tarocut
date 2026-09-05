@@ -25,6 +25,8 @@
   --fora:#a9a49a;       /* o que foi ocultado: legivel, mas apagado */
   --risco:#b3ada2;
   --sel:#d8cfa8;        /* selecao: sublinhado de lapis, nao bloco azul */
+  --voz:#8a6534;        /* fala que o Whisper nao leu: tinta, nao cinza */
+  --julga:#5c6b80;      /* corte que uma PESSOA mandou fazer: lapis azul */
   --toca:#c9dcc4;
   --linha:#cfcbc3;
   --painel:#f3f1ec;
@@ -56,9 +58,21 @@ body{padding-right:330px}
 .tok{border-radius:2px;padding:1px 0}
 .tok.sel{background:var(--sel)}
 .tok.toca{background:var(--toca)}
+/* min-width: um token de vao entra em edicao vazio, e uma caixa de 6 px
+   nao se ve nem se acerta com o mouse. */
 .tok.editando{background:#fff;outline:1px solid var(--tinta);
-              padding:0 3px;cursor:text}
+              padding:0 3px;cursor:text;min-width:3em;
+              display:inline-block;text-align:left}
 .f{color:var(--fora);text-decoration:line-through;text-decoration-thickness:1px}
+/* Riscado que veio do passe de julgamento, e nao da regra automatica. Sao
+   41, 179 e 14 tokens nos tres videos de calibracao - 19% do IMG_0247 -, e
+   ate 04/09/2026 saiam com o mesmo cinza do corte mecanico. A camada mais
+   cara de produzir era a unica sem marca nenhuma na folha: para saber que
+   uma palavra saiu por julgamento era preciso clicar nela e ler o "Por que
+   saiu", uma palavra de cada vez. Lapis azul e o que o revisor usa em
+   papel; a diferenca com o cinza tem de ser de COR, porque a forma
+   (riscado) ja diz outra coisa. */
+.tok.jul .f{color:var(--julga);text-decoration-color:var(--julga)}
 
 /* Vao: silencio, ou hesitacao de que o transcritor nao tirou texto. Nao
    tem letra para riscar, entao o risco e o proprio traco - a largura
@@ -70,6 +84,21 @@ body{padding-right:330px}
   border-top:1px solid var(--risco);
 }
 .vao.sel{background:var(--sel)}
+
+/* Vao com VOZ MEDIDA: ela falou e o Whisper nao leu. Pontilhado e em tinta,
+   nao no cinza do risco, porque ate 03/09/2026 as duas coisas eram o mesmo
+   pixel - no IMG_0247, 26 tracinhos de pausa e 34 de voz, iguais, e o title
+   dizia "sem som aqui" nos 34. Pontilhado e o que a tipografia usa ha
+   seculos para "aqui havia algo que nao se leu". */
+.vao.voz::before{border-top:2px dotted var(--voz);top:.38em}
+/* Depois da regra da voz, de proposito: um vao anotado que tambem tem voz
+   fica pontilhado E azul - as duas coisas sao verdade, e cada uma responde
+   uma pergunta diferente (o que ha ali, e quem mandou tirar). */
+.vao.jul::before{border-top-color:var(--julga)}
+/* E ele nunca se esconde, nem quando nada foi ocultado: e justamente o
+   token cortado que sobrevive INTEIRO que dava oculto=0 e sumia da tela
+   (2, 6 e 11 por video nos de calibracao). Sumir por continuar no video e
+   o avesso do que este editor promete. */
 
 /* ------------------------------------------------------- botoes e caret */
 #capa{position:absolute;inset:0;pointer-events:none;z-index:5}
@@ -127,8 +156,25 @@ body{padding-right:330px}
   font:11px/1 ui-monospace,Consolas,monospace;background:#fff;
   border:1px solid var(--linha);border-radius:3px;padding:1px 4px;
 }
+#emPrevia{
+  width:100%;margin-top:5px;border:1px solid var(--linha);border-radius:4px;
+  padding:4px 6px;font:12px/1.4 inherit;color:var(--tinta);background:#fff;
+}
+#previaAviso{margin-top:5px;color:var(--alarme);line-height:1.4}
+#previaAviso:empty{display:none}
 .aviso{margin-top:5px;color:var(--alarme);cursor:pointer}
 .aviso.mao{color:#6b665e}
+/* Uma linha da lista "o que ouvir". O rotulo e o MESMO nome que sai no
+   conferir.txt, de proposito - dois vocabularios para os mesmos achados
+   fariam a pessoa aprender duas vezes -, mas em caixa alta ele pesa demais
+   num painel de 288 px, entao vai pequeno e espacado, numa linha propria. */
+.ouvir{margin-top:6px;cursor:pointer;color:#57534b;line-height:1.4}
+.ouvir:hover{color:var(--tinta)}
+.ouvir.forte{color:var(--alarme)}      /* voce mandou e nao saiu */
+.ouvir.mao{color:#6b665e}
+.ouvir .rot{display:block;font:600 9.5px/1.6 system-ui,sans-serif;
+            letter-spacing:.07em;opacity:.8}
+.ouvir .quando{font-variant-numeric:tabular-nums;opacity:.65}
 #log{
   margin-top:5px;max-height:150px;overflow:auto;white-space:pre-wrap;
   font:11px/1.45 ui-monospace,Consolas,monospace;color:#57534b;
@@ -206,13 +252,25 @@ body{padding-right:330px}
   </div>
   <div id="resumo"></div>
 
+  <!-- O relogio dele e o do .m4a: e ouvindo aquele arquivo que ele escreve
+       "[01:29]" no bloco de notas. A folha inteira pensa em tempo de fonte
+       e ate 04/09/2026 nao mostrava tempo nenhum, de nenhuma das duas
+       especies - achar na tela o lugar de uma anotacao pedia rodar
+       `conferir --em` noutra janela. Quem traduz e o servidor. -->
+  <div class="bloco" id="caixaPrevia">
+    <b>Ir para</b> <span class="chave">tempo do .m4a</span>
+    <input id="emPrevia" placeholder="1:29" spellcheck="false"
+           title="o tempo que você anotou ouvindo a prévia; enter leva até a palavra">
+    <div id="previaAviso"></div>
+  </div>
+
   <div class="bloco">
     <b>Unidade</b>
     <div class="unid" id="unid"></div>
   </div>
 
   <div class="bloco" id="caixaGestos">
-    <b>Nesta seleção</b>
+    <b>Nesta seleção</b> <span class="chave" id="previaSel"></span>
     <div id="gestos"></div>
   </div>
 
@@ -222,7 +280,7 @@ body{padding-right:330px}
   </div>
 
   <div class="bloco" id="caixaAvisos" hidden>
-    <b>Você mandou e não saiu</b>
+    <b id="tituloOuvir">O que ouvir</b>
     <div id="avisos"></div>
   </div>
 
@@ -243,6 +301,7 @@ body{padding-right:330px}
     <kbd>espaço</kbd> toca e pausa ·
     <kbd>enter</kbd> toca a seleção ·
     <kbd>ctrl+z</kbd> desfaz<br>
+    <kbd>o</kbd> toca o original, sem o corte<br>
     <kbd>botão direito</kbd> no texto: tocar · fora: exportar
   </div>
 </aside>
@@ -275,6 +334,7 @@ const S = {
   u: 100,             // unidade em ms
   els: [],            // <span> de cada token
   vaos: [],           // marca do silencio comido ANTES de cada token
+  esps: [],           // o espaco depois de cada token (some quando nao ha texto)
   sig: [],            // assinatura do desenho de cada token (evita repintar)
   ancora: null,       // token onde comecou o arraste
   arrastando: false,
@@ -337,6 +397,7 @@ function monta() {
       const vao = document.createElement("span");
       vao.className = "vao";
       vao.hidden = true;
+      vao.dataset.vao = i;
       S.vaos[i] = vao;
       p.appendChild(vao);
 
@@ -345,7 +406,16 @@ function monta() {
       el.dataset.i = i;
       S.els[i] = el;
       p.appendChild(el);
-      if (toks[i].txt) p.appendChild(document.createTextNode(" "));
+
+      // O espaco e um elemento, e nao um no de texto criado so quando ha
+      // texto: um token de vao pode GANHAR texto (corrigir a transcricao de
+      // uma hesitacao), e sem isto a palavra escrita saia colada na
+      // seguinte. Quem liga e desliga e o `pintaToken`.
+      const esp = document.createElement("span");
+      esp.textContent = " ";
+      esp.hidden = !toks[i].txt;
+      S.esps[i] = esp;
+      p.appendChild(esp);
     }
     folha.appendChild(p);
   }
@@ -362,11 +432,38 @@ function larguraVao(oculto) {
   return Math.min(4.2, 0.55 + oculto * 0.5).toFixed(2) + "em";
 }
 
-function marcaVao(el, oculto) {
-  if (oculto < 0.02) { el.hidden = true; return; }
+function marcaVao(el, oculto, voz, anot) {
+  /* `voz` manda mais que `oculto`: um vao com voz aparece mesmo que nada
+     tenha sido ocultado nele, porque a marca ali nao fala do corte - fala
+     de fala que nao virou palavra nenhuma.
+
+     `anot` e o motivo que uma PESSOA escreveu no passe de julgamento, e
+     vem vazio quando quem cortou foi a regra automatica. Uma anotacao
+     pode cair inteira em silencio: sao 22 vaos assim no IMG_0247, sem
+     nenhum token onde pendurar a marca. */
+  if (!voz && oculto < 0.02) { el.hidden = true; return; }
   el.hidden = false;
+  el.className = "vao" + (voz ? " voz" : "") + (anot ? " jul" : "");
   el.style.width = larguraVao(oculto);
-  el.title = ms(oculto) + " sem som aqui";
+  el.title = (anot ? "anotado: " + anot + "\n" : "") + (voz
+    ? "voz medida aqui, sem palavra e sem pausa" +
+      (oculto > 0.02 ? "\n" + ms(oculto) + " saem no corte"
+                     : "\ncontinua inteira no vídeo")
+    : ms(oculto) + " sem som aqui");
+}
+
+function rotuloVoz(p) {
+  /* O que este trecho de fala e, quanto dele sobra, e o que o Whisper leu
+     antes de o programa recusar. O `ouviu`/`recusa` estava gravado em
+     stream.json desde sempre (`lacunas[].bruto`) e nunca chegava a tela. */
+  const dur = p.e - p.s;
+  const viva = dur * p.vivo.reduce((a, [x, y]) => a + (y - x), 0);
+  let s = ms(dur) + " de voz que o Whisper não leu";
+  s += viva < 0.02 ? "\nsai inteira"
+     : viva > dur - 0.02 ? "\nCONTINUA INTEIRA no vídeo"
+     : "\n" + ms(viva) + " continuam tocando";
+  if (p.ouviu) s += "\nele ouviu “" + p.ouviu + "” e recusou: " + p.recusa;
+  return s;
 }
 
 function pintaToken(i, p) {
@@ -375,22 +472,31 @@ function pintaToken(i, p) {
   const somaViva = vivo.reduce((a, [x, y]) => a + (y - x), 0);
   const oculto = (p.e - p.s) * (1 - somaViva);
 
-  marcaVao(S.vaos[i], p.ocultoAntes);
+  marcaVao(S.vaos[i], p.ocultoAntes, p.vozAntes, p.anotAntes);
+  S.esps[i].hidden = !p.txt;
 
   if (!p.txt) {                      // silencio ou hesitacao sem texto
-    el.className = "tok vao";
+    el.className = "tok vao" + (p.voz ? " voz" : "") + (p.anot ? " jul" : "");
     el.textContent = "";
-    if (oculto < 0.02) { el.hidden = true; return; }
+    if (!p.voz && oculto < 0.02) { el.hidden = true; return; }
     el.hidden = false;
-    el.style.width = larguraVao(oculto);
-    el.title = ms(oculto) + " sem som aqui";
+    // com voz a marca vale pelo TRECHO todo, nao pelo pedaco ocultado: ela
+    // esta ali para dizer que ha fala, e ha fala tanto no que sai quanto no
+    // que fica.
+    el.style.width = larguraVao(p.voz ? p.e - p.s : oculto);
+    el.title = (p.anot ? "anotado: " + p.anot + "\n" : "") +
+               (p.voz ? rotuloVoz(p) : ms(oculto) + " sem som aqui");
     return;
   }
 
   el.hidden = false;
-  el.className = "tok";
+  el.className = "tok" + (p.anot ? " jul" : "");
   el.style.width = "";
-  el.title = oculto > 0.02 ? ms(oculto) + " desta palavra saiu" : "";
+  // o motivo de quem mandou cortar. O azul diz que foi uma pessoa; isto
+  // diz O QUE ela viu - ate agora o motivo so existia no painel do canto,
+  // uma palavra clicada de cada vez.
+  el.title = (p.anot ? "anotado: " + p.anot + "\n" : "") +
+             (oculto > 0.02 ? ms(oculto) + " desta palavra saiu" : "");
   el.textContent = "";
 
   /* Que letras sobrevivem. `vivo` vem do servidor como fatia do tempo do
@@ -428,7 +534,7 @@ function pinta() {
     const sig = p.txt + "|" + p.ocultoAntes + "|" + JSON.stringify(p.vivo);
     if (S.sig[i] !== sig) { S.sig[i] = sig; pintaToken(i, p); }
   }
-  marcaVao($("vaoFim"), pc.fim);
+  marcaVao($("vaoFim"), pc.fim, pc.fimVoz, pc.fimAnot);
   marcaSelecao();
   painel();
   posBotoes();
@@ -465,7 +571,28 @@ function painel() {
   $("tit").textContent = S.doc.nome + " · " + S.doc.arquivo;
   $("resumo").innerHTML =
     "<b>" + rel(e.mantido) + "</b> de " + rel(S.doc.dur) +
-    " · " + e.trechos + " trechos · " + e.mao + " ajustes seus";
+    " · " + e.trechos + " trechos · " + e.mao + " ajustes seus" +
+    (S.doc.anot.length ? " · " + S.doc.anot.length + " anotações" : "");
+  // O aviso de montagem caducada vive AQUI, e nao na partida: o painel
+  // reescreve o `resumo` inteiro a cada gesto, entao pendurado na partida
+  // ele sumia no primeiro clique. Ele diz que decisoes de palavra foram
+  // descartadas - a ultima coisa desta tela que pode sumir sozinha.
+  if (S.doc.aviso) {
+    const d = document.createElement("div");
+    d.className = "aviso";
+    d.textContent = S.doc.aviso;
+    $("resumo").appendChild(d);
+  }
+
+  // o relogio do arquivo que ele ouve, e o aviso de quando esse arquivo
+  // deixou de ser este corte (ver `Sessao.previa_no_disco`).
+  $("previaSel").textContent = S.sel ? "· " + rel(e.previaSel) + " no .m4a" : "";
+  const pv = e.previa;
+  $("previaAviso").textContent = (pv && pv.tem && pv.velho)
+    ? "o .m4a no disco tem " + rel(pv.dur) + " e este corte tem " +
+      rel(e.mantido) + ": os tempos aqui são do corte de agora, não do "
+      + "arquivo que você ouviu. Exporte o áudio de novo antes de anotar."
+    : "";
 
   const g = $("gestos");
   g.textContent = "";
@@ -485,20 +612,93 @@ function painel() {
   $("caixaPorque").hidden = !(fora && p.why);
   if (fora && p.why) $("porque").textContent = p.why;
 
+  const lista = paraOuvir(e);
   const av = $("avisos");
   av.textContent = "";
-  $("caixaAvisos").hidden = !e.avisos.length;
-  for (const a of e.avisos) {
+  $("caixaAvisos").hidden = !lista.length;
+  $("tituloOuvir").textContent =
+    lista.length ? "O que ouvir · " + lista.length : "O que ouvir";
+  for (const a of lista) {
     const d = document.createElement("div");
-    d.className = "aviso" + (a.mao ? " mao" : "");
-    const rot = a.palavra ? "NÃO SAIU"
-              : a.mao ? "reaberta por você" : "ANOTAÇÃO NÃO OBEDECIDA";
-    d.textContent = rot + " · " + rel(a.ini) + " · " +
-      a.motivo.slice(0, 110);
+    d.className = "ouvir" + (a.forte ? " forte" : "") + (a.mao ? " mao" : "");
+    const r = document.createElement("span");
+    r.className = "rot";
+    r.textContent = a.rot;
+    const q = document.createElement("span");
+    q.className = "quando";
+    q.textContent = rel(a.previa) + " · ";
+    d.title = "no .m4a " + rel(a.previa) + "   ·   na fonte " + rel(a.ini);
+    d.append(r, q, document.createTextNode(a.txt.slice(0, 120)));
     d.onclick = () => vaiPara(a.ini);
     av.appendChild(d);
   }
 }
+
+function paraOuvir(e) {
+  /* As duas listas viram UMA, em ordem de tempo.
+
+     Elas respondem perguntas diferentes - `avisos` e "voce mandou e nao
+     saiu", `achados` e "a geometria produziu isto" -, mas quem esta
+     editando faz uma pergunta so: o que nesta montagem merece um ouvido?
+     Duas caixas obrigariam a comparar tempos entre elas com o dedo. O
+     rotulo de cada linha continua dizendo de qual familia ela e, e o
+     vermelho fica so nas de `avisos`, que sao as que acusam um pedido
+     desobedecido.
+
+     Nada aqui e recalculado: o servidor ja tirou de `achados` o que
+     `avisos` diz melhor (ver `Sessao.achados`), e mandou o tempo das duas
+     no relogio da PREVIA. E nele que a lista corre, pela mesma razao que
+     o `conferir.txt` corre: quem le isto vai ouvir o .m4a na ordem, e
+     ordenar por tempo de fonte manda pular para tras. O tempo da fonte
+     fica no title, que e onde se anota.
+
+     O rotulo de palavra tem duas caras porque o pedido tem duas: quem
+     ocultou reclama de que NAO SAIU, quem restaurou reclama de que NAO
+     VOLTOU. Ate 04/09/2026 os dois saiam como "NAO SAIU", e no restauro
+     isso dizia o contrario do que aconteceu - a linha que existe para
+     contar que um pedido foi desobedecido contava a desobediencia
+     trocada. Quem sabe qual e qual e o servidor, no `estado`. */
+  const L = [];
+  for (const a of e.avisos)
+    L.push({ ini: a.ini, previa: a.previa, forte: true, mao: !!a.mao,
+             txt: a.motivo,
+             rot: a.palavra
+                    ? (a.estado === "manter" ? "NÃO VOLTOU" : "NÃO SAIU")
+                : a.mao ? "REABERTA POR VOCÊ" : "ANOTAÇÃO NÃO OBEDECIDA" });
+  for (const a of e.achados)
+    L.push({ ini: a.ini, previa: a.previa, forte: false, mao: false,
+             rot: a.rot, txt: a.txt });
+  L.sort((x, y) => x.previa - y.previa);
+  return L;
+}
+
+async function vaiParaPrevia() {
+  /* O tempo que ele digita e o do .m4a; a folha e a fonte. Quem traduz e o
+     servidor (`Sessao.em_previa`), pela mesma `_mapa_previa` do `conferir
+     --em` e da fase 2 do `/anotar` - o mapa e feito do corte, e corte nao
+     se calcula aqui, nem "so para navegar".
+
+     Aceita "89", "1:29" e "1:29,5". Antes disto, achar na folha o lugar de
+     um `[01:29]` anotado de ouvido pedia rodar um comando noutra janela e
+     voltar com um numero que a folha tambem nao mostrava. */
+  const cx = $("emPrevia");
+  const p = cx.value.trim().replace(",", ".").split(":").map(Number);
+  if (!p.length || p.some(isNaN)) return;
+  const t = p.reduce((a, x) => a * 60 + x, 0);
+  const r = await (await fetch("/em", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ previa: t }),
+  })).json();
+  if (typeof r.i !== "number" || !S.els[r.i]) return;
+  cx.blur();                        // devolve o teclado para a folha
+  selecionaFaixa(r.i, r.i + 1);
+  S.els[r.i].scrollIntoView({ block: "center", behavior: "smooth" });
+}
+
+$("emPrevia").addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter") { ev.preventDefault(); vaiParaPrevia(); }
+  else if (ev.key === "Escape") { ev.preventDefault(); ev.target.blur(); }
+});
 
 function vaiPara(t) {
   const toks = S.est.pecas.tokens;
@@ -600,7 +800,13 @@ function selecionaCaret(i, k) {
 
 function tokenDe(alvo) {
   const el = alvo.closest ? alvo.closest(".tok") : null;
-  return el && el.dataset.i !== undefined ? +el.dataset.i : null;
+  if (el && el.dataset.i !== undefined) return +el.dataset.i;
+  /* O tracinho de vao nao e token: nao ha o que selecionar nele. Seleciona
+     a palavra logo DEPOIS - e sobre esse mesmo vao que o par de botoes da
+     ESQUERDA dela trabalha, entao o clique cai onde ja mora o gesto que
+     ele pede. Antes disto, clicar num tracinho limpava a selecao. */
+  const v = alvo.closest ? alvo.closest("[data-vao]") : null;
+  return v ? +v.dataset.vao : null;
 }
 
 /* ==================================================================== */
@@ -616,7 +822,14 @@ function iniciaCorrecao(i) {
   if (edicaoAtual) edicaoAtual.acabar(true);
   const el = S.els[i];
   if (!el) return;
-  const atual = S.est.pecas.tokens[i].txt;
+  const p = S.est.pecas.tokens[i];
+  const atual = p.txt;
+  // Num vao a caixa abre com o que o Whisper LEU ali antes de o programa
+  // recusar a leitura. E sugestao, nao fato - o title diz de onde veio e
+  // por que foi recusada -, mas e exatamente o que a pessoa digitaria a
+  // mao depois de ouvir. QUEM decide se ha sugestao e o servidor: nem toda
+  // recusa e uma leitura plausivel (ver `Sessao._sugestao`).
+  const partida = atual || p.sugestao || "";
   let terminado = false;
 
   const aoTeclar = (ev) => {
@@ -660,8 +873,13 @@ function iniciaCorrecao(i) {
   edicaoAtual = { i, acabar };
   el.contentEditable = "true";
   el.spellcheck = false;
+  // um vao tem largura fixa e classe de tracinho; enquanto se escreve ele
+  // e uma caixa de texto como qualquer outra. O `pintaToken` devolve as
+  // duas coisas ao terminar, salvando ou desistindo.
+  el.classList.remove("vao", "voz", "jul");
+  el.style.width = "";
   el.classList.add("editando");
-  el.textContent = atual;             // texto puro: sem riscado enquanto edita
+  el.textContent = partida;           // texto puro: sem riscado enquanto edita
   el.addEventListener("keydown", aoTeclar);
   el.addEventListener("blur", aoSair);
   el.focus();
@@ -724,13 +942,20 @@ window.addEventListener("resize", posBotoes);
 function andaToken(passo, estende) {
   if (!S.sel) return;
   const toks = S.est.pecas.tokens;
-  const temTexto = (i) => toks[i] && toks[i].txt;
+  /* Onde a seta PARA. Texto ou voz medida - o mesmo criterio que libera
+     escrever ali (`_corrigivel`, no servidor), e pela mesma razao: sao os
+     lugares onde ha o que ouvir. Ate 04/09/2026 a seta so parava em
+     palavra, e os 16, 49 e 48 vaos com voz de cada video de calibracao
+     estavam fora do alcance do teclado - inclusive os que aceitam texto,
+     que e justamente onde ele precisa chegar para escrever o que ouviu.
+     Pausa muda continua de fora: la nao ha nada para ouvir nem escrever. */
+  const ouvivel = (i) => toks[i] && (toks[i].txt || toks[i].voz);
   if (S.sel.tipo === "caret") {
     let { i, k, n } = S.sel;
     k += passo;
     if (k < 0 || k > n) {              // saiu da palavra: pula para a vizinha
       let j = i + passo;
-      while (j >= 0 && j < toks.length && !temTexto(j)) j += passo;
+      while (j >= 0 && j < toks.length && !ouvivel(j)) j += passo;
       if (j < 0 || j >= toks.length) return;
       selecionaCaret(j, passo > 0 ? 0 : toks[j].txt.length);
     } else selecionaCaret(i, k);
@@ -738,14 +963,14 @@ function andaToken(passo, estende) {
   }
   let { i0, i1 } = S.sel;
   if (estende) {
-    if (passo > 0) { let j = i1; while (j < toks.length && !temTexto(j)) j++;
+    if (passo > 0) { let j = i1; while (j < toks.length && !ouvivel(j)) j++;
                      if (j < toks.length) i1 = j + 1; }
     else if (i1 - 1 > i0) i1--;
-    else { let j = i0 - 1; while (j >= 0 && !temTexto(j)) j--;
+    else { let j = i0 - 1; while (j >= 0 && !ouvivel(j)) j--;
            if (j >= 0) i0 = j; }
   } else {
     let j = (passo > 0 ? i1 : i0 - 1);
-    while (j >= 0 && j < toks.length && !temTexto(j)) j += passo;
+    while (j >= 0 && j < toks.length && !ouvivel(j)) j += passo;
     if (j < 0 || j >= toks.length) return;
     i0 = j; i1 = j + 1;
   }
@@ -753,6 +978,9 @@ function andaToken(passo, estende) {
 }
 
 document.addEventListener("keydown", (ev) => {
+  // `-`, `=`, `1`..`7` e espaco sao gestos de corte na folha e caracteres
+  // dentro de uma caixa de texto. Quem tem o foco manda.
+  if (ev.target && ev.target.tagName === "INPUT") return;
   if (!$("abrirVeu").hidden) {
     if (ev.key === "Escape") { fechaVeu(); ev.preventDefault(); }
     return;
@@ -780,6 +1008,8 @@ document.addEventListener("keydown", (ev) => {
       espaco(); ev.preventDefault(); break;
     case "Enter":
       tocaSelecao(false); ev.preventDefault(); break;
+    case "o": case "O":
+      tocaOriginal(); ev.preventDefault(); break;
     case "Escape":
       para(); S.sel = null; acao("nada"); ev.preventDefault(); break;
   }
@@ -910,6 +1140,28 @@ function tocaSelecao(ateOFim) {
   toca(recorta(t[0], ateOFim ? S.doc.dur : Math.max(t[1], t[0] + 0.05)));
 }
 
+function tocaOriginal() {
+  /* A ÚNICA coisa desta tela que nao passa pelo corte.
+
+     Tudo o mais aqui toca `S.est.iv`, que e o corte - de proposito: o
+     editor existe para ouvir o que vai sair. Mas isso deixava sem resposta
+     a pergunta que mais aparece na hora de decidir se um corte esta certo:
+     "o que foi que sumiu aqui?". Nao havia como ouvir o que a lamina levou
+     sem abrir o .MOV em outro programa.
+
+     A margem em volta e para ouvir a EMENDA, nao a palavra: uma palavra
+     isolada nao diz se o corte comeu uma silaba do vizinho, e e essa a
+     duvida que traz alguem aqui. 0,35 s de cada lado e o bastante para a
+     fronteira aparecer e pouco para nao virar outra frase. */
+  if (!S.sel) return;
+  const toks = S.est.pecas.tokens;
+  const i0 = S.sel.tipo === "faixa" ? S.sel.i0 : S.sel.i;
+  const i1 = S.sel.tipo === "faixa" ? S.sel.i1 : S.sel.i + 1;
+  if (!toks[i0] || !toks[i1 - 1]) return;
+  toca([[Math.max(0, toks[i0].s - 0.35),
+         Math.min(S.doc.dur, toks[i1 - 1].e + 0.35)]]);
+}
+
 function espaco() {
   if (A.ctx && A.ctx.state === "running" && A.mapa) { A.ctx.suspend(); return; }
   if (A.ctx && A.ctx.state === "suspended" && A.mapa) { A.ctx.resume(); return; }
@@ -964,13 +1216,17 @@ document.addEventListener("contextmenu", async (ev) => {
     // so uma palavra por vez: um trecho de varias nao tem como virar
     // texto novo sem inventar uma correspondencia com os tokens
     // originais que a geometria de risco depois teria de respeitar.
-    const podeCorrigir = (b - a === 1) && !!toks[a].txt;
+    // Quem decide se ESTE token aceita texto e o servidor (`_corrigivel`),
+    // uma vez so: a tela apenas obedece o que veio na peca.
+    const podeCorrigir = (b - a === 1) && toks[a].corrigivel;
     abreMenu(ev.clientX, ev.clientY, [
       ["tocar", () => tocaSelecao(false)],
+      ["tocar o original (sem o corte)", () => tocaOriginal()],
       ["tocar a partir daqui", () => tocaSelecao(true)],
       "-",
       [oculto(a, b) ? "restaurar" : "ocultar", () => acao("alterna", {})],
-      ["corrigir transcrição", () => iniciaCorrecao(a), !podeCorrigir],
+      [toks[a].txt ? "corrigir transcrição" : "escrever o que se ouve",
+       () => iniciaCorrecao(a), !podeCorrigir],
     ]);
     return;
   }
@@ -1087,13 +1343,6 @@ $("abrirVeu").addEventListener("click", (ev) => {
   }
   poeUnidade(S.u);
   pinta();
-
-  if (S.doc.aviso) {
-    const d = document.createElement("div");
-    d.className = "aviso";
-    d.textContent = S.doc.aviso;
-    $("resumo").appendChild(d);
-  }
   carregaAudio().catch(() => {});   // adianta os 21 MB antes do primeiro toque
 })();
 </script>

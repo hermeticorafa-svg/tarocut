@@ -286,6 +286,41 @@ passo           = 1.0    # de quanto em quanto a janela anda (s)
 palavras_seg    = 0.85
 duracao_minima  = 5.0    # trecho mais curto que isto nao vale marcar
 
+# A partir de quantos segundos um corte automatico decidido POR TEXTO
+# (cacoete, alongamento, retomada colapsada, tentativa...) vira a pendencia
+# `texto nao explica o tempo`. Nao corta nem descorta nada: so pergunta.
+#
+# Existe porque onde o Whisper nao consegue ler ele escreve um cacoete
+# curto e plausivel no lugar da fala que existe, e ai a regra de texto corta
+# com toda a razao aparente. No "as de espadas" isso levou 27,5s
+# (35,46-62,92s) num corte so, sem `[??]`, sem `[rec:]` e sem `VOZ` na
+# marca - o Rafael descobriu ouvindo a FONTE que 17,9 daqueles segundos
+# eram fala.
+#
+# MEDIDO nos 7 fluxos de work/ (216 cortes automaticos de >=1s): OITO tokens
+# cortados por texto tem tempo acima de [arrastada].fator vezes o que o
+# texto explica, e eles se separam em dois montes sem nada no meio -
+#
+#   1,40 a 2,27s: seis, e os seis sao cacoete de verdade ("Eeeeee"
+#     sustentado, "E... E tem...", "É... isso.", "é..."). Ninguem quer ver
+#     nenhum deles numa lista de pendencias.
+#   6,06 e 20,54s: dois, e os dois sao o MESMO corte de 27,5s do "as de
+#     espadas" ("profunda, mais potente." e um "éé..." de 200 caracteres).
+#
+# 3,0 cai nesse vazio, mais perto do lado que so tem cacoete: baixar comeca
+# a perguntar sobre "Eeee" sustentado, subir esconde o unico defeito desta
+# familia que ja se viu. O corpus e fino - dois casos, um video - e o vazio
+# entre 2,3 e 6,1 e o que ele tem a dizer; quem tiver um terceiro caso,
+# meca de novo antes de mexer aqui.
+#
+# CUIDADO ao ler a distribuicao inteira: ha corte por texto LEGITIMO bem
+# mais longo que 3,0s (uma "retomada colapsada" de 3,90s no IMG_0248, uma
+# "tentativa" de 2,30s). Eles nao aparecem na lista porque o texto DELES da
+# conta do tempo - este piso nunca decide sozinho. A outra metade da conta,
+# quantas vezes o tempo tem de exceder o texto, nao mora aqui de proposito:
+# e o mesmo [arrastada].fator que decide a poda de cauda.
+corte_por_texto_min = 3.0
+
 [cartas]
 # "Adicionar cartas": limiares mecanicos para decidir QUANDO uma carta
 # secundaria entra em tela e QUANTO tempo fica. NAO CALIBRADOS ainda -

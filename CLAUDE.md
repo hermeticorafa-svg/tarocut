@@ -36,14 +36,17 @@ mesmos comandos.
 | `lexico.py` | gera `lexicon/terms.txt` a partir do livro do Yala |
 | `.claude/commands/revisar.md` | o passe de julgamento: o que o Claude lê e o que ele tem de conferir depois |
 | `.claude/commands/preparar.md` | run + revisar + conferir + audio num comando só, pronto pro editor de texto |
+| `.claude/commands/anotar.md` | o passe do OUVIDO: absorve as anotações que o Rafael faz ouvindo o `.m4a`, e pergunta se alguma delas ensina algo ao programa |
 | `config.toml` | **todos** os números do gosto de corte |
 | `material/padroes-edicao.md` | medições contra os vídeos editados à mão |
+| `material/licoes-do-ouvido.md` | o que o ouvido do Rafael pegou e o programa não, uma linha por achado do `/anotar`. Existe para a SEGUNDA ocorrência do mesmo defeito ser reconhecida como segunda — um caso não é medição |
 | `correcoes-pendentes.md` | **histórico, não pendências.** O nome mente: as 8 correções de 01/09 estão todas feitas, e o arquivo virou o registro de por que cada uma foi feita |
 
 Estado por vídeo em `work/<video>/`: `meta.json`, `audio.wav`, `words.json`,
 `stream.json` (a fonte da verdade), `transcript.md`, `revisao.txt`,
 `conferir.txt`, `entendimento.md` (o que o passe de julgamento entendeu da
-aula), `anotacoes.json`, `respostas.json`, `montagem.json`,
+aula), `ouvido.md` (o que ele anotou ouvindo o `.m4a`, colado literal, uma
+seção por rodada), `anotacoes.json`, `respostas.json`, `montagem.json`,
 `correcoes.json`.
 
 As três camadas de decisão humana empilham nesta ordem, que é a ordem em
@@ -106,6 +109,44 @@ dois lugares: o `conferir` lista, e o `_plano` avisa — ou seja, `render`,
 mexer na geometria, o teste é: **toda anotação tem que sobrar ~0 s.** O que
 os quatro caminhos tinham em comum não era a causa; era ninguém perguntar.
 
+**Corte que a regra faz por TEXTO se cobra pelo tempo, não pelo texto.**
+Onde o Whisper não consegue ler, ele não devolve nada legível — devolve um
+cacoete curto e plausível no lugar da fala. Aí a regra de texto
+(`alongamento`, `retomada colapsada`, `tentativa`…) corta com toda a razão
+aparente, e o trecho sai sem `[??]`, sem `[rec:]`, sem `VOZ` na marca e sem
+pendência nenhuma: é o único caminho pelo qual fala real some sem que nada
+pergunte. MEDIDO no "as de espadas": 27,5s (35,46-62,92s) num corte só, dos
+quais o Rafael confirmou 9,6s de hesitação e 17,9s de fala, ouvindo a fonte.
+Os três tokens do corte eram "mais...", "profunda, mais potente." e um "éé…"
+de 200 caracteres — e nenhum era `pausa`.
+
+A pergunta que fecha isso é a que `marca_arrastadas` já fazia para podar
+cauda ("este tempo cabe no que está escrito?"), com os mesmos números dela
+(`[arrastada].fator`), e ela falhou ali por DUAS razões independentes:
+`marca_cacoetes` corre antes e já tinha cortado o token — e `marca_arrastadas`
+pula token cortado —, e mesmo que olhasse, `letras_faladas` conta 200 letras
+num "éé…" de uma vogal só, o que fazia 20,5s de um som parecerem 9,7
+caracteres por segundo, ritmo de fala fluente. Por isso `letras_uma_vez`
+existe e é SEPARADA de `letras_faladas`: aquela decide corte no `analyze`,
+esta decide pergunta. Trocar a de baixo mudaria o corte de todo vídeo já
+analisado, e isso é medição que ninguém fez.
+
+MEDIDO nos 7 fluxos, sobre 216 cortes automáticos de ≥1s: oito tokens
+cortados por texto duram mais que `fator` vezes o que o texto explica, e
+eles vêm em dois montes sem nada entre eles — seis de 1,40 a 2,27s, todos
+cacoete de verdade ("Eeeeee" sustentado, "É... isso."), e dois de 6,06 e
+20,54s, que são o mesmo corte de 27,5s. `corte_por_texto_min` (3,0) mora
+nesse vazio. Corte por texto legítimo bem mais longo existe (uma "retomada
+colapsada" de 3,90s no IMG_0248) e não entra na lista, porque o texto dela
+dá conta do tempo: o piso nunca decide sozinho.
+
+E ela é a ÚNICA pendência sobre trecho que **já sai**, o que inverte a
+conta de `pendencias_sem_resposta`: cortar não responde nada, porque o
+corte já estava feito quando a pergunta nasceu. Responde-la é restaurar o
+trecho ou escrever no `respostas.json` — e é `fica`, não `sai`, que vira
+`PENDENCIA NAO OBEDECIDA` quando ninguém age. Sem essa inversão a pergunta
+nasceria e sumiria da cobrança no mesmo instante.
+
 **Pendência sem resposta é a mesma família de defeito, do outro lado.** O
 `revisao.txt` lista, numera e ancora cada `Pn`, e até 03/09/2026 nada
 verificava se alguma tinha ficado sem resposta — "responda todas" era
@@ -131,6 +172,24 @@ A resposta se guarda pelo **tempo** da pendência, nunca pelo número: uma
 pendência do meio da lista que sai renumera todas as de baixo, e a resposta
 passaria a valer para outra pergunta. Mesma regra do `s`/`e` do
 `montagem.json`, e pela mesma razão.
+
+**Tempo de prévia só vale contra o corte que gerou aquela prévia.** O
+`/anotar` recebe anotações escritas ouvindo o `.m4a` (`[00:15]`, `[01:29]`)
+e as traduz com `_mapa_previa`, a mesma função do `conferir --em`. Mas o
+mapa é feito do corte de AGORA: se o corte mudou depois que o `.m4a` foi
+gerado, a tradução erra tudo o que vem depois do ponto que mudou, e erra em
+silêncio — é a família do selo do `transcript.md`, por um caminho novo. Por
+isso a fase 0 do `/anotar` compara a duração do `.m4a` com o `mantido` do
+`conferir` antes de aceitar qualquer tempo, e por isso **toda tradução é
+feita antes da primeira correção entrar**: a primeira que entra invalida o
+relógio das outras.
+
+E o destino de cada linha colada é cobrado como o das outras duas camadas
+de julgamento: recebeu 7 observações, o relatório tem 7 linhas, inclusive
+"não achei". Diferente da anotação desobedecida e da pendência sem
+resposta, essa cobrança **não** tem uma função que a faça — o
+`work/<video>/ouvido.md` é o registro, e a conta é do relatório. Se um dia
+uma observação sumir no caminho, é aqui que mora o buraco.
 
 **A lista de pendências é curta de propósito, e custou medição ficar
 assim.** Eram 268 nos 10 fluxos de `work/` (7 a 50 por vídeo); são 55 (0 a
@@ -180,6 +239,44 @@ tela mostrar o corte de verdade — inclusive o que uma anotação tirou e o que
 o snap raspou. Pintar pelo `cut` mostraria a *proposta*, e a diferença entre
 as duas é exatamente onde moram os defeitos deste programa.
 
+**Riscado cinza é regra; riscado azul é gente.** O riscado dizia *que* a
+palavra sai e nunca *quem* mandou. São 41, 179 e 14 tokens nos três vídeos
+de calibração — 19% do IMG_0247 — cortados pelo passe de julgamento, e até
+04/09/2026 saíam com o mesmo cinza da regra automática; para saber que uma
+palavra saiu por julgamento era preciso clicar nela e ler o "Por que saiu",
+uma palavra de cada vez, na camada mais cara de produzir que este programa
+tem. Agora elas saem em azul, com o motivo escrito no `title`. A regra de
+cobertura é a MESMA de `aplica_anotacoes` — qualquer sobreposição, por
+menor que seja — e não uma parecida: com um limiar de 0,05 s sobravam 3
+tokens desenhados como corte mecânico depois de uma pessoa mandar cortá-los.
+E o `_anot_antes` responde a mesma pergunta para o VÃO entre dois tokens,
+porque uma anotação pode cair inteira no silêncio: são 22 assim no
+IMG_0247, sem nenhum token onde pendurar a marca.
+
+**O editor fala nos dois relógios, e diz quando o segundo caducou.** Ele
+anota ouvindo o `.m4a` (`[01:29]`); a folha pensa em tempo de fonte, e até
+04/09/2026 não mostrava tempo nenhum — achar na tela o lugar de uma
+anotação pedia rodar `conferir --em` em outra janela. Agora a caixa "ir
+para" aceita `1:29`, a seleção mostra o tempo dela na prévia, e a lista "o
+que ouvir" corre na ordem da prévia (a da fonte fica no `title`), que é a
+ordem do `conferir.txt` porque é a ordem em que se ouve. Quem traduz é o
+servidor, pela `_mapa_previa` — o mapa é feito do corte, e corte não se
+calcula no navegador nem "só para navegar".
+
+O aviso que vem junto é o que fecha o buraco: **o primeiro gesto no editor
+já invalida o `.m4a` do disco**, e um `[01:29]` anotado ouvindo o arquivo
+velho passa a apontar para outro lugar em silêncio. `previa_no_disco`
+compara a duração do arquivo com o `mantido` de agora, com a mesma folga de
+0,15 s da fase 0 do `/anotar` — e é cego onde ela é cega (tirar 200 ms num
+lugar e devolver 200 ms em outro passa por igual). É a fase 0 do `/anotar`
+feita antes, por quem causou a diferença.
+
+**A seta do teclado para onde há o que ouvir, não onde há letra.** Eram 16,
+49 e 48 vãos com voz por vídeo fora do alcance do teclado — inclusive os
+que aceitam texto, que é justamente onde ele precisa chegar para escrever o
+que ouviu. O critério é o mesmo do `_corrigivel` no servidor, e pela mesma
+razão. Pausa muda continua de fora: lá não há nada para ouvir nem escrever.
+
 **Decisão de palavra caduca; trecho de tempo não.** Índice de token deixa de
 valer assim que a análise insere um token antes dele. Por isso cada decisão
 do `montagem.json` guarda o `s`/`e` da palavra em que foi tomada, e o
@@ -205,6 +302,51 @@ silêncio. É a mesma família de defeito que a checagem de selo do
 `confere_atualidade` existe para evitar, só que por um caminho novo:
 julgamento humano (aqui, ortografia) sumindo sem avisar.
 
+**Não se corta no escuro, e agora isso é verdade.** `parece_frase` promete,
+por escrito, que som alto sem texto legível não vira corte: "o trecho fica e
+aparece como `[?? N.Ns]` no revisao.txt para o passe de julgamento decidir".
+As passadas seguintes desmentiam a promessa — `marca_tentativas`,
+`marca_ecos` e `marca_cacoetes` decidem por TEXTO, e num `??` texto é
+exatamente o que não existe. Pior: o corte levava junto a PERGUNTA, porque
+`pendencias` pula token cortado — o trecho sumia do vídeo e do `revisao.txt`
+na mesma linha. `protege_naolidos` fecha isso, e corre DEPOIS das passadas
+automáticas e ANTES de `aplica_anotacoes`: regra não corta o que ninguém
+leu, gente continua cortando.
+
+MEDIDO (04/09/2026) nos 7 fluxos de `work/`: 20 tokens `??`, UM cortado por
+regra — 669,1 s do "as de espadas", 1,13 s marcado `tentativa`. Que havia
+fala ali não é suposição: o wav2vec2 do `align`, decodificado LIVRE em vez
+de alinhado, ouve "...sica, e isso é t...". Foi a única discordância entre
+os dois reconhecedores nos 114 cortes automáticos de ≥1 s dos 7 vídeos — nos
+outros 113 ambos ouvem a mesma vogal arrastada ou o mesmo silêncio. **Essa é
+a medição que responde "o Whisper está comendo fala?": não está.** O modelo
+é o `small`; trocar por `large-v3` custa ~15 min por vídeo em CPU e não
+consertaria nenhum dos 8 achados do `/anotar` no "as de espadas", que são
+todos de geometria e de regra.
+
+A guarda também recusa desfazer `anotado:`, embora `aplica_anotacoes` corra
+depois dela e o caso não possa acontecer pelo caminho normal. É de
+propósito: rodá-la fora de ordem (num teste, num script de medição) sobre um
+`stream.json` pronto ressuscitaria 9 trechos que uma anotação mandou cortar,
+e ressuscitar julgamento humano é o mesmo defeito de apagá-lo, do outro
+lado.
+
+**A segunda opinião sobre o tempo é do Whisper, e ela sai onde se confere.**
+Os seis outros achados do `conferir` medem o corte contra os tempos do
+ALINHADOR — os mesmos com que ele foi calculado. Quando é o alinhador que
+erra, todos concordam com o erro e ninguém reclama, que foi como o corte do
+IMG_0247 comeu "que muitas". `enterradas_pelo_whisper` é a única pergunta
+feita com um relógio independente, e até 04/09/2026 ela só era feita dentro
+do `_plano` — ou seja, só aparecia para quem já estava gastando minutos
+gerando áudio ou vídeo. O `conferir`, o comando que a doc manda rodar ANTES
+de ouvir justamente para não depender do ouvido, era o único lugar onde o
+aviso não existia. MEDIDO nos 7 fluxos: dispara em TODOS os 7, 26 palavras
+(2 a 7 por vídeo) — e a disputa "lâmina"/"mental," que o Rafael ouviu como
+um "ou" estranho estava entre elas. Hoje a função devolve a lista, o
+`_plano` a imprime e o `achados_corte` a lista como `PALAVRA ENTERRADA`; o
+`d` de `achados_corte` é obrigatório de propósito, porque parâmetro opcional
+ali seria uma lista de achados divergindo em silêncio da outra.
+
 **A passada mecânica pergunta o mesmo que a tela.** `Sessao.avisos` sempre
 soube dizer "essa palavra sobrou inteira", mas só para quem abre o editor;
 o `conferir` só acusava sobra acima de 0,15s, e uma palavra de 0,08s
@@ -220,6 +362,45 @@ inteira — medido no `de` de 100,19s do IMG_0248. Não se conserta baixando a
 folga: 0,06 é o erro de fronteira medido do alinhador. O `Sessao.avisos`
 pergunta e a tela diz; o conserto é a pessoa terminar com o botão de menos,
 que passa por cima da geometria.
+
+**Restaurar à mão vale para qualquer token, e por um tempo não valia para
+metade deles.** A anotação de julgamento entra no corte como TRECHO DE
+TEMPO (passo 4 do `spans_corte`), fora da camada de palavra, e o único
+lugar que escava token mantido de dentro de um trecho de tempo é o
+`_respeita_palavras`. Enquanto a lista que ele protegia fosse só
+`k == "palavra"`, restaurar uma `hesitacao` ou um `silencio` dentro de
+anotação era um clique que não fazia nada: o token voltava a `cut=False`,
+a tela o pintava de volta, e o vídeo continuava sem ele. MEDIDO no "as de
+espadas": cinco tokens seguidos restaurados dentro da mesma anotação, as
+quatro palavras voltaram inteiras e a quinta — uma `hesitacao` de 6,06 s,
+que o `resolve_suspeitos` fez de um bloco de áudio só — sobrou 0,06 s, e os
+0,06 nem eram dela: era a folga vazando da palavra vizinha. É a família de
+defeito de sempre, decisão humana sumindo em silêncio, na versão mais
+difícil de notar — some pela METADE, com o mesmo gesto dando dois destinos.
+
+Hoje o `_respeita_palavras` protege também o token cujo `why` está em
+`MAO_MANTEM`. A regra é estreita de propósito: é a frase que SÓ uma pessoa
+escreve ao restaurar, nunca a regra automática. MEDIDO nos três de
+calibração: IMG_0246 e IMG_0248 saem idênticos; o IMG_0247 muda 63 ms e
+perde uma emenda (71 → 70), e as duas diferenças são consequência direta de
+dois restauros que a pessoa já tinha feito.
+
+Isso só vale porque o editor passou a escrever o mesmo `why` que o
+`aplica_montagem` escreve. As duas implementações da mesma decisão
+discordavam, e era o editor que ficava com a versão velha da verdade: a
+caixa "Por que saiu" mostrava `anotado: O1 ...` num token já restaurado, e
+as três coisas que dependem de `MAO_MANTEM` — a defesa da geometria, a
+pendência que conta como respondida à mão, o motivo na tela — só passavam a
+valer depois de salvar e reabrir. `Sessao._aplica` guarda o `why` da
+proposta em `_why_base` pela mesma razão que o `_t_orig` guarda o texto
+original: desfazer o clique tem de devolver o motivo de antes dele.
+
+O aviso que acompanha isso dizia o contrário do que acontecia. O
+`Sessao.avisos` sempre soube a diferença entre "você ocultou e não saiu" e
+"você restaurou e não voltou", mas a lista **o que ouvir** rotulava as duas
+como `NÃO SAIU`, e no restauro isso é a desobediência trocada. Quem sabe
+qual é qual é o servidor, que manda o `estado`; a tela escolhe a palavra e
+não recalcula nada.
 
 **O passe de julgamento julga o que ENTENDEU, não o que está marcado.** O
 `revisao.txt` abre com um bloco `## PENDENCIAS`: a lista numerada de tudo
@@ -351,13 +532,18 @@ sem resposta automática vira pendência numerada, toda pendência está
 ancorada no texto, e a lista não incha —, e o laço da resposta: a
 pendência sem resposta chega ao `conferir`, a resposta casa pelo tempo
 mesmo com a lista renumerada, e o arrasto que a poda não levou vira medida
-(sem disparar na folga de desenho). Foi este teste que achou a `[disputa]`
-sumindo quando caía num token cortado.
+(sem disparar na folga de desenho), e a guarda do corte no escuro — regra
+não corta `??`, anotação corta, e o trecho protegido volta a ser pendência.
+Foi este teste que achou a `[disputa]` sumindo quando caía num token
+cortado. Nele mora também a promessa invertida: a pergunta sobre trecho
+que **já saiu** continua sendo cobrada até alguém restaurar ou responder,
+e uma vogal sustentada conta como um som e não como 200 letras.
 
 **Rode `conferir` antes de ouvir.** Ele lê o corte pela mesma função do
 `render` e lista só o suspeito: pendência sem resposta, anotação
 desobedecida, fala cortada que sobrevive, ilha curta, palavra raspada,
-arrasto que a poda não levou. Cada achado sai no tempo da fonte
+arrasto que a poda não levou, palavra que o Whisper põe dentro do corte.
+Cada achado sai no tempo da fonte
 *e* no da prévia. Sem ele, defeito de geometria só aparecia quando o Rafael
 ouvia — foi assim que seis defeitos chegaram juntos a ele, nenhum de
 julgamento de conteúdo. `conferir <video> --em 3:05` traduz um tempo da

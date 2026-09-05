@@ -133,6 +133,10 @@ Termine dizendo onde estão os arquivos, com caminho completo:
   as que ficaram (o único registro de que alguém olhou e decidiu manter)
 - o `.m4a` de áudio gerado no passo 4 — para ouvir enquanto edita
 
-E que os próximos passos, se/quando quiser, são o `editor` no navegador
-(ajuste fino visual, palavra por palavra) e o `render` (export final) —
-nenhum dos dois faz parte deste comando.
+E que o próximo passo é **ouvir o `.m4a` e anotar o que incomodar**, com o
+relógio do player (`[00:15] gaguejada "mas mas mas"`). Essas anotações
+entram pelo `/anotar "<nome do .m4a>"`, numa janela nova: ele traduz os
+tempos da prévia de volta para a fonte, corrige o áudio, e ainda pergunta
+se alguma daquelas observações ensina algo ao programa. Depois disso é que
+vêm o `editor` no navegador (ajuste fino visual, palavra por palavra) e o
+`render` (export final) — nenhum dos três faz parte deste comando.

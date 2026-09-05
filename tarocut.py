@@ -82,7 +82,22 @@ RE_ALONGAMENTO = re.compile(r"(.)\1{2,}")
 
 
 def eh_alongada(txt):
-    """Tem letra repetida 3+ vezes? ('queeee', 'ééé', 'naaao')"""
+    """Tem letra repetida 3+ vezes? ('queeee', 'ééé', 'naaao')
+
+    ACHADO NAO CONSERTADO (04/09/2026), medido nos 7 fluxos de work/: o
+    `.` das reticencias tambem e um caractere repetido 3 vezes, e e ele
+    que dispara 7 dos 8 cortes por `alongamento` do corpus - "ehm...",
+    "as...", "mais...", "são...", "a...", "ás...". So UM veio de letra
+    esticada de verdade (o "ééé" de 20,5s do "as de espadas"). Ou seja: a
+    regra que este docstring descreve quase nunca e a regra que roda, e
+    ela apaga palavra de conteudo ("mais", "são") por causa de como o
+    Whisper pontuou.
+
+    Nao foi mexido aqui de proposito: e decisao do `analyze`, entao mudar
+    a exige re-analisar todo video: os `transcript.md` perdem o selo e a
+    camada de texto apagado a mao se perde junto. E as tres palavras que
+    voltariam no IMG_0248 mudam um video de calibracao - isso quer ouvido,
+    nao regex."""
     return bool(RE_ALONGAMENTO.search(sem_acento(txt).lower()))
 
 
@@ -98,6 +113,39 @@ def letras_faladas(txt):
     except Exception:
         pass
     return max(1, len(chave(txt).replace(" ", "")))
+
+
+def letras_uma_vez(txt):
+    """`letras_faladas` contando corrida de letra repetida como UM som.
+
+    "ééééé..." com 200 caracteres nao sao 200 letras faladas: e UMA vogal
+    sustentada, e 20,5s dela e o tempo de um som so. Sem isto qualquer
+    medida de tempo contra texto se deixa enganar pelo proprio texto que
+    esta julgando - o "éé..." de 20,5s do "as de espadas" dava 9,7
+    caracteres por segundo, ritmo de fala fluente, e nada tinha o que
+    estranhar num corte de 27,5s.
+
+    Fica SEPARADA de `letras_faladas` de proposito, e nao e um conserto
+    dela: aquela decide CORTE (a cauda que `marca_arrastadas` poda) dentro
+    do `analyze`, esta decide PERGUNTA. Trocar a de baixo mudaria o corte
+    de todo video ja analisado, e isso e medicao que ninguem fez."""
+    return letras_faladas(RE_ALONGAMENTO.sub(lambda m: m.group(1), txt))
+
+
+def ritmo_mediano(st):
+    """Segundos por letra falada NESTE video, ou None se ha pouca palavra.
+
+    Cada pessoa fala num ritmo, e a mediana se adapta sozinha. Mora aqui,
+    e nao dentro de `marca_arrastadas`, porque duas partes precisam dela:
+    a poda de cauda, que corta, e a pendencia `texto nao explica o tempo`,
+    que pergunta. Duas medianas calculadas em dois lugares seriam dois
+    ritmos diferentes para o mesmo video."""
+    import statistics
+    pal = [t for t in st if t["k"] == "palavra" and chave(t["t"])]
+    if len(pal) < 20:
+        return None
+    return statistics.median((t["e"] - t["s"]) / letras_faladas(t["t"])
+                             for t in pal)
 
 
 def densidade_fala(txt, dur):
@@ -495,8 +543,19 @@ def resolve_suspeitos(stream, escuta, ch, sempre, db, hop, limiar):
         else:
             cortar, why = classifica_fala(txt, b - a, sempre, ch)
             rot = txt        # o eco e decidido depois, por marca_ecos
-        novos.append({"k": "hesitacao", "t": rot, "s": round(a, 3),
-                      "e": round(b, 3), "cut": cortar, "why": why})
+        novo = {"k": "hesitacao", "t": rot, "s": round(a, 3),
+                "e": round(b, 3), "cut": cortar, "why": why}
+        if mot:
+            # O QUE O WHISPER LEU antes de a recusa apagar a leitura. Fica
+            # gravado porque o editor mostra isso no vao e oferece como
+            # ponto de partida para escrever - sem esta linha, tudo o que
+            # sobrava de uma leitura recusada aqui era o motivo da recusa.
+            # As lacunas guardam o equivalente em `lacunas[].bruto`; estes
+            # tokens nascem DEPOIS de elas serem medidas e nao tinham onde.
+            # Nao entra no `selo_stream` (so k/s/e/cut), entao nao invalida
+            # transcript.md nenhum.
+            novo["ouviu"], novo["recusa"] = txt, mot
+        novos.append(novo)
         n += 1
     if n:
         stream[:] = novos
@@ -678,7 +737,7 @@ def marca_cacoetes(stream, sempre, contextual, cc):
 
 # ------------------------------------------ marcacao: tentativas de fala
 
-def detecta_tentativas(stream, ct, min_ngram=None):
+def detecta_tentativas(stream, ct, min_ngram=None, respiro_gap=None):
     """Objetivo 3: ela comeca uma frase, para, recomeca, ate acertar.
 
     Procura a mesma sequencia de >=min_ngram palavras reaparecendo pouco
@@ -704,7 +763,35 @@ def detecta_tentativas(stream, ct, min_ngram=None):
     aqui como default de parametro, que e um segundo lugar decidindo gosto
     de corte. `min_ngram` sobrescreve o do config e existe por um motivo
     so: o `revisar` roda esta mesma varredura mais frouxa para PERGUNTAR,
-    sem cortar nada (ver `cmd_revisar`)."""
+    sem cortar nada (ver `cmd_revisar`).
+
+    `respiro_gap` existe pelo mesmo motivo, e fecha um buraco que o
+    `min_ngram` sozinho nao alcanca. Os filtros 1 e 3 procuram o respiro
+    como TOKEN de lacuna, e pausa menor que `pausa_intocavel` (0,75s) nunca
+    vira token - nao ha o que encurtar, entao o `analyze` nao registra
+    nada. Para uma retomada refeita depressa, os dois filtros veem a
+    repeticao grudada no meio da sentenca: a forma exata do paralelismo
+    didatico que eles existem para proteger. Baixar `min_ngram` nao ajuda,
+    porque o que barra nao e o tamanho da repeticao - MEDIDO no "3 de
+    espadas", "que o amor e uma ferramenta para / que o amor e um caminho
+    para" repete QUATRO palavras (acima do limiar de corte) e mesmo assim
+    nao virou nem pergunta, separada por 0,50s de respiro.
+
+    Com `respiro_gap`, o filtro 1 tambem aceita o respiro medido em TEMPO
+    entre as duas palavras, e o filtro 3 aceita esse mesmo respiro como o
+    ponto onde ela travou. MEDIDO nos 11 fluxos de work/: 8 cadeias novas,
+    das quais 5 sao retomada de verdade - entre elas "nao e sempre que a
+    saida para um problema e bater o peito, matar... nao e sempre que a
+    saida para um problema de dificuldade e matar o problema no peito" (9
+    palavras identicas, a primeira abandonada no meio) e "Em Yala, todas
+    as... [0,74s] em Yala, todas as rainhas" do IMG_0247, que o CLAUDE.md
+    ja registrava como retomada escapada: ela passa um centesimo abaixo do
+    `pausa_intocavel`. Duas sao ANAFORA ("a gente tem os problemas, a gente
+    tem as dificuldades") e uma e duvidosa.
+
+    5 em 8 e bom para PERGUNTAR e pessimo para cortar, e por isso so o
+    `cmd_revisar` passa este parametro. Cortar as duas anaforas seria o
+    pior defeito deste programa."""
     min_ngram = ct["min_ngram"] if min_ngram is None else min_ngram
     janela_s, max_span = ct["janela"], ct["span_max"]
     max_palavras = ct["palavras_max"]
@@ -728,13 +815,31 @@ def detecta_tentativas(stream, ct, min_ngram=None):
                 continue
             # filtro 1: a retomada precisa vir depois de um respiro
             ant = stream[idx[b] - 1] if idx[b] > 0 else None
-            if ant is None or not _e_lacuna(ant):
+            if ant is None:
                 continue
-            achou = (b, m)
+            por_gap = False
+            if not _e_lacuna(ant):
+                # Sem token de lacuna, o respiro so existe como tempo entre
+                # as duas palavras. Quem corta nao olha para ele (ver o
+                # docstring); quem pergunta, sim - e paga mais caro pelo
+                # texto, porque respiro medido em tempo e evidencia mais
+                # fraca que um token: aqui vale o `min_ngram` do CORTE,
+                # nunca o do aviso. MEDIDO nos 11 fluxos: com o limiar do
+                # aviso (2) isto traz +16 perguntas, e as que ele acrescenta
+                # sao anafora ("nao e ignorar a dificuldade, nao e tipo
+                # assim reprimir", "de uma passagem, de uma transicao") -
+                # 5,4 perguntas por video, acima do teto de 4 que o config
+                # registra. Com o limiar do corte sao +7, e 4 delas sao
+                # retomada de verdade.
+                if (respiro_gap is None or m < ct["min_ngram"]
+                        or stream[idx[b]]["s"] - ant["e"] < respiro_gap):
+                    continue
+                por_gap = True
+            achou = (b, m, por_gap)
             break
         if not achou:
             continue
-        b, m = achou
+        b, m, por_gap = achou
         ini, fim = idx[a], idx[b]
         dur = stream[fim]["s"] - stream[ini]["s"]
         # Repeticao LONGA afrouxa os limites. Sete palavras identicas
@@ -750,8 +855,11 @@ def detecta_tentativas(stream, ct, min_ngram=None):
         # filtro 2: tentativa abandonada e curta; item de lista nao e
         if b - a > lim_pal:
             continue
-        # filtro 3: precisa existir o ponto onde ela travou
-        if not any(_e_lacuna(stream[j]) for j in range(ini, fim)):
+        # filtro 3: precisa existir o ponto onde ela travou. Quando o
+        # filtro 1 achou o respiro pelo tempo, ele JA e esse ponto - e o
+        # unico que existe, porque token de lacuna ali nao ha nenhum.
+        if not por_gap and not any(_e_lacuna(stream[j])
+                                   for j in range(ini, fim)):
             continue
         cadeias.append({
             "ini": ini, "fim": fim, "n": m, "dur": round(dur, 2),
@@ -894,7 +1002,10 @@ def pendencias_sem_resposta(pend, resp, iv):
 
     Uma pendencia se responde de tres jeitos, e os tres contam:
       - CORTANDO o trecho - a resposta e o proprio corte, e por isso a
-        pendencia que nao sobrevive ao `iv` nao e cobrada;
+        pendencia que nao sobrevive ao `iv` nao e cobrada. A excecao e a
+        `cortada` (`texto nao explica o tempo`), que ja nasce sobre trecho
+        cortado: ali o corte nao responde nada, e quem responde e o
+        restauro. Ver `parado` abaixo;
       - TRAZENDO de volta a mao um trecho marcado para sair (`MAO_MANTEM`)
         - a pessoa olhou aquele token e disse fica;
       - ESCREVENDO no respostas.json - unico jeito de dizer "fica" ou
@@ -922,13 +1033,24 @@ def pendencias_sem_resposta(pend, resp, iv):
     sem = []
     for q in pend:
         vivo = sum(max(0.0, min(q["y"], b) - max(q["x"], a)) for a, b in iv)
+        # `cortada` inverte as duas contas acima, e so ela: a pergunta e
+        # sobre audio que JA SAI ("o texto que justificou este corte nao
+        # explica o tempo dele"), entao cortar nao responde nada - o corte
+        # ja estava feito quando a pergunta nasceu. Responde-la e trazer o
+        # trecho de volta ou escrever no respostas.json. Sem esta inversao
+        # a pendencia nascia e sumia da cobranca no mesmo instante, que e o
+        # defeito que o `pendencias_sem_resposta` inteiro existe para
+        # fechar.
+        # `parado` = ninguem mexeu neste trecho: ele continua tocando (o
+        # normal) ou continua cortado (o `cortada`).
+        parado = (vivo <= 0.15) if q.get("cortada") else (vivo > 0.15)
         k = casa_resposta(q, resp)
         if k is not None:
             casadas.add(k)
-            if (resp[k]["resposta"] == "sai" and vivo > 0.15
-                    and q.get("proprio")):
+            quer = "fica" if q.get("cortada") else "sai"
+            if resp[k]["resposta"] == quer and parado and q.get("proprio"):
                 sem.append(dict(q, falta="PENDENCIA NAO OBEDECIDA"))
-        elif vivo > 0.15 and not q.get("mao"):
+        elif parado and not q.get("mao"):
             sem.append(dict(q, falta="PENDENCIA SEM RESPOSTA"))
     orfas = [r for k, r in enumerate(resp) if k not in casadas]
     return sem, orfas
@@ -1019,13 +1141,11 @@ def marca_arrastadas(stream, sempre, C):
     Palavra de UMA letra arrastada e cacoete puro e sai inteira. Palavra
     maior tem so a CAUDA cortada, preservando o comeco - "em" arrastado por
     2,7s vira "em", nao vira nada. E o que um editor humano faz."""
-    import statistics
     ca = C["arrastada"]
-    pal = [t for t in stream if t["k"] == "palavra" and chave(t["t"])]
-    if len(pal) < 20:
+    med = ritmo_mediano(stream)
+    if med is None:
         return 0
-    med = statistics.median((t["e"] - t["s"]) / letras_faladas(t["t"])
-                            for t in pal)
+    pal = [t for t in stream if t["k"] == "palavra" and chave(t["t"])]
     n = 0
     for t in pal:
         if t["cut"] or t.get("prot"):
@@ -1163,6 +1283,56 @@ def protege_enumeracoes(stream, cn):
             # sequencia recusada nao consome o que vem depois: a contagem de
             # verdade pode comecar dentro dela.
             i += 1
+    return n
+
+
+def protege_naolidos(stream):
+    """Token `??` e o programa dizendo que NAO SABE o que foi dito ali.
+
+    `parece_frase` e `eh_hesitacao` ja decidiram MANTER esse trecho, e o
+    comentario de `parece_frase` promete o motivo com todas as letras: "nao
+    se corta no escuro - o trecho fica e aparece como [?? N.Ns] no
+    revisao.txt para o passe de julgamento decidir". So que as passadas
+    seguintes decidem por TEXTO - tentativa, eco, cacoete, gaguejada -, e
+    num `??` texto e exatamente o que nao existe. Elas cortavam por cima da
+    promessa.
+
+    E o corte levava a PERGUNTA junto: a lista de pendencias pula token
+    cortado (`if t["cut"] or t["k"] != "hesitacao"`), entao o trecho saia do
+    video e do revisao.txt na mesma linha. Julgamento humano sumindo em
+    silencio, por um caminho novo.
+
+    MEDIDO (04/09/2026) nos 7 fluxos de work/: 20 tokens `??`, UM cortado
+    por regra - 669,1s do "as de espadas", 1,13s marcado `tentativa`. Nos
+    outros 19 esta guarda nao muda nada. Que ali havia fala de verdade nao e
+    suposicao: o wav2vec2 do `align`, decodificado livre em vez de alinhado,
+    ouve "...sica, e isso e t...". Foi a UNICA discordancia entre os dois
+    reconhecedores nos 114 cortes automaticos de 1s ou mais dos 7 videos -
+    nos outros 113 os dois ouvem a mesma vogal arrastada ou o mesmo silencio.
+
+    Nao protege de `ela mandou cortar`: ali quem mandou foi ela, em voz
+    alta, e o que ela quer fora pode muito bem ser o que ninguem leu. Nem de
+    anotacao - `aplica_anotacoes` corre depois desta linha de proposito."""
+    n = 0
+    for t in stream:
+        if not t["cut"] or not str(t["t"]).startswith("??"):
+            continue
+        # `ela mandou cortar` e `anotado:` sao GENTE, nao regra: uma
+        # e ela em voz alta, a outra o passe de julgamento.
+        # `aplica_anotacoes` corre depois desta linha, entao o
+        # segundo nunca chega aqui pelo caminho normal - a linha
+        # existe para que chamar esta funcao FORA de ordem (num
+        # teste, num script de medicao) nao desfaca julgamento
+        # humano, que e o defeito que ela propria existe para
+        # fechar. Medido: sem ela, rodar a guarda sobre os
+        # stream.json prontos de work/ ressuscitava 9 trechos que
+        # uma anotacao tinha mandado cortar.
+        if str(t["why"]).startswith(("ela mandou cortar",
+                                     "anotado:")):
+            continue
+        t["cut"] = False
+        t["why"] = f"protegido: nao lido ({t['why']})"
+        n += 1
     return n
 
 
@@ -1313,6 +1483,7 @@ def cmd_analyze(a):
     if n_eco:
         print(f"[analyze] retomadas colapsadas: {n_eco}")
     n_prot = protege_enumeracoes(stream, C["contagem"])
+    n_esc = protege_naolidos(stream)
     anot = encaixa_anotacoes(stream, carrega_anotacoes(d))
     for a in anot:
         if a.get("ajustada"):
@@ -1322,6 +1493,10 @@ def cmd_analyze(a):
     print(f"[analyze] cacoetes marcados: {n_cac}")
     if n_prot:
         print(f"[analyze] contagens protegidas: {n_prot} tokens preservados")
+    if n_esc:
+        print(f"[analyze] cortes no escuro desfeitos: {n_esc} trecho(s) "
+              f"`??` devolvidos ao video e ao revisao.txt - a regra "
+              f"decidia por um texto que nao existe")
     if anot:
         print(f"[analyze] anotacoes de julgamento: {len(anot)} trechos, "
               f"{n_anot} tokens novos")
@@ -1791,6 +1966,10 @@ def aplica_correcoes(stream, c, rotulo):
                  f"novo, ou apague o correcoes.json.")
     for dec in c.get("itens") or []:
         stream[dec["i"]]["t"] = dec["novo"]
+        # quem escreveu este texto foi uma PESSOA, e isso muda quem tem o
+        # que perguntar sobre ele (ver `pendencias`). Nao entra no
+        # `selo_stream`, que so olha k/s/e/cut.
+        stream[dec["i"]]["mao_texto"] = True
 
 
 def spans_da_mao(stream, m, folga=0.0):
@@ -2014,7 +2193,8 @@ def _snap(cortes, db, hop, raio):
 
 
 def _respeita_palavras(cortes, stream, C):
-    """Rede de seguranca final: nenhuma emenda encosta em palavra mantida.
+    """Rede de seguranca final: nenhuma emenda encosta em palavra mantida
+    - nem em token que uma pessoa mandou manter, seja ele qual for.
 
     As etapas anteriores ja tentam isso cada uma a seu modo, e mesmo assim
     escapou "realmente" comecando cortado. Aqui a regra e imposta uma vez so,
@@ -2033,8 +2213,38 @@ def _respeita_palavras(cortes, stream, C):
     juntado ao token, entao ela morreu junto, sem aparecer em lugar nenhum.
     Era o caminho pelo qual uma decisao humana sumia em silencio."""
     folga = C["corte"]["folga_palavra"]
+    # Palavra mantida, MAIS o token que uma PESSOA mandou manter, seja
+    # qual for o `k`. A lista era so `k == "palavra"`, e por isso o
+    # restauro a mao funcionava pela METADE: no "as de espadas" cinco
+    # tokens seguidos foram restaurados dentro da mesma anotacao, os
+    # quatro que eram palavra voltaram inteiros e o quinto - uma
+    # `hesitacao` de 6,06s, que o `resolve_suspeitos` fez de um bloco de
+    # audio so - sobrou 0,06s. E os 0,06 nem eram dele: era a folga
+    # vazando da borda da palavra vizinha. Cinco cliques iguais, dois
+    # destinos, e nada na tela dizendo qual foi qual - julgamento humano
+    # sumindo pela metade, que e pior de perceber do que sumir inteiro.
+    #
+    # A anotacao entra no corte como TRECHO DE TEMPO (passo 4 do
+    # `spans_corte`), fora da camada de palavra; este e o unico lugar que
+    # escava token mantido de dentro de um trecho de tempo. Enquanto ele
+    # so olhasse `k`, restaurar hesitacao ou silencio dentro de anotacao
+    # nao podia fazer nada, por mais explicito que fosse o clique.
+    #
+    # `MAO_MANTEM` e estreito de proposito: e o `why` que SO uma pessoa
+    # escreve ao restaurar (ver `aplica_montagem` e `Sessao._aplica`).
+    # Proteger `hesitacao`/`silencio` em geral mudaria o corte automatico
+    # de todo video; assim so muda onde alguem clicou. MEDIDO nos tres de
+    # calibracao: IMG_0246 e IMG_0248 (sem montagem.json) saem byte a
+    # byte iguais - 0 emenda, 0 token. O IMG_0247 tem duas `hesitacao`
+    # restauradas a mao e muda em 63 ms: 71 emendas viram 70, porque a
+    # emenda de 22 ms que sobrava dentro do "Mae! Mais do..." reaberto
+    # deixa de existir (menos emenda e melhor), e o `cartas` oculto a mao
+    # em 159,57 passa de 19 para 60 ms vivos - a folga de 0,06 que agora
+    # defende o "As cartas" reaberto ao lado dele, a mesma conta que ja
+    # vale entre duas palavras quaisquer.
     pal = [t for t in stream
-           if t["k"] == "palavra" and not t["cut"] and not t.get("prot")]
+           if not t["cut"] and not t.get("prot")
+           and (t["k"] == "palavra" or t.get("why") in MAO_MANTEM)]
     saida = []
     for c in cortes:
         pedacos = [[c[0], c[1]]]
@@ -2601,8 +2811,9 @@ def anotacoes_desobedecidas(anot, iv, tol=0.15, mao=None):
     return fora
 
 
-def confere_pelo_whisper(d, C, stream, iv, rotulo):
-    """Ultima conferencia antes de gastar minutos gerando audio ou video.
+def enterradas_pelo_whisper(d, C, stream, iv):
+    """Palavras que era para FICAR e que, pelo relogio do WHISPER, estao
+    dentro de um pedaco removido. -> [(fundura, fracao viva, s, e, texto)]
 
     Todo o resto do programa raciocina sobre os tempos do ALINHADOR. Quando
     eles estao errados, o erro e coerente do comeco ao fim: o corte cai onde
@@ -2612,16 +2823,25 @@ def confere_pelo_whisper(d, C, stream, iv, rotulo):
     pelo audio ela comeca em 600,1, dentro dela.
 
     Aqui a pergunta e feita com a unica medida INDEPENDENTE que existe, a do
-    Whisper: alguma palavra marcada para FICAR cai dentro de um pedaco
-    removido? Nao conserta nada - so avisa. O conserto e mudar a anotacao, e
-    anotacao quem escreve e uma pessoa."""
+    Whisper. Nao conserta nada - so mede. O conserto e mudar a anotacao (ou
+    a borda no editor), e isso quem escreve e uma pessoa.
+
+    A pergunta mora aqui, uma vez so, porque quem pergunta sao DOIS: o
+    `_plano`, que avisa antes de gastar minutos gerando audio ou video, e o
+    `achados_corte`, que lista para quem esta conferindo (comando e editor).
+    Era so do `_plano` ate 04/09/2026 - e o `conferir`, o comando que a doc
+    manda rodar ANTES de ouvir justamente para nao depender do ouvido, era o
+    unico lugar onde o aviso nao aparecia. MEDIDO nos 7 fluxos de work/:
+    dispara em TODOS os 7, 26 palavras (2 a 7 por video); a disputa
+    "lamina"/"mental," que o Rafael ouviu como um "ou" estranho no meio do
+    audio estava entre elas, e para chegar nela era preciso gerar o audio."""
     p = d / "words.json"
     if not p.exists():
-        return 0
+        return []
     W = jload(p)["words"]
     pal = [t for t in stream if t["k"] == "palavra"]
     if len(W) != len(pal):
-        return 0            # sem correspondencia 1:1 nao da para conferir
+        return []           # sem correspondencia 1:1 nao da para conferir
 
     fundo = C["alinhamento"]["enterrada_min"]
     suspeitas = []
@@ -2651,16 +2871,23 @@ def confere_pelo_whisper(d, C, stream, iv, rotulo):
             continue
         fund = min(min(abs(meio - a), abs(meio - b)) for a, b in iv)
         if fund >= fundo:
-            suspeitas.append((fund, viva / (e0 - s0), s0, w["w"]))
+            suspeitas.append((fund, viva / (e0 - s0), s0, e0, w["w"]))
+    suspeitas.sort(reverse=True)
+    return suspeitas
+
+
+def confere_pelo_whisper(d, C, stream, iv, rotulo):
+    """A mesma medida de `enterradas_pelo_whisper`, dita no console de quem
+    esta prestes a gastar minutos gerando audio ou video."""
+    suspeitas = enterradas_pelo_whisper(d, C, stream, iv)
     if not suspeitas:
         return 0
-
-    suspeitas.sort(reverse=True)
     print(f"[{rotulo}] AVISO: {len(suspeitas)} palavra(s) que deviam FICAR "
           f"estao enterradas dentro de um corte, pelos tempos do Whisper.")
     print(f"[{rotulo}] o alinhamento desse trecho provavelmente errou. "
-          f"Ouça esses pontos antes de aceitar o corte:")
-    for fund, frac, s0, txt in suspeitas[:8]:
+          f"Ouça esses pontos antes de aceitar o corte (o `conferir` lista "
+          f"todas, com o tempo na previa):")
+    for fund, frac, s0, _e0, txt in suspeitas[:8]:
         print(f"    {s0:8.2f}s  {txt!r}  ({fund:.1f}s dentro do corte, "
               f"sobra {frac:.0%})")
     if len(suspeitas) > 8:
@@ -2870,7 +3097,25 @@ def zonas_suspeitas(st, W, choques, junta=3.0, larg_min=1.0):
     return [(a, b, n) for a, b, n in z if n >= 2 and b - a >= larg_min]
 
 
+# `why` de quem decidiu olhando o TEXTO, e nao a acustica nem o relogio.
+# Forma de regra, nao taxa - por isso mora aqui e nao no config.toml.
+#
+# A distincao existe por causa de uma pergunta so: quando o tempo removido
+# nao cabe no texto que a regra leu, o texto e que esta errado. Isso so faz
+# sentido de perguntar a quem decidiu POR texto. As decisoes acusticas
+# ("voz sem texto", "pausa", "nao e fala N car/s") ja mediram o tempo por
+# conta propria e nao tem o que estranhar nele; "arrastada" e o proprio
+# relogio julgando; "anotado:" e uma pessoa.
+CORTE_POR_TEXTO = ("alongamento", "retomada colapsada", "cacoete",
+                   "muleta isolada", "gaguejada", "tentativa",
+                   "ela mandou cortar", "hesitação recuperada")
+
 EXPLICA_PENDENCIA = {
+    "texto nao explica o tempo":
+        "a regra cortou por causa do TEXTO, e o texto nao da conta do "
+        "tempo que sai. Onde o Whisper nao conseguiu ler, ele escreve "
+        "um cacoete plausivel e curto no lugar de fala que existe: "
+        "ouca o trecho antes de deixar sair.",
     "texto reconstruido":
         "leitura de baixa confianca de um trecho que o Whisper nao "
         "leu. Se nao faz sentido no assunto da aula, e ELE que sai.",
@@ -2961,8 +3206,22 @@ def pendencias(st, C, vocab):
     # forma - esta no sentido, e quem le o sentido e o passe de julgamento.
     #
     # Sobram 0 a 4 perguntas por video, cada uma com o texto citado.
+    #
+    # `respiro_gap` alcanca a retomada RAPIDA, que o `min_ngram` sozinho
+    # nao ve: pausa abaixo de `pausa_intocavel` nao vira token, e sem token
+    # os filtros 1 e 3 leem a retomada como paralelismo (ver
+    # `detecta_tentativas`). O numero e o `gap_min` do [silencio] porque e
+    # a mesma pergunta que ele ja responde - "este vao entre duas palavras
+    # conta como lacuna?" -, e um segundo numero para decidir isso seria um
+    # segundo lugar decidindo a mesma coisa.
+    #
+    # Custo MEDIDO nos 11 fluxos de work/: as perguntas `retomada?` vao de
+    # 10 para 14 no total - 1,3 por video, pior caso 4, dentro do teto que
+    # este bloco registra. Sao 8 cadeias novas, mas metade cai em trecho
+    # que ja esta saindo e o filtro logo abaixo a descarta sozinho.
     for c in detecta_tentativas(st, C["tentativa"],
-                                C["tentativa"]["min_ngram_aviso"]):
+                                C["tentativa"]["min_ngram_aviso"],
+                                respiro_gap=C["silencio"]["gap_min"]):
         pals = [st[j] for j in range(c["ini"], c["fim"])
                 if st[j]["k"] == "palavra"]
         if not pals or sum(1 for t in pals if not t["cut"]) <= len(pals) / 2:
@@ -2972,8 +3231,62 @@ def pendencias(st, C, vocab):
                  f"Descartaria: {c['descartado'][:70]!r}",
                  st[c["ini"]]["s"], st[c["fim"] - 1]["e"])
 
+    # Corte automatico cujo TEMPO o proprio texto que o justificou nao
+    # explica. E a unica pendencia sobre audio que JA SAI, e existe porque
+    # o defeito que ela pega nao deixa marca em lugar nenhum: no "as de
+    # espadas" um corte de 27,5s (35,46-62,92s) saiu inteiro sem uma
+    # pergunta, e o Rafael so o descobriu ouvindo a FONTE - dos 27,5s, 9,6
+    # eram mesmo hesitacao e 17,9 eram fala que o Whisper nao transcreveu.
+    # Nao havia `[??]` (que `protege_naolidos` cobre), nao havia `[rec:]`,
+    # nao havia `VOZ` na marca: o corte tinha texto, so que um texto
+    # inventado - "éé..." repetido 200 vezes e "profunda, mais potente.".
+    #
+    # A pergunta e a mesma que `marca_arrastadas` ja faz para podar cauda
+    # ("este tempo cabe no que esta escrito?"), com os MESMOS numeros dela,
+    # e falhou ali por duas razoes independentes: `marca_cacoetes` corre
+    # antes e ja tinha cortado o token (e `marca_arrastadas` pula token
+    # cortado), e mesmo se olhasse, `letras_faladas` conta 200 letras num
+    # "éé..." de uma vogal so - o que fazia 20,5s de um som parecerem
+    # ritmo de fala normal. Por isso aqui o texto passa por
+    # `letras_uma_vez`.
+    #
+    # MEDIDO nos 7 fluxos de work/, sobre 216 cortes automaticos de >=1s:
+    # dispara 2 vezes, as duas no MESMO corte de 27,5s (o "éé..." de 20,54s
+    # e o "profunda, mais potente." de 6,06s). Sem o piso de
+    # `corte_por_texto_min` seriam 8, e as outras 6 (1,40 a 2,27s) sao
+    # cacoete de verdade - "Eeeeee" sustentado, "É... isso.".
+    med = ritmo_mediano(st)
+    for i, t in enumerate(st if med is not None else []):
+        if not t["cut"] or t["k"] == "silencio":
+            continue
+        why = str(t.get("why", ""))
+        dur = t["e"] - t["s"]
+        if (dur < C["revisao"]["corte_por_texto_min"]
+                or not why.startswith(CORTE_POR_TEXTO)):
+            continue
+        cabe = med * letras_uma_vez(t["t"])
+        if dur < cabe * C["arrastada"]["fator"]:
+            continue
+        pergunta(i, "texto nao explica o tempo",
+                 f"{dur:.1f}s saem como {why[:26]!r}, e o texto "
+                 f"({t['t'][:24]!r}) da conta de {cabe:.1f}s",
+                 t["s"], t["e"])
+        # A unica pendencia que nasce sobre trecho JA CORTADO, e por isso a
+        # unica em que o corte nao e resposta. Ver `pendencias_sem_resposta`.
+        pend[-1]["cortada"] = True
+        pend[-1]["proprio"] = True
+
     for i, t in enumerate(st):
         if t["cut"] or t["k"] != "hesitacao":
+            continue
+        if t.get("mao_texto"):
+            # o texto deste token foi escrito A MAO no editor, ouvindo. Nao
+            # ha o que perguntar: "texto reconstruido" e a duvida sobre uma
+            # LEITURA de confianca baixa do Whisper, e aqui nao houve
+            # leitura nenhuma. Sem esta linha, escrever o que se ouve num
+            # vao criava na hora uma pendencia sobre a propria frase que a
+            # pessoa acabou de digitar - alarme disparando onde alguem ja
+            # decidiu, que e o defeito que este arquivo mais persegue.
             continue
         if str(t["t"]).startswith("??"):
             pergunta(i, "som alto sem texto", f"{t['e']-t['s']:.1f}s")
@@ -3226,42 +3539,32 @@ def _mapa_previa(iv):
     return para_fonte, para_previa
 
 
-def cmd_conferir(a):
-    """Confere a GEOMETRIA do corte, nao o texto.
+def achados_corte(stream, C, iv, anot, mont, pend, resp, d):
+    """Todo suspeito que a GEOMETRIA deste corte produz, numa lista so.
 
-    Existe porque `revisao.txt` mostra o que as palavras DIZEM e nao onde a
-    lamina cai. Farelo de palavra, ilha de 0,2s, fala sobrevivendo dentro de
-    trecho mantido: nada disso aparece la. Foi assim que seis defeitos
-    chegaram ao Rafael de uma vez - nenhum era erro de julgamento de
-    conteudo, todos eram de geometria, e a unica rede era o ouvido dele.
+    Ficou fora do `cmd_conferir` quando o editor passou a fazer a mesma
+    pergunta na tela. Antes disso eram dois mundos: o `conferir` achava 25
+    pontos no IMG_0248 e o painel do editor mostrava zero deles, porque o
+    painel so sabia de anotacao desobedecida e de palavra que a pessoa
+    mandou sumir e nao sumiu. Quem estava editando nao tinha como saber que
+    havia 25 coisas para ouvir sem sair do editor, rodar um comando e ler
+    um txt em segundos da fonte - numeros que a folha nao mostra em lugar
+    nenhum.
 
-    Le pela MESMA funcao que o `audio` e o `render` usam. Ler o
-    `graph_audio.txt` seria ler o corte anterior, nao o de agora.
+    E a mesma razao pela qual `intervalos()` e uma funcao so: duas
+    implementacoes da mesma pergunta divergem, e a que diverge em silencio
+    e sempre a que ninguem esta olhando.
 
-    Cada achado sai nos dois tempos: o da fonte, para anotar, e o da previa,
-    para conferir de ouvido sem contar no dedo.
+    `d` e a pasta de trabalho, e e obrigatorio de proposito: sem ela nao da
+    para ler o `words.json`, e a pergunta que depende dele - a palavra
+    enterrada, item 6 - sumiria de quem esquecesse de passar a pasta. Um
+    parametro opcional aqui seria uma lista de achados que diverge da outra
+    em silencio, que e exatamente o que esta funcao existe para impedir.
 
-    NAO confere "emenda pousada em ponto alto do envelope". Foi tentado:
-    com o piso no percentil 5 e o alarme em 25 dB acima dele, disparava em
-    51 das 74 emendas do IMG_0247 e em 51 das 71 do IMG_0248. E esperado -
-    a emenda encosta na palavra mantida por construcao, e ali sempre ha voz.
-    Alarme que dispara em 70% das emendas e papel de parede. O que aquele
-    teste queria pegar - silaba comida - virou a folga de 0,06 no
-    config.toml, que ataca a causa em vez do sintoma."""
-    C, d, stream, dur, db, hop, anot, mont, corr = _base(a.video, "conferir",
-                                                         a.ignorar_transcript)
-    iv = intervalos(stream, C, dur, db, hop, anot, mont)
-    para_fonte, para_previa = _mapa_previa(iv)
-    mantido = sum(b - x for x, b in iv)
-
-    if getattr(a, "em", None):
-        p = a.em.split(":")
-        t = sum(float(x) * 60 ** i for i, x in enumerate(reversed(p)))
-        print(f"[conferir] previa {hhmmss(t)} = fonte {para_fonte(t):.2f}s "
-              f"({hhmmss(para_fonte(t))})")
-        return
-
+    Devolve (achados, orfas). Cada achado e a tupla ordenavel
+    (tempo na previa, rotulo, ini na fonte, fim na fonte, texto)."""
     achados = []
+    _, para_previa = _mapa_previa(iv)
 
     def diz(rot, x, y, txt):
         achados.append((para_previa(x), rot, x, y, txt))
@@ -3278,8 +3581,7 @@ def cmd_conferir(a):
     #    o trecho (a resposta e o proprio corte, e por isso `iv` entra na
     #    conta) ou escrevendo no `respostas.json` - o unico jeito de dizer
     #    "fica", que nao deixa marca em lugar nenhum.
-    pend = pendencias(stream, C, carrega_vocabulario(d))
-    sem, orfas = pendencias_sem_resposta(pend, carrega_respostas(d), iv)
+    sem, orfas = pendencias_sem_resposta(pend, resp, iv)
     for q in sem:
         diz(q["falta"], q["s"], q["y"], f"{q['rot']}: {q['desc'][:64]}")
 
@@ -3411,10 +3713,71 @@ def cmd_conferir(a):
         diz("REPETICAO AUDIVEL", x["s"], y["e"],
             f"{x['t']!r} + {y['t']!r} | {y['s']-x['e']:.2f}s na fonte")
 
+    # 6. Palavra mantida que, pelo relogio do WHISPER, esta enterrada dentro
+    #    do corte. Os outros cinco itens medem o corte contra os tempos do
+    #    ALINHADOR - os mesmos com que ele foi calculado. Quando e o
+    #    alinhador que erra, todos eles concordam com o erro e nao ha o que
+    #    reclamar; a unica segunda opiniao que existe neste programa e a do
+    #    Whisper, e ela ja estava escrita em `enterradas_pelo_whisper`.
+    #
+    #    So que a resposta so aparecia no console de quem gerava audio ou
+    #    video. Quem roda o `conferir` para nao depender do ouvido - que e o
+    #    que a doc manda fazer ANTES de ouvir - nao via nenhuma. MEDIDO nos
+    #    7 fluxos: 26 palavras, 2 a 7 por video, todas invisiveis aqui.
+    #
+    #    O tempo da FONTE aqui e o do Whisper, e nao o do alinhador: quando
+    #    os dois discordam, e o do alinhador que esta sob suspeita. Na
+    #    previa cai na emenda mais proxima, que e onde se ouve o buraco.
+    for fund, frac, s0, e0, txt in enterradas_pelo_whisper(d, C, stream, iv):
+        diz("PALAVRA ENTERRADA", s0, e0,
+            f"{txt[:20]!r} | {fund:.1f}s dentro do corte, sobra {frac:.0%} "
+            f"| tempo do Whisper, o alinhador discorda")
+
     # ORDEM DE ESCUTA, nao ordem de categoria. Quem confere ouve o .m4a do
     # comeco ao fim uma vez so; uma lista agrupada por tipo de defeito obriga
     # a pular para tras seis vezes.
     achados.sort()
+    return achados, orfas
+
+
+def cmd_conferir(a):
+    """Confere a GEOMETRIA do corte, nao o texto.
+
+    Existe porque `revisao.txt` mostra o que as palavras DIZEM e nao onde a
+    lamina cai. Farelo de palavra, ilha de 0,2s, fala sobrevivendo dentro de
+    trecho mantido: nada disso aparece la. Foi assim que seis defeitos
+    chegaram ao Rafael de uma vez - nenhum era erro de julgamento de
+    conteudo, todos eram de geometria, e a unica rede era o ouvido dele.
+
+    Le pela MESMA funcao que o `audio` e o `render` usam. Ler o
+    `graph_audio.txt` seria ler o corte anterior, nao o de agora.
+
+    Cada achado sai nos dois tempos: o da fonte, para anotar, e o da previa,
+    para conferir de ouvido sem contar no dedo.
+
+    NAO confere "emenda pousada em ponto alto do envelope". Foi tentado:
+    com o piso no percentil 5 e o alarme em 25 dB acima dele, disparava em
+    51 das 74 emendas do IMG_0247 e em 51 das 71 do IMG_0248. E esperado -
+    a emenda encosta na palavra mantida por construcao, e ali sempre ha voz.
+    Alarme que dispara em 70% das emendas e papel de parede. O que aquele
+    teste queria pegar - silaba comida - virou a folga de 0,06 no
+    config.toml, que ataca a causa em vez do sintoma."""
+    C, d, stream, dur, db, hop, anot, mont, corr = _base(a.video, "conferir",
+                                                         a.ignorar_transcript)
+    iv = intervalos(stream, C, dur, db, hop, anot, mont)
+    para_fonte, para_previa = _mapa_previa(iv)
+    mantido = sum(b - x for x, b in iv)
+
+    if getattr(a, "em", None):
+        p = a.em.split(":")
+        t = sum(float(x) * 60 ** i for i, x in enumerate(reversed(p)))
+        print(f"[conferir] previa {hhmmss(t)} = fonte {para_fonte(t):.2f}s "
+              f"({hhmmss(para_fonte(t))})")
+        return
+
+    pend = pendencias(stream, C, carrega_vocabulario(d))
+    achados, orfas = achados_corte(stream, C, iv, anot, mont, pend,
+                                   carrega_respostas(d), d)
     L = [f"# {Path(a.video).stem} | {len(iv)} emendas | "
          f"{hhmmss(mantido)} de {hhmmss(dur)}",
          "# ouca na ordem: a coluna PREVIA e o tempo no .m4a.",
@@ -3433,6 +3796,10 @@ def cmd_conferir(a):
          "corte; o corte pode ter criado a gagueira.",
          "# ARRASTO SOBREVIVE = a poda de cauda arrastada nao coube no "
          "corte; o rabo continua audivel (conserto: montagem.json).",
+         "# PALAVRA ENTERRADA = pelo relogio do WHISPER essa palavra "
+         "mantida esta dentro do corte, longe da emenda. Quem errou ali e "
+         "o alinhador, nao o corte: a borda foi ancorada num tempo que a "
+         "palavra nao ocupa (conserto: montagem.json, ouvindo).",
          ""]
     for p, rot, x, y, txt in achados:
         L.append(f"{hhmmss(p)}  {rot:24s} fonte {x:8.2f}-{y:<8.2f} {txt}")

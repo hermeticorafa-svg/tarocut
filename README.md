@@ -133,6 +133,21 @@ tudo o que não vai sair no .mov — inclusive o que as anotações do passe de
 julgamento tiraram. Não tem linha do tempo, não tem forma de onda: é o
 texto.
 
+Quatro marcas, e cada uma responde uma pergunta diferente:
+
+| marca | o que quer dizer |
+|---|---|
+| letra riscada em **cinza** | sai do vídeo, e quem mandou foi uma regra do programa |
+| letra riscada em **azul** | sai do vídeo, e quem mandou foi você, no passe de julgamento — o motivo que você escreveu aparece ao pousar o mouse |
+| tracinho **cinza contínuo** | silêncio ocultado ali; a largura cresce com o tanto |
+| tracinho **pontilhado marrom** | **você falou e o Whisper não leu.** Aparece mesmo quando nada foi cortado — se estiver assim, aquela fala continua no vídeo sem uma letra na tela. Ao pousar o mouse: quanto é, quanto sobra, e o que o Whisper chegou a ouvir antes de o programa recusar a leitura |
+
+No pontilhado marrom vale o **botão direito → escrever o que se ouve**:
+onde há fala e não há texto, você digita o que ouviu. Quando a recusa foi
+por dúvida do Whisper, a caixa já abre com o palpite dele para você
+confirmar ou corrigir. Isso não muda um milissegundo do corte — é texto,
+para a legenda que uma etapa futura vai gerar.
+
 Clique numa palavra e ela é selecionada; arraste para pegar um trecho.
 Aparecem quatro botõezinhos, um par de cada lado: **o de menos esconde mais
 um tanto daquele lado, o de mais devolve.** O tanto é a *unidade*, escolhida
@@ -141,8 +156,11 @@ exato, então dá para tatear. `backspace` oculta a palavra inteira (e
 restaura, se já estiver oculta); `ctrl+clique` põe o cursor entre duas
 letras, para quando o corte tem de cair no meio de uma palavra.
 
-**Botão direito no texto**: tocar a seleção, ou tocar dali em diante —
-sempre o corte, nunca o original, com `espaço` pausando; numa palavra só
+**Botão direito no texto**: tocar a seleção, ou tocar dali em diante — o
+corte, com `espaço` pausando — e **tocar o original (sem o corte)**, que é
+a tecla `o` e a única coisa da tela que ignora a montagem: toca a seleção
+com 0,35 s de folga dos dois lados, para você ouvir o que a lâmina levou e
+como ficou a emenda. Numa palavra só
 (nunca num trecho de várias), também **corrigir transcrição** — o Whisper
 erra o texto às vezes, e essa correção é só ortografia: não muda quando a
 palavra começa/termina nem se ela sai do vídeo, e serve para a legenda que
@@ -154,6 +172,21 @@ O que você faz aqui vai para `work/<video>/montagem.json` (o corte) e
 `work/<video>/correcoes.json` (o texto), sozinho, a cada gesto — não há
 botão de salvar. O `render` lê o primeiro, então o corte que sai é o que
 você ouviu. `ctrl+z` desfaz os dois.
+
+**O painel do canto responde três coisas.** *O que ouvir* é a mesma lista
+do `conferir`, calculada pela mesma função, agora sem sair da tela e
+atualizada a cada gesto: pendência sem resposta, anotação que não saiu,
+fala marcada para sair que continua tocando, ilha curta, palavra raspada,
+repetição que o próprio corte criou. Cada linha corre no relógio da
+**prévia** — a ordem em que você vai ouvir — e leva você até a palavra com
+um clique. *Ir para* faz o caminho inverso: você digita `1:29`, o tempo que
+anotou ouvindo o `.m4a`, e a tela vai até a palavra que soa ali. E se o
+`.m4a` do disco tiver deixado de ser este corte — basta um gesto seu para
+isso —, o painel avisa em vermelho, porque a partir daí os tempos que você
+anotou apontam para outro lugar.
+
+As setas `←` `→` andam palavra a palavra e **param também nos pontilhados
+marrons**, que é onde você escreve o que ouviu.
 
 O botão **Abrir…**, no canto do painel, troca de vídeo sem passar pela
 linha de comando — só lista o que já rodou `run`/`analyze` (tem
@@ -185,15 +218,41 @@ de volta:
 venv\Scripts\python.exe tarocut.py conferir "...IMG_0247.MOV" --em 3:05
 ```
 
+**3c. Mandar o que você ouviu de volta pro programa** — em vez de traduzir
+os tempos na mão, anote enquanto ouve, com o relógio do player, e cole no
+`/anotar`:
+
+```
+[00:15] aqui há uma gaguejada "mas mas mas..."
+[01:29] essa frase é uma tentativa malsucedida, a correta aparece em [01:45]
+```
+
+```bash
+/anotar "7 de espadas_previa.m4a"
+```
+
+Numa janela nova do Claude Code: ele confirma que o `.m4a` ainda bate com o
+corte de agora, pede as anotações, traduz cada tempo de volta para a fonte,
+põe cada correção na camada certa (anotação, `montagem.json`,
+`correcoes.json`) e gera o áudio novo. E faz uma segunda pergunta, que é
+metade do motivo de ele existir: **alguma dessas coisas o programa podia
+ter pego sozinho?** Quando podia, ele propõe a mudança em português de
+gente e espera você aprovar. Veja `.claude/commands/anotar.md`.
+
 Ajuste no editor (ou no `anotacoes.json`, ou no `transcript.md`), rode de
 novo, repita até gostar. Só então renderize.
 
-Duas linhas do `conferir` valem uma palavra à parte, porque o conserto
+Três linhas do `conferir` valem uma palavra à parte, porque o conserto
 delas não é anotação: `ARRASTO SOBREVIVE` é o rabo de uma palavra
 arrastada que o corte não levou (a poda era curta demais para virar
 emenda), e o lugar de apará-lo é o editor, com o botão de menos.
 `PENDENCIA SEM RESPOSTA` não é defeito de corte nenhum — é uma pergunta
-do `revisao.txt` esperando decisão.
+do `revisao.txt` esperando decisão. E `PALAVRA ENTERRADA` é o alinhador
+errando, não o corte: pelo relógio do Whisper — a única segunda opinião
+que existe aqui — uma palavra que era para ficar está dentro do buraco,
+longe da emenda. Ouça e conserte a borda no editor; mexer na anotação não
+resolve, porque a anotação está ancorada num tempo que a palavra não
+ocupa.
 
 **4. Export**:
 

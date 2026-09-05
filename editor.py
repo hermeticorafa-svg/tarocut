@@ -51,6 +51,19 @@ PAGINA = ROOT / "editor.html"
 MINIMO = 0.001
 
 
+def _duracao(p):
+    """Duracao de um arquivo de audio, ou None se o ffprobe nao souber
+    dizer. Subprocesso: quem chama guarda o resultado (ver
+    `Sessao.previa_no_disco`)."""
+    try:
+        r = subprocess.run(
+            [tc.FFPROBE, "-v", "error", "-show_entries", "format=duration",
+             "-of", "json", str(p)], capture_output=True, text=True)
+        return float(json.loads(r.stdout)["format"]["duration"])
+    except Exception:
+        return None
+
+
 # ------------------------------------------------------------------ sessao
 
 class Sessao:
@@ -78,11 +91,26 @@ class Sessao:
             sys.exit(f"[editor] falta {self.wav}. Rode 'tarocut.py run' antes.")
         with __import__("wave").open(str(self.wav), "rb") as w:
             self.sr = w.getframerate()
+        # O .m4a que o `audio` grava ao lado do video - o arquivo que ele
+        # OUVE, e cujo relogio ele usa para anotar. Saber se esse arquivo
+        # ainda e este corte faz parte de mostrar o corte (`previa_no_disco`).
+        self._m4a = self.src.parent / f"{self.nome}_previa.m4a"
+        self._m4a_chave, self._m4a_dur = None, None
         # o selo do stream.json COMO ESTA NO DISCO. O `_base` ja aplicou o
         # transcript.md por cima do fluxo, entao calcular o selo daqui
         # daria outro numero - e o selo so serve para dizer de que analise
         # veio este montagem.json.
-        self.selo = tc.selo_stream(tc.jload(self.d / "stream.json")["stream"])
+        doc = tc.jload(self.d / "stream.json")
+        self.selo = tc.selo_stream(doc["stream"])
+        # As lacunas MEDIDAS pelo analyze, que o `_base` nao devolve porque
+        # nenhuma etapa de corte precisa delas. A tela precisa: e nelas que
+        # esta o que o Whisper OUVIU e o programa recusou (`bruto`,
+        # `rejeitado`) e a fracao de voz de cada vao. Sem isso, um
+        # 'Ah meu amor...' recusado por logprob e uma pausa de 6 s viram o
+        # mesmo tracinho - som que existe e nao deixa marca, o defeito de
+        # sempre deste programa, so que do lado da entrada.
+        self.lacunas = sorted(doc.get("lacunas", []), key=lambda l: l["s"])
+        self._lac_ini = [l["s"] for l in self.lacunas]
 
         # Estado depois do transcript.md e das anotacoes, e ANTES da
         # montagem: e contra esta linha de base que o editor mede o que a
@@ -91,6 +119,17 @@ class Sessao:
         # deixaria de valer para alguma coisa.
         self.base = [(bool(t["cut"]), bool(t.get("prot")))
                      for t in self.stream]
+        # o `why` da PROPOSTA, guardado pela mesma razao que o `_t_orig`
+        # guarda o texto original: desclicar tem de devolver o motivo que
+        # estava ali antes do clique, e depois que `_aplica` escreve por
+        # cima nao ha em lugar nenhum quem lembre qual era.
+        self._why_base = [t.get("why", "") for t in self.stream]
+
+        self._mede_voz()
+        self._mede_anotacoes()
+        # de disco, e nao muda enquanto a sessao vive (43 ms por leitura).
+        self._vocab = tc.carrega_vocabulario(self.d)
+        self._pend, self._pend_chave = [], None
 
         self.tokens, self.cortes, self.restauros = {}, [], []
         self.aviso = ""
@@ -172,20 +211,262 @@ class Sessao:
         for i, t in enumerate(self.stream):
             dec = self.correcoes.get(i)
             t["t"] = dec["novo"] if dec else self._t_orig[i]
+            # mesma marca que o `tc.aplica_correcoes` poe, pela mesma razao:
+            # `pendencias` nao pergunta sobre texto que uma pessoa escreveu.
+            # Aqui ela precisa ser LIMPA quando a correcao sai (desfazer),
+            # senao o token continuaria imune depois de voltar a ser leitura
+            # do Whisper.
+            t["mao_texto"] = bool(dec)
+
+    # -------------------------------------------------------- o que se ouviu
+
+    def _lacuna_do_token(self, t):
+        """A lacuna medida de que este token nasceu, ou None.
+
+        Casa por TEMPO, nunca pelo `i` gravado na lacuna: aquele indice e o
+        da palavra anterior no `words.json`, e `resolve_suspeitos` insere
+        tokens depois de ele ter sido calculado. Mesma razao pela qual o
+        `montagem.json` guarda `s`/`e`. A tolerancia de 30 ms cobre o
+        arredondamento no milissegundo que o `add` do analyze faz."""
+        j = bisect.bisect_left(self._lac_ini, t["s"] - 0.03)
+        while j < len(self.lacunas) and self.lacunas[j]["s"] <= t["s"] + 0.03:
+            if abs(self.lacunas[j]["e"] - t["e"]) <= 0.03:
+                return self.lacunas[j]
+            j += 1
+        return None
+
+    @staticmethod
+    def _tem_voz(t, lac):
+        """Ha voz MEDIDA neste token?
+
+        Um `hesitacao` e voz por definicao - o analyze so o cria quando o
+        envelope acusou voz na lacuna. Um `silencio` tambem pode ser: quando
+        a lacuna era `misto` e a re-transcricao foi recusada, o analyze
+        trata a recusa como silencio e o token sai rotulado "pausa". MEDIDO:
+        7, 9 e 7 tokens de silencio por video carregam um texto recusado
+        dentro ('Ah meu amor...', 'O que e isso?') - sao MAIS que os
+        `hesitacao` na mesma situacao (2, 5 e 4)."""
+        return t["k"] == "hesitacao" or bool(
+            lac and lac["tipo"] in ("fala", "misto"))
+
+    def _mede_voz(self):
+        """Mede voz e leitura recusada de cada token, UMA VEZ.
+
+        Cabe no `__init__` porque nada disto muda enquanto a sessao vive: o
+        `s`/`e` de um token nunca e reescrito aqui (o `_aplica` so mexe em
+        `cut`/`prot`, a correcao so em `t["t"]`) e as lacunas vem do disco.
+        Feito por token a cada `pecas`, custava 100 ms por gesto num video
+        de 900 tokens, contra os 25 ms que o `pecas` inteiro custava antes -
+        quatro vezes o atraso entre apertar o botao e ver o risco mudar."""
+        self._voz = [False] * len(self.stream)
+        self._ouviu = [("", "", "")] * len(self.stream)
+        self._voz_antes = [False] * len(self.stream)
+        ant = 0.0
+        for i, t in enumerate(self.stream):
+            lac = self._lacuna_do_token(t)
+            self._voz[i] = self._tem_voz(t, lac)
+            # `ouviu` do proprio token vem na frente: e o que o
+            # `resolve_suspeitos` guardou, e ele nao tem lacuna nenhuma
+            # para casar (nasce depois de elas serem medidas).
+            if t.get("ouviu"):
+                bruto, mot = t["ouviu"], t.get("recusa", "")
+            elif lac and lac.get("rejeitado"):
+                bruto, mot = lac.get("bruto", ""), lac["rejeitado"]
+            else:
+                bruto = mot = ""
+            self._ouviu[i] = (self._corta_bruto(bruto), mot,
+                              self._sugestao(bruto, mot))
+            self._voz_antes[i] = self._voz_no_vao(ant, t["s"])
+            ant = max(ant, t["e"])
+
+    @staticmethod
+    def _corta_bruto(bruto):
+        """Uma recusa por `denso demais` ou `loop repetido` traz o loop
+        inteiro - MEDIDO no IMG_0248: 'Então essa não é o que é que é...'
+        com 800 caracteres, num title de tooltip. Depois das primeiras
+        palavras ele nao diz mais nada que a propria recusa nao diga."""
+        bruto = " ".join((bruto or "").split())
+        return bruto if len(bruto) <= 80 else bruto[:79].rstrip() + "…"
+
+    @staticmethod
+    def _sugestao(bruto, motivo):
+        """O que a caixa de edicao abre ESCRITO - e nao e o mesmo que se
+        mostra no title, de proposito.
+
+        Recusa por `logprob` e leitura plausivel de que o Whisper duvidou
+        ('O que e isso?', 'Ah meu amor...', 'E ai'): quase sempre so falta
+        confirmar, e vem pronta. As outras tres sao lixo por construcao -
+        `frase-fantasma` e alucinacao de legenda ('Obrigado.', 'Até a
+        próxima!') onde ninguem disse isso, e `denso demais`/`loop
+        repetido` sao a mesma silaba cem vezes. Oferecer lixo pre-escrito
+        so faria apagar antes de escrever."""
+        return (Sessao._corta_bruto(bruto)
+                if str(motivo).startswith("logprob") else "")
+
+    def _corrigivel(self, i):
+        """Onde se pode escrever o que se ouviu. Um lugar so decide isso:
+        a tela pergunta aqui para habilitar o menu, e o `acao` pergunta
+        aqui de novo antes de gravar.
+
+        Vale para toda `palavra` e para todo token com VOZ medida - e a
+        voz que diz se ha o que transcrever, nao o tipo do token. Ate
+        03/09/2026 a regra era por tipo e excluia exatamente um: o
+        `hesitacao` rotulado "hesitação", que e o lugar onde ha fala e nao
+        ha texto. Sao 40 tokens no IMG_0247 e 39 no IMG_0248 - ver a fala,
+        ouvir a fala e nao ter onde escrever era a metade pior de "o audio
+        nao chegou na transcricao".
+
+        Pausa sem voz continua de fora: la nao ha o que transcrever."""
+        return self.stream[i]["k"] == "palavra" or self._voz[i]
+
+    def _voz_no_vao(self, a, b):
+        """Este vao SEM TOKEN tem voz medida dentro?
+
+        O analyze so cria token de silencio acima de `pausa_intocavel`
+        (0,75 s). Uma lacuna `misto` de 0,6 s - voz medida pelo envelope,
+        texto nenhum - nao vira token, e sem token a tela nao tem onde
+        pendurar marca nenhuma. MEDIDO nos tres videos de calibracao: 7,
+        10 e 13 vaos assim, somando 3,3 a 6,3 s de voz que a folha mostrava
+        como papel em branco."""
+        if b - a < 0.02:
+            return False
+        j = bisect.bisect_left(self._lac_ini, a - 0.03)
+        while j < len(self.lacunas) and self.lacunas[j]["s"] < b + 0.03:
+            l = self.lacunas[j]
+            if (l["tipo"] in ("fala", "misto")
+                    and min(l["e"], b) - max(l["s"], a) > 0.05):
+                return True
+            j += 1
+        return False
+
+    # ---------------------------------------------------- quem mandou cortar
+
+    def _mede_anotacoes(self):
+        """Que trecho do passe de julgamento cobre cada token, UMA VEZ.
+
+        `self.anot` foi lido do disco na abertura e nao muda enquanto a
+        sessao vive - constante como o `_voz`, e medida pela mesma razao.
+
+        A regra de cobertura e a MESMA de `tc.aplica_anotacoes`, qualquer
+        sobreposicao por menor que seja, e nao uma parecida: o conjunto de
+        tokens que a anotacao mandou cortar e o conjunto que a tela pinta
+        como anotado tem de ser um so. Com um limiar de 0,05 s sobravam 2
+        tokens no IMG_0247 e 1 no IMG_0248 cortados por julgamento humano e
+        desenhados como corte mecanico.
+
+        MEDIDO: 41 tokens no IMG_0246, 179 no IMG_0247 (19% do video) e 14
+        no IMG_0248 saem porque uma pessoa mandou, e ate 04/09/2026 esse
+        riscado era igualzinho ao da regra automatica. Para saber que a
+        palavra saiu por julgamento era preciso clicar nela e ler o "Por
+        que saiu" - uma palavra de cada vez, na camada mais cara de
+        produzir que este programa tem.
+
+        `_anot_antes` e a mesma pergunta para o VAO entre dois tokens: uma
+        anotacao pode cair inteira em silencio, e ai nao ha token nenhum
+        para pintar."""
+        self._anot_de = [""] * len(self.stream)
+        self._anot_antes = [""] * len(self.stream)
+        ant = 0.0
+        for i, t in enumerate(self.stream):
+            for a in self.anot:
+                if not (t["e"] <= a["ini"] or t["s"] >= a["fim"]):
+                    self._anot_de[i] = a["motivo"]
+                if min(a["fim"], t["s"]) - max(a["ini"], ant) > 0.02:
+                    self._anot_antes[i] = a["motivo"]
+            ant = max(ant, t["e"])
+
+    # ---------------------------------------------------- o relogio da previa
+
+    def previa_no_disco(self, mantido):
+        """O .m4a que esta no disco ainda e ESTE corte?
+
+        O relogio com que ele anota e o do arquivo, nao o da fonte. Assim
+        que um gesto muda o corte, o .m4a de antes deixa de valer: um
+        `[01:29]` escrito ouvindo aquele arquivo passa a apontar para outro
+        lugar, e passa a apontar errado EM SILENCIO - a mesma familia do
+        selo do transcript.md, por mais um caminho.
+
+        Mesma pergunta e mesmo numero da fase 0 do `/anotar`: a diferenca
+        de duracao, com 0,15 s de folga. MEDIDO: o AAC poe de 0,02 a 0,07 s
+        na ponta ("7 de espadas" +0,02, "as de espadas" +0,05, IMG_0246
+        +0,07), e 0,15 ainda fica abaixo do menor corte que o programa
+        aceita (`[corte].minimo` = 0,28) - qualquer edicao de verdade cai
+        fora da folga.
+
+        Cego onde a fase 0 e cega: tirar 200 ms num lugar e devolver 200 ms
+        noutro passa por igual. O ffprobe e subprocesso, entao so roda
+        quando o mtime do arquivo muda - o `estado` chama isto a cada
+        gesto."""
+        try:
+            st = self._m4a.stat()
+        except OSError:
+            return {"tem": False}
+        chave = (st.st_mtime_ns, st.st_size)
+        if chave != self._m4a_chave:
+            self._m4a_chave = chave
+            self._m4a_dur = _duracao(self._m4a)
+        if self._m4a_dur is None:
+            return {"tem": False}
+        return {"tem": True, "dur": round(self._m4a_dur, 2),
+                "velho": abs(self._m4a_dur - mantido) > 0.15}
+
+    def em_previa(self, t):
+        """Tempo do .m4a -> tempo da fonte, e a palavra que soa ali.
+
+        Pela `tc._mapa_previa`, a mesma do `conferir --em` e da fase 2 do
+        `/anotar`. Ate 04/09/2026 o unico jeito de achar na folha o
+        `[01:29]` que ele anotou ouvindo era rodar um comando noutra janela
+        e voltar com um numero de fonte - que a folha tambem nao mostrava
+        em canto nenhum.
+
+        A conta e daqui, e nao da tela, pela regra de sempre: o mapa e
+        feito do corte, e corte nao se recalcula no navegador.
+
+        A varredura e linear de proposito: o alinhador as vezes devolve
+        tokens fora de ordem (ver `tc.fora_de_ordem`) e uma bisseccao
+        responderia errado justo neles."""
+        with self.lock:
+            iv = self.intervalos()
+            para_fonte, _ = tc._mapa_previa(iv)
+            x = para_fonte(max(0.0, float(t)))
+            i = next((k for k, tk in enumerate(self.stream) if tk["e"] > x),
+                     max(0, len(self.stream) - 1))
+            return {"fonte": round(x, 3), "i": i}
 
     # ------------------------------------------------------------- calculo
 
     def _aplica(self):
-        """Empilha a camada de palavra sobre a linha de base."""
+        """Empilha a camada de palavra sobre a linha de base.
+
+        O `why` entra junto, e com a MESMA frase do `aplica_montagem` - as
+        duas sao a mesma decisao, e enquanto discordavam era o editor que
+        ficava com a versao velha da verdade. Tres coisas dependiam disso e
+        so funcionavam depois de salvar e reabrir:
+
+        - a caixa "Por que saiu" mostrava "anotado: O1 ..." num token que a
+          pessoa acabara de restaurar, isto e, o motivo de um corte que ela
+          ja tinha desfeito;
+        - `_respeita_palavras` defende o token pela frase de `MAO_MANTEM`, e
+          sem ela restaurar hesitacao dentro de anotacao nao fazia nada;
+        - `pendencias` le a mesma frase para dizer que a pergunta ja foi
+          respondida a mao.
+
+        `_why_base` e o motivo da proposta automatica, e voltar a ele quando
+        o clique e desfeito faz parte do mesmo acerto: pintar "restaurado no
+        editor" num token que voltou a ser decisao da regra seria a mentira
+        simetrica."""
         for i, t in enumerate(self.stream):
             cut, prot = self.base[i]
             est = self.tokens.get(i)
             if est is None:
                 t["cut"], t["prot"] = cut, prot
+                t["why"] = self._why_base[i]
             else:
                 # `prot` protege enumeracao do corte AUTOMATICO; nao
                 # autoriza sobreviver a um clique (ver `aplica_montagem`).
                 t["cut"], t["prot"] = (est == "cortar"), False
+                t["why"] = ("oculto no editor" if est == "cortar"
+                            else "restaurado no editor")
 
     def montagem(self):
         toks = []
@@ -454,11 +735,8 @@ class Sessao:
                     mudou = False
                 else:
                     t = self.stream[i]
-                    eh_texto = (t["k"] == "palavra"
-                               or (t["k"] == "hesitacao"
-                                   and self._t_orig[i] != "hesitação"))
                     txt = (b.get("texto") or "").strip()
-                    if not eh_texto or not txt or txt == t["t"]:
+                    if not self._corrigivel(i) or not txt or txt == t["t"]:
                         mudou = False
                     else:
                         self._empilha()
@@ -501,11 +779,19 @@ class Sessao:
             return self._retrato(iv, ini, fim, u, mudou, viz)
 
     def _retrato(self, iv, ini, fim, u, mudou, viz):
+        mantido = sum(b - a for a, b in iv)
+        _, para_previa = tc._mapa_previa(iv)
         return {
             "iv": iv,
             "pecas": self.pecas(iv),
             "gestos": self.gestos(iv, ini, fim, u, viz),
-            "mantido": sum(b - a for a, b in iv),
+            "mantido": mantido,
+            # UM numero, nao novecentos: o resto da tela continua em tempo
+            # de fonte. Este e o unico relogio que ele tem na mao quando
+            # esta anotando de ouvido, e ate agora a folha nao mostrava
+            # tempo nenhum, de nenhuma das duas especies.
+            "previaSel": round(para_previa(ini), 2),
+            "previa": self.previa_no_disco(mantido),
             # "trechos", e nao "emendas": o `conferir` ja chama len(iv)
             # de emendas, e dois numeros diferentes com o mesmo nome na
             # mesma tela e pedir para alguem comparar errado.
@@ -513,6 +799,7 @@ class Sessao:
             "mao": len(self.tokens) + len(self.cortes) + len(self.restauros),
             "podeDesfazer": bool(self.pilha),
             "avisos": self.avisos(iv),
+            "achados": self.achados(iv),
             "mudou": mudou,
         }
 
@@ -556,17 +843,58 @@ class Sessao:
             gap = max(0.0, s - ant)
             # hesitacao sem texto recuperado vem rotulada "hesitação" pelo
             # analyze: e etiqueta, nao fala. Ipsis litteris ela e um vao.
-            texto = (t["k"] == "palavra"
-                     or (t["k"] == "hesitacao" and t["t"] != "hesitação"))
+            # Uma pausa so tem texto se alguem escreveu ali (o analyze cria
+            # todo silencio com t=""), e ai ela deixa de ser vao - senao
+            # escrever no token nao mudaria nada na tela.
+            if t["k"] == "palavra":
+                texto = True
+            elif t["k"] == "hesitacao":
+                texto = t["t"] != "hesitação"
+            else:
+                texto = bool(t["t"])
+            # `voz` separa as duas coisas que a tela desenhava com o mesmo
+            # tracinho: pausa e fala que o Whisper nao leu. Um token
+            # `hesitacao` e voz por definicao - e por isso que ele existe -,
+            # e um `silencio` tambem pode ser, quando nasceu de uma lacuna
+            # `misto` cujo texto foi recusado (o analyze trata recusa como
+            # silencio). MEDIDO no IMG_0247: 26 tracinhos de pausa e 34 de
+            # voz, indistinguiveis, e o title dizia "sem som aqui" nos 34.
             pec.append({"i": i, "txt": t["t"] if texto else "",
                         "vao": not texto, "s": round(s, 3), "e": round(e, 3),
                         "vivo": vivo, "why": t.get("why", ""),
+                        "voz": self._voz[i],
+                        # o que o Whisper leu ali e o programa jogou fora.
+                        # Estava gravado em stream.json desde sempre e nao
+                        # chegava a tela.
+                        "ouviu": self._ouviu[i][0],
+                        "recusa": self._ouviu[i][1],
+                        "sugestao": self._ouviu[i][2],
+                        "corrigivel": self._corrigivel(i),
+                        "vozAntes": self._voz_antes[i],
+                        # quem mandou cortar: vazio quando foi a regra
+                        # automatica, o motivo escrito quando foi uma
+                        # pessoa lendo a aula.
+                        "anot": self._anot_de[i],
+                        "anotAntes": self._anot_antes[i],
                         "ocultoAntes": round(max(0.0, gap - visto), 3)})
             ant = max(ant, e)
         sobra = max(0.0, self.dur - ant)
         visto = sum(max(0.0, min(b, self.dur) - max(a, ant)) for a, b in iv)
+        # A cauda depois do ultimo token responde as MESMAS perguntas que
+        # qualquer vao do meio - ela so nao respondia porque nao ha token
+        # onde pendurar a resposta, e sao 11 a 21 s de video em cada um dos
+        # tres de calibracao. `fimAnot` acerta hoje: os 15,07 s do IMG_0246
+        # saem porque uma pessoa escreveu "fim do conteudo", e o tracinho
+        # dizia isso com a mesma cara de uma pausa qualquer. `fimVoz` da
+        # False nos tres, e existe pelo mesmo motivo que o do meio existe -
+        # o dia em que der True e o dia em que ninguem estaria olhando.
+        cauda = ""
+        for a in self.anot:
+            if min(a["fim"], self.dur) - max(a["ini"], ant) > 0.02:
+                cauda = a["motivo"]
         return {"tokens": pec, "fim": round(max(0.0, sobra - visto), 3),
-                "fimS": round(ant, 3), "fimE": round(self.dur, 3)}
+                "fimS": round(ant, 3), "fimE": round(self.dur, 3),
+                "fimVoz": self._voz_no_vao(ant, self.dur), "fimAnot": cauda}
 
     def avisos(self, iv):
         """"Voce mandou e nao saiu." Duas perguntas, uma so resposta.
@@ -590,11 +918,16 @@ class Sessao:
         toda a geometria - mas ela precisa SABER. Sem esta linha, a palavra
         continuava no video e nada em lugar nenhum dizia isso."""
         out = []
+        # o mesmo relogio que o `conferir` poe na primeira coluna: esta
+        # lista se ouve no .m4a, e nao adianta ordenar por tempo de fonte
+        # quem vai conferir de ouvido.
+        _, para_previa = tc._mapa_previa(iv)
         mao = tc.spans_da_mao(self.stream, self.montagem(),
                               self.C["corte"]["folga_palavra"])
         for x, y, vivo, motivo, da_mao in tc.anotacoes_desobedecidas(
                 self.anot, iv, mao=mao):
             out.append({"ini": x, "fim": y, "vivo": round(vivo, 2),
+                        "previa": round(para_previa(x), 2),
                         "motivo": motivo, "mao": da_mao})
         for i, estado in sorted(self.tokens.items()):
             t = self.stream[i]
@@ -612,7 +945,15 @@ class Sessao:
             if not fora:
                 out.append({
                     "ini": t["s"], "fim": t["e"], "vivo": round(vivo, 2),
+                    "previa": round(para_previa(t["s"]), 2),
                     "mao": False, "palavra": t["t"],
+                    # QUAL dos dois pedidos foi desobedecido. A frase abaixo
+                    # ja dizia, mas o rotulo da lista "o que ouvir" era
+                    # "NAO SAIU" nos dois casos, e no restauro isso diz o
+                    # contrario do que aconteceu: a palavra nao VOLTOU. Quem
+                    # sabe qual e qual e este lado; a tela escolhe a
+                    # palavra, nao recalcula nada.
+                    "estado": estado,
                     "motivo": (f"voce ocultou {t['t']!r} e "
                                f"{vivo*1000:.0f} ms dela continuam tocando; "
                                f"termine com o botao de menos"
@@ -620,6 +961,51 @@ class Sessao:
                                f"voce restaurou {t['t']!r} e ela continua "
                                f"fora; traga de volta com o botao de mais")})
         return out
+
+    def achados(self, iv):
+        """O que o `conferir` acharia neste corte, agora, sem sair da tela.
+
+        Pela MESMA funcao que o comando usa, pela razao de sempre: duas
+        implementacoes da mesma pergunta divergem, e a que diverge calada e
+        a que ninguem esta olhando. MEDIDO no IMG_0248: o `conferir` achava
+        25 pontos e este painel mostrava zero deles - ilha curta, arrasto
+        sobrevivente, repeticao que o proprio corte criou, pendencia sem
+        resposta, e sobretudo as 12 falas marcadas para sair que continuam
+        tocando INTEIRAS. Para ver qualquer um era preciso rodar um comando
+        e ler um txt em segundos da FONTE, numero que a folha nao mostra em
+        canto nenhum.
+
+        `pendencias` custa 45 ms e le o `cut` de cada token, entao so se
+        refaz quando a camada de palavra muda - um gesto de milissegundo
+        mexe no `iv`, nunca no fluxo. O vocabulario e de disco e nao muda
+        enquanto a sessao vive."""
+        with self.lock:
+            self._aplica()
+            chave = tuple(sorted(self.tokens.items()))
+            if chave != self._pend_chave:
+                self._pend = tc.pendencias(self.stream, self.C, self._vocab)
+                self._pend_chave = chave
+            ach, _ = tc.achados_corte(self.stream, self.C, iv, self.anot,
+                                      self.montagem(), self._pend,
+                                      tc.carrega_respostas(self.d), self.d)
+            # O que o `avisos` ja diz, e diz melhor, nao se repete aqui: as
+            # duas familias de anotacao (la vem com a frase que a pessoa
+            # escreveu) e a fala cortada A MAO que sobrevive (la vem em
+            # segunda pessoa e com o conserto - "termine com o botao de
+            # menos"). O mesmo alarme em duas listas da mesma tela ensina a
+            # ignorar as duas.
+            meus = {(round(self.stream[i]["s"], 2),
+                     round(self.stream[i]["e"], 2)) for i in self.tokens}
+            out = []
+            for prev, rot, x, y, txt in ach:
+                if rot.startswith("ANOTACAO"):
+                    continue
+                if (rot == "FALA CORTADA SOBREVIVE"
+                        and (round(x, 2), round(y, 2)) in meus):
+                    continue
+                out.append({"ini": x, "fim": y, "rot": rot, "txt": txt,
+                            "previa": round(prev, 2)})
+            return out
 
     # ------------------------------------------------------------ documento
 
@@ -769,6 +1155,13 @@ class Handler(BaseHTTPRequestHandler):
             b = self._corpo()
             if rota == "/acao":
                 return self._envia(S.acao(b))
+            if rota == "/em":
+                # so traduz e responde; nao mexe em nada. A selecao continua
+                # sendo do navegador - o servidor diz que palavra e.
+                try:
+                    return self._envia(S.em_previa(b.get("previa")))
+                except (TypeError, ValueError):
+                    return self._envia({"erro": "tempo invalido"}, codigo=400)
             if rota == "/rodar":
                 cmd = b.get("cmd")
                 if cmd not in ("audio", "render", "conferir", "previa"):
