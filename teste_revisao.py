@@ -480,11 +480,147 @@ def teste_ponta():
         "ponta protegida reaparece como pendencia no revisao.txt")
 
 
+def teste_ponta_densidade():
+    """O outro lado da guarda: a ponta que E cacoete tem de SAIR.
+
+    Entre 05/09 e 08/09 a densidade ficou DESLIGADA na ponta, e ai nada
+    separava "Eu sei." em 8,8s de quase so silencio de um minuto de aula:
+    toda ponta com texto ficava. A conta nao estava errada, o divisor
+    estava - `densidade_fala` divide por DURACAO, e numa ponta a duracao
+    carrega as pausas da aula. O divisor honesto e o tempo FALADO, que o
+    proprio token ja mede em `voz`.
+
+    A armadilha que este teste guarda e a INTERACAO com `protege_pontas`:
+    a guarda desfaz corte de regra em token marcado `ponta`, entao marcar
+    tambem o token que a propria ponta acabou de julgar cacoete faria a
+    guarda ressuscitar a decisao de quem ela deveria proteger - o "Eu
+    sei." sairia cortado do `ponta` e voltaria ao video trinta linhas
+    adiante, calado. Por isso a marca so vai no que FICOU."""
+    print()
+    print("== densidade na ponta (o divisor e o tempo falado)")
+    C = tc.cfg()
+    ch = C["hesitacao"]
+    sempre, _ = tc.carrega_fillers()
+
+    def julga(txt, dur, voz):
+        pelo_relogio = tc.classifica_fala(txt, dur, sempre, ch)
+        pelo_falado = tc.classifica_fala(txt, dur * voz, sempre, ch)
+        return pelo_relogio[0], pelo_falado[0]
+
+    aula = ("Os cinco de espadas. Essa carta tem uma dor, ela tem uma cena "
+            "tao triste, o 5 e um numero que traz a perda e a dor no nivel "
+            "de estados que a pessoa identifica")
+    relogio, falado = julga(aula, 74.4, 0.29)
+    diz(relogio is True and falado is False,
+        "a aula de 74,4s: o relogio cortava (53s de silencio no divisor), "
+        "o tempo falado mantem")
+    relogio, falado = julga("Eu sei.", 8.8, 0.20)
+    diz(relogio is True and falado is True,
+        "o \"Eu sei.\" de 8,8s sai pelos dois - 2 palavras curtas, e quem "
+        "corta e `recuperado_max_palavras`")
+
+    # e a interacao: o que a ponta cortou no nascimento nao volta.
+    f = [tok("hesitacao", "Eu sei.", 0.0, 8.8, True,
+             "hesitação recuperada: Eu sei.")]
+    tc.protege_pontas(f)
+    diz(f[0]["cut"] is True,
+        "sem a marca `ponta`, a guarda nao ressuscita o que a ponta cortou")
+
+    f = [tok("hesitacao", "Eu sei.", 0.0, 8.8, True,
+             "hesitação recuperada: Eu sei.")]
+    f[0]["ponta"] = "abertura"
+    tc.protege_pontas(f)
+    diz(f[0]["cut"] is False,
+        "e COM a marca ela ressuscitaria - por isso a marca so vai no que fica")
+
+
+def teste_parte_ponta():
+    """A ponta recuperada volta PARTIDA, e a frase nunca cai num pedaco que sai.
+
+    Recuperar o texto da ponta devolveu a aula ao video, mas num bloco so:
+    os 74,4s do "5 de espadas" viraram um token unico com as pausas da
+    gravacao dentro, e token e indivisivel - nenhuma regra de encurtar
+    pausa entra ali. Partida pelo envelope, cada pausa longa vira token e o
+    `pausa_alvo` a encurta: 74,4s viram 30,0s.
+
+    A armadilha esta na distribuicao do texto. Os tempos do Whisper nesta
+    escala erram por dezenas de segundos - "Os cinco de espadas." vem
+    datado em 0-10s num trecho onde a voz so comeca em 1,82s -, e atribuir
+    pelo ponto medio punha 2 das 4 frases DENTRO de um silencio. Silencio e
+    pedaco que sai: a frase iria junto, e o texto recem-resgatado do escuro
+    sumiria de novo pela porta do lado."""
+    print()
+    print("== ponta partida em pedacos (parte_ponta)")
+    import numpy as np
+    C = tc.cfg()
+    hop, limiar = 0.02, 0.0
+
+    def envelope(*trechos):
+        """trechos = (segundos, tem_voz) -> vetor de dB falso"""
+        v = []
+        for dur, voz in trechos:
+            v += [10.0 if voz else -10.0] * int(round(dur / hop))
+        return np.array(v)
+
+    # fala 2s | pausa 3s (longa) | fala 2s
+    db = envelope((2.0, True), (3.0, False), (2.0, True))
+    lac = {"s": 0.0, "e": 7.0, "dur": 7.0, "voz": 0.57, "texto": "x"}
+    peds = tc.parte_ponta(lac, db, hop, limiar, C)
+    tipos = [t for t, a, b, _ in peds]
+    diz(tipos == ["fala", "sil", "fala"],
+        f"a pausa longa parte a ponta em tres ({tipos})")
+
+    # a mesma ponta sem pausa longa continua um pedaco so
+    db2 = envelope((3.0, True), (0.4, False), (3.0, True))
+    lac2 = {"s": 0.0, "e": 6.4, "dur": 6.4, "voz": 0.9, "texto": "x"}
+    diz(len(tc.parte_ponta(lac2, db2, hop, limiar, C)) == 1,
+        "pausa menor que `pausa_intocavel` nao parte nada")
+
+    # ilha de fala menor que `ilha_minima` e piscada do envelope
+    db3 = envelope((2.0, True), (2.0, False), (0.1, True), (2.0, False),
+                   (2.0, True))
+    lac3 = {"s": 0.0, "e": 8.1, "dur": 8.1, "voz": 0.5, "texto": "x"}
+    tipos3 = [t for t, a, b, _ in tc.parte_ponta(lac3, db3, hop, limiar, C)]
+    diz(tipos3 == ["fala", "sil", "fala"],
+        f"lampejo de 0,1s vira pausa, nao um '?? 0.1s' ({tipos3})")
+
+    # --- o texto: nunca num silencio, e nunca fora de ordem
+    peds = [("fala", 0.0, 2.0, ""), ("sil", 2.0, 5.0, ""),
+            ("fala", 5.0, 7.0, "")]
+    # os dois tempos caem DENTRO da pausa - o erro que o caso real fazia
+    posto = tc.poe_texto_na_ponta(peds, [(2.5, 3.0, "primeira"),
+                                         (3.5, 4.0, "segunda")])
+    em_sil = [t for k, a, b, t in posto if k == "sil" and t]
+    diz(not em_sil, "frase datada dentro da pausa nao fica na pausa")
+    diz("".join(t for k, a, b, t in posto if k == "fala"),
+        "e nao se perde: foi para um pedaco de fala")
+
+    # o Whisper devolve as frases na ordem em que foram ditas, e e SO nisso
+    # que se confia: o tempo do meio ("b") cai na pausa e e puxado para o
+    # pedaco de fala mais proximo, sem passar na frente de "a" nem atras.
+    posto = tc.poe_texto_na_ponta(peds, [(0.1, 0.5, "a"), (2.5, 3.0, "b"),
+                                         (6.5, 6.9, "c")])
+    ordem = [t for k, a, b, t in posto if k == "fala"]
+    diz(ordem == ["a b", "c"],
+        f"a ORDEM do Whisper manda, nao o tempo dele ({ordem})")
+    diz(not [t for k, a, b, t in posto if k == "sil" and t],
+        "e a frase do meio nao ficou na pausa")
+
+    todas = " ".join(t for k, a, b, t in
+                     tc.poe_texto_na_ponta(peds, [(0.5, 1.0, "a"),
+                                                  (3.0, 3.2, "b"),
+                                                  (6.0, 6.5, "c")]))
+    diz(all(w in todas for w in ("a", "b", "c")),
+        "nenhuma frase se perde no caminho (as tres estao la)")
+
+
 def main():
     alvos = sys.argv[1:] or CALIBRACAO
     teste_gaguejada()
     teste_naolido()
     teste_ponta()
+    teste_ponta_densidade()
+    teste_parte_ponta()
     teste_vocabulario()
     teste_respostas()
     teste_texto_explica_o_tempo()

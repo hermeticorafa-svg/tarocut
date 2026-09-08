@@ -358,14 +358,32 @@ aberturas: os 74,4 s do "5 de espadas", que são aula, e 8,8 s de "Eu sei." no
 
 Duas regras de texto tiveram de sair do caminho, e as duas pela MESMA razão —
 **foram calibradas em trecho recuperado de 1 a 2 s, e uma ponta pode ser um
-pedaço inteiro de aula**:
+pedaço inteiro de aula**. Uma delas voltou, com o divisor consertado:
 
 - `classifica_fala` divide letras por DURAÇÃO, e numa ponta a duração
   carrega as pausas da aula: 74,4 s a 29 % de voz são 53 s de silêncio no
   denominador. Deu 2,4 car/s e a regra cortou a introdução como se fosse um
-  "eeee". MEDIDO: essa regra já cortou 85 vezes nos 12 fluxos e NUNCA acima
-  de 8,0 s (mediana 1,60 s); todos os casos acima de 4,5 s são vogal
-  sustentada. Por isso texto recuperado numa ponta não passa por ela.
+  "eeee". **Desligar a regra na ponta consertava o sintoma no lugar errado**:
+  a conta não estava errada, o divisor estava, e sem ela nada mais separava
+  um "Eu sei." de uma aula — toda ponta com texto passava a ficar. O divisor
+  honesto já estava medido dentro do próprio token: `voz` é a fração de
+  quadros com voz, então `dur * voz` é o tempo FALADO. Não é número novo —
+  é a mesma `[hesitacao].densidade_minima`, medida contra o tempo em que
+  houve fala; uma segunda taxa decidindo a mesma coisa é o defeito que o
+  `config.toml` existe para impedir. MEDIDO (08/09/2026) nas 24 pontas dos
+  12 fluxos: das 13 que chegam ao Whisper, 11 são recusadas por `alucinou`,
+  e as duas que passam são decididas certo — "5 de espadas" vai de 2,43 a
+  8,42 car/s e FICA (as ~40 palavras não cabem em
+  `recuperado_max_palavras`), "6 de espadas" vai de 0,57 a 2,87 e SAI, que
+  é o "Eu sei." em 8,8 s de quase só silêncio.
+
+  A marca `ponta` do token passou a valer **só para o que FICOU**, e é isso
+  que deixa `protege_pontas` intacta. A guarda existe contra as três
+  passadas que correm DEPOIS do `analyze`; marcar também o token que a
+  própria ponta acabou de julgar cacoete faria a guarda desfazer a decisão
+  de quem ela deveria proteger — o "Eu sei." sairia cortado e voltaria ao
+  vídeo trinta linhas adiante, calado. Marca quer dizer "fala recuperada
+  que sobreviveu ao nascimento".
 - `marca_ecos` cortou a mesma introdução como `retomada colapsada`. A regra
   está certa e é estreita — trecho recuperado que repete palavra vizinha —,
   só que "vizinha" é uma janela de 6 tokens (`[cacoete].eco_janela`,
@@ -380,6 +398,37 @@ passadas com o mesmo defeito (`marca_cacoetes`, `marca_tentativas`,
 `marca_ecos`) e uma pergunta só. O token carrega `ponta` — campo extra, como
 `ouviu`/`recusa`/`cauda`, fora do `selo_stream` (só `k`/`s`/`e`/`cut`), então
 não invalida `transcript.md` nenhum.
+
+**A ponta recuperada volta PARTIDA, e a frase nunca cai num pedaço que sai.**
+Recuperar o texto devolveu a aula ao vídeo, mas num bloco só: os 74,4 s do
+"5 de espadas" viraram um token único com as pausas da gravação dentro, e
+token é indivisível — nenhuma regra de encurtar pausa entra ali, então a
+prévia ficou com quase um minuto de tempo morto que o resto do vídeo não tem.
+`parte_ponta` quebra a ponta pelo MESMO envelope que o programa já usa no
+vídeo inteiro, e por princípio: no meio do vídeo quem diz onde há pausa é o
+silêncio entre duas palavras alinhadas; numa ponta não há palavra alinhada
+nenhuma, e a única testemunha é o som. Cada silêncio maior que
+`pausa_intocavel` vira token próprio e o `pausa_alvo` o encurta como encurta
+qualquer outro. **Nenhum número novo:** `[corte].ilha_minima` ganhou um
+segundo uso com a mesma pergunta de sempre — contra o PISCAR do envelope
+entre sílabas, que senão encheria o `revisao.txt` de `?? 0.0s`. MEDIDO no
+"5 de espadas": 74,4 s viram 30,0 s, a prévia cai de 2min36 para 1min51, e a
+frase "Os cinco de espadas" continua inteira.
+
+O perigo mora na distribuição do TEXTO, e ele é o defeito desta casa por
+outra porta. Os tempos do Whisper nessa escala erram por dezenas de
+segundos — "Os cinco de espadas." vem datado em 0-10 s num trecho onde o
+envelope só acha voz a partir de 1,82 s — e atribuir cada frase ao pedaço
+que contém seu ponto médio punha **2 das 4 frases dentro de um silêncio**,
+que é pedaço que SAI: a frase recém-resgatada do escuro apareceria no
+`transcript.md` e sumiria do vídeo na mesma linha. Por isso
+`poe_texto_na_ponta` manda a frase para o pedaço de FALA mais próximo,
+nunca para uma pausa, e nunca para trás de onde a frase anterior caiu: o
+tempo do Whisper é ruim, mas a ORDEM em que ele devolve as frases é boa. E
+pedaço de fala que não receba frase sai como `?? N.Ns`, o rótulo que este
+programa já usa para "há voz aqui e ninguém leu". Efeito colateral bom: a
+pergunta gigante de 74,4 s virou **8 perguntas**, uma por pedaço, cada uma
+com seu tempo na prévia.
 
 O que NÃO mudou, e é de propósito: quando a ponta é silêncio de verdade, ou
 quando a leitura é recusada, o comportamento é o de sempre, byte a byte — a
@@ -523,6 +572,33 @@ p10 em 0,17 e 0,14; o bocejo do 7 de espadas cai dentro dessa faixa). Não
 insista por aí: o que separa os dois é o SENTIDO do texto, não a forma do
 som. O espectrograma continua útil para uma pergunta diferente — "isso é um
 som sustentado ou dois pulsos?" -, e essa está no `/revisar`.
+
+**Testado e RECUSADO: pôr um limiar no aviso de palavra inventada** — nem
+por fração, nem por tamanho de texto. O aviso de `carrega_vocabulario` passou
+a disparar em texto longo depois que a ponta do vídeo virou lacuna (no "5 de
+espadas" ele acusa "triste", "número", "estados", "identifica" — português
+normal), e a correção óbvia seria trocar contagem por proporção.
+
+MEDIDO (08/09/2026) pegando frases REAIS de um vídeo e medindo-as contra o
+vocabulário de OUTRO — a única linha de base honesta, porque
+`carrega_vocabulario` inclui o `words.json` do próprio vídeo e medir contra
+ele mesmo dá 0 % por construção. Quanto do português de verdade dispara o
+alarme, por tamanho de frase: **1 palavra 24 %, 2 palavras 31 %, 3 palavras
+36 %, 4 palavras 45 %, 5 palavras 52 %, 6 palavras 59 %, 8 palavras 68 %** —
+uma rampa lisa, sem vale em lugar nenhum.
+
+As duas saídas morrem nessa tabela. Por FRAÇÃO: os quatro alarmes verdadeiros
+conhecidos ficam todos em 1,00, mas 24-36 % das frases curtas de português
+legítimo também chegam a 1,00 (p90 = 1,00 até 3 palavras) — os dois grupos se
+sobrepõem no mesmo ponto, e os falsos de texto longo (0,23 e 0,33) caem
+exatamente na mediana do português normal (0,22-0,25). Por TAMANHO: a rampa
+não tem degrau onde cortar. Qualquer número, nos dois eixos, seria escolhido
+no vazio — e este arquivo não guarda número escolhido assim.
+
+Fica como está, de propósito: o aviso não corta nada, e conviver com ele custa
+menos que um limiar inventado. O que o Conserto 2 já fez por tabela é o
+que dá para fazer sem medição nova — partir a ponta encurtou os textos, e o
+alarme de 48 palavras virou dois de 18 e 26.
 
 **Testado e RECUSADO: avisar quando a emenda deixa a frase pendurada** (o
 trecho mantido termina em preposição ou conjunção). Medido: 13 a 19 por

@@ -523,7 +523,7 @@ def resolve_suspeitos(stream, escuta, ch, sempre, db, hop, limiar):
             novos.append(t)
             continue
         a, b = t["suspeito"]
-        txt, lp = escuta(a, b)
+        txt, lp, _ = escuta(a, b)
         mot = alucinou(txt, b - a, lp, ch)
         t["e"] = a
         t.pop("suspeito", None)
@@ -1336,6 +1336,120 @@ def protege_naolidos(stream):
     return n
 
 
+def parte_ponta(l, db, hop, limiar, C):
+    """A ponta recuperada, partida em pedacos. -> [(k, ini, fim, texto)]
+
+    Recuperar o texto da ponta devolveu a aula ao video, mas devolveu num
+    BLOCO SO: os 74,4 s do "5 de espadas" viraram um token unico, com as
+    pausas, as respiradas e as hesitacoes da gravacao dentro. E um bloco e
+    indivisivel - nenhuma das regras de encurtar pausa alcanca o que esta
+    dentro de um token, entao a previa ficou com quase um minuto de tempo
+    morto que o resto do video nao tem.
+
+    Aqui a ponta e partida pelo MESMO envelope que o programa ja usa no
+    video inteiro, e por uma razao de principio: no meio do video quem diz
+    onde ha pausa e o silencio medido entre duas palavras alinhadas; numa
+    ponta nao ha palavra alinhada nenhuma, e a unica testemunha e o som.
+    Cada silencio maior que `pausa_intocavel` vira um pedaco de pausa (e o
+    `pausa_alvo` o encurta depois, como faz com qualquer outra); o que
+    sobra entre eles vira pedaco de fala, e fica.
+
+    DOIS numeros, os dois ja no config e os dois com o sentido que ja
+    tinham. `[silencio].pausa_intocavel` decide o que e pausa - abaixo dele
+    e respiracao e nao se toca. `[corte].ilha_minima` decide o que e
+    piscada: a voz PISCA entre silabas, entao o envelope cru devolve
+    lampejos de 0,04 s entre dois silencios longos, e emitir um token para
+    cada um encheria o revisao.txt de "?? 0.0s". Ilha menor que ela e
+    absorvida pela pausa vizinha, que e exatamente o que `intervalos` ja
+    faz com ilha curta no resto do video.
+
+    MEDIDO na abertura do "5 de espadas": 8 pedacos de fala e 8 de pausa,
+    30,0 s no lugar de 74,4 s, sem perder a frase "Os cinco de espadas."
+
+    O TEXTO nao decide fronteira nenhuma - so e distribuido depois, e por
+    isso esta funcao nao le `fatias` para partir. Ver `poe_texto_na_ponta`."""
+    cs, cc = C["silencio"], C["corte"]
+    a0, b0 = l["s"], l["e"]
+    voz = (db > limiar)[int(a0 / hop):int(b0 / hop)]
+    if len(voz) < 2:
+        return [("fala", a0, b0, l.get("texto", ""))]
+
+    # 1. corridas cruas de voz/silencio, ja rotuladas: so o silencio LONGO
+    #    parte a ponta. O curto e respiracao e fica dentro da fala.
+    peds, k = [], 0
+    while k < len(voz):
+        j = k
+        while j < len(voz) and voz[j] == voz[k]:
+            j += 1
+        ini, fim = a0 + k * hop, min(a0 + j * hop, b0)
+        tipo = ("sil" if (not voz[k] and fim - ini > cs["pausa_intocavel"])
+                else "fala")
+        if peds and peds[-1][0] == tipo:
+            peds[-1][2] = fim
+        else:
+            peds.append([tipo, ini, fim])
+        k = j
+    peds[-1][2] = b0
+
+    # 2. ilha de fala menor que `ilha_minima` e piscada do envelope, nao
+    #    fala: vira pausa e funde com as vizinhas. Repete ate estabilizar,
+    #    porque absorver uma ilha pode encostar duas pausas.
+    def funde(ps):
+        out = []
+        for r in ps:
+            if out and out[-1][0] == r[0]:
+                out[-1][2] = r[2]
+            else:
+                out.append(list(r))
+        return out
+
+    mudou = True
+    while mudou and len(peds) > 1:
+        mudou = False
+        for i, (tipo, a, b) in enumerate(peds):
+            if tipo == "fala" and b - a < cc["ilha_minima"]:
+                peds[i][0] = "sil"
+                peds = funde(peds)
+                mudou = True
+                break
+    return [(t, a, b, "") for t, a, b in peds]
+
+
+def poe_texto_na_ponta(peds, fatias):
+    """Distribui as frases recuperadas pelos pedacos de fala da ponta.
+
+    A regra que importa e a que NAO se ve: uma frase nunca cai num pedaco
+    de PAUSA. Os tempos do Whisper nesta escala erram por dezenas de
+    segundos - "Os cinco de espadas." vem datado em 0-10 s num trecho onde
+    a voz so comeca em 1,82 s -, e atribuir pelo ponto medio jogava 2 das 4
+    frases da abertura do "5 de espadas" dentro de um silencio. Silencio e
+    um pedaco que SAI: a frase que caisse ali seria cortada junto, e o
+    texto que o programa acabou de resgatar do escuro sumiria de novo, pela
+    porta do lado. E o defeito desta casa, na versao mais irritante -
+    aparecer no transcript.md e sumir do video.
+
+    Entao a frase vai para o pedaco de FALA mais proximo do seu ponto
+    medio, e nunca para tras do pedaco em que a frase anterior caiu: os
+    tempos sao ruins, mas a ORDEM em que o Whisper devolve as frases e boa,
+    e e ela que mantem o transcript.md legivel. Pedaco de fala que nao
+    receba frase nenhuma sai como `?? N.Ns`, que e o rotulo que este
+    programa ja usa para "ha voz aqui e ninguem leu"."""
+    falas = [i for i, (t, a, b, _) in enumerate(peds) if t == "fala"]
+    if not falas:
+        return peds
+    texto = {i: [] for i in falas}
+    piso = falas[0]
+    for a, b, frase in fatias or []:
+        meio = (a + b) / 2
+        cand = [i for i in falas if i >= piso] or falas
+        alvo = min(cand, key=lambda i: 0.0 if peds[i][1] <= meio < peds[i][2]
+                   else min(abs(meio - peds[i][1]), abs(meio - peds[i][2])))
+        texto[alvo].append(frase)
+        piso = alvo
+    return [(t, a, b, " ".join(texto[i]).strip() if t == "fala" else "")
+            for i, (t, a, b, _) in enumerate(peds)]
+
+
 def protege_pontas(stream):
     """Regra de TEXTO nao desfaz a fala recuperada na ponta do video.
 
@@ -1473,7 +1587,17 @@ def cmd_analyze(a):
 
     def escuta(s0, e0):
         """Re-transcreve um trecho isolado. Carrega o Whisper so na
-        primeira chamada e reaproveita depois."""
+        primeira chamada e reaproveita depois.
+
+        Devolve `(texto, logprob, fatias)`. As fatias sao os segmentos do
+        Whisper com os tempos ja na escala da FONTE, e existem para UMA
+        coisa: saber qual frase vai em qual pedaco quando `parte_ponta`
+        quebra uma ponta longa. NAO servem para decidir corte - os tempos
+        do Whisper sao ruins por definicao (e a razao de o `align` existir),
+        e nesta abertura de 74,4 s eles erram por dezenas de segundos: "Os
+        cinco de espadas." sai datado em 0-10 s num trecho onde o envelope
+        so acha voz a partir de 1,82 s. Quem decide onde cortar e o
+        envelope; a fatia so diz o que estava sendo dito por ali."""
         if "m" not in _cache:
             w = wave.open(str(d / "audio.wav"), "rb")
             _cache["sr"] = w.getframerate()
@@ -1499,14 +1623,21 @@ def cmd_analyze(a):
         segs = list(segs)
         txt = " ".join(s.text.strip() for s in segs).strip()
         lp = (sum(s.avg_logprob for s in segs) / len(segs)) if segs else None
-        return txt, lp
+        fatias = [(s0 + g.start, s0 + g.end, g.text.strip())
+                  for g in segs if g.text.strip()]
+        return txt, lp, fatias
 
     for k, l in enumerate(alvo, 1):
-        txt, lp = escuta(l["s"] - 0.10, l["e"] + 0.10)
+        txt, lp, fatias = escuta(l["s"] - 0.10, l["e"] + 0.10)
         mot = alucinou(txt, l["dur"], lp, ch)
         l["bruto"] = txt
         l["rejeitado"] = mot
         l["texto"] = "" if mot else txt
+        # so a PONTA precisa das fatias: e a unica lacuna que pode ser longa
+        # o bastante para ser partida. Guardar em toda lacuna do meio so
+        # engordaria o stream.json sem ninguem ler.
+        if l["i"] in (-1, -2) and not mot:
+            l["fatias"] = fatias
         if k % 10 == 0 or k == len(alvo):
             print(f"  ... {k}/{len(alvo)}", flush=True)
 
@@ -1543,46 +1674,92 @@ def cmd_analyze(a):
             silencio()
             return
         if l.get("texto"):
-            # A UNICA regra da lacuna do meio que a ponta nao herda, e a
-            # razao e o denominador. `densidade_fala` divide letras por
-            # DURACAO, e numa lacuna do meio isso e honesto: ela e curta e
-            # e vocalizacao de ponta a ponta. Uma ponta pode ser um pedaco
-            # inteiro de aula, com as pausas da aula dentro - no "5 de
-            # espadas" sao 74,4 s com 29% de voz, ou seja, 53 s de silencio
-            # no denominador. A conta deu 2,4 car/s e `classifica_fala`
-            # cortou "Os cinco de espadas. Essa carta tem uma dor, ela tem
-            # uma cena tao triste..." como se fosse um "eeee" arrastado. O
-            # trecho vinha de ser recuperado do escuro e sairia do video na
-            # linha seguinte.
+            # A densidade da lacuna do meio vale aqui; o DENOMINADOR dela
+            # nao. `densidade_fala` divide letras por DURACAO, e numa
+            # lacuna do meio isso e honesto: ela e curta e e vocalizacao de
+            # ponta a ponta. Uma ponta pode ser um pedaco inteiro de aula,
+            # com as pausas da aula dentro - no "5 de espadas" sao 74,4 s
+            # com 29% de voz, ou seja, 53 s de silencio no denominador. A
+            # conta deu 2,4 car/s e `classifica_fala` cortou "Os cinco de
+            # espadas. Essa carta tem uma dor, ela tem uma cena tao
+            # triste..." como se fosse um "eeee" arrastado.
             #
-            # MEDIDO (05/09/2026) nos 12 fluxos de work/: a regra de
-            # densidade ja cortou 85 vezes e NUNCA acima de 8,0 s (mediana
-            # 1,60 s), e todos os casos acima de 4,5 s sao vogal sustentada
-            # ("É, é, é...", "O O", "E..."). Ela nao foi calibrada em nada
-            # deste tamanho e nao tem o que dizer aqui.
+            # DESLIGAR a regra aqui - o que se fez em 05/09 - foi consertar
+            # o sintoma no lugar errado: a conta nao estava errada, o
+            # divisor estava. Sem ela nada mais separava "Eu sei." de uma
+            # aula inteira, e a ponta passou a ficar SEMPRE que houvesse
+            # texto. O divisor honesto ja esta medido dentro do proprio
+            # token: `voz` e a fracao de quadros em que o microfone ouviu
+            # voz, entao `dur * voz` e o tempo FALADO.
             #
-            # MEDIDO tambem o que isso custa, nas 24 pontas dos 12 videos:
-            # 9 sao silencio puro e 13 tem a leitura recusada por
-            # `alucinou` (frase-fantasma, loop repetido, logprob, denso
-            # demais) - nessas 22 nada muda, e e o `alucinou` que faz a
-            # filtragem de lixo nesta escala, nao a densidade. Passam
-            # duas, as duas aberturas: os 74,4 s do "5 de espadas", que sao
-            # aula, e 8,8 s de "Eu sei." no "6 de espadas", que
-            # provavelmente nao sao. As duas viram pendencia numerada
-            # (`texto reconstruido`), que o `conferir` cobra ate alguem
-            # responder - a mesma troca que o `parece_frase` ja faz e que o
-            # config.toml registra com todas as letras: cacoete que sobra
-            # se conserta com uma anotacao; frase apagada nao se conserta,
-            # porque ninguem fica sabendo que existiu.
-            add("hesitacao", l["texto"], l["s"], l["e"], False,
-                f"fala nao transcrita na {nome}: {l['voz']*100:.0f}% de voz "
-                f"em {l['dur']:.1f}s")
-            # A marca sobrevive as passadas de texto (elas reescrevem o
-            # `why`, nao isto) e e por ela que `protege_pontas` reconhece o
-            # token depois. Mesma familia de `ouviu`/`recusa` e `cauda`:
-            # campo extra no token, fora do `selo_stream` (so k/s/e/cut),
-            # entao nao invalida transcript.md nenhum.
-            stream[-1]["ponta"] = nome
+            # Nao ha chave nova no config.toml de proposito. Isto nao e uma
+            # taxa nova de gosto - e a mesma `[hesitacao].densidade_minima`
+            # de sempre, medida contra o tempo em que houve fala em vez do
+            # tempo de relogio. Um segundo numero decidindo a mesma coisa e
+            # exatamente o defeito que aquele arquivo existe para impedir.
+            #
+            # MEDIDO (08/09/2026) nas 24 pontas dos 12 fluxos de work/: 11
+            # das 13 que chegam ao Whisper sao recusadas por `alucinou`
+            # (frase-fantasma, loop repetido, logprob, denso demais) - e o
+            # `alucinou` que filtra lixo nesta escala, nao a densidade.
+            # Passam duas, as duas aberturas, e o divisor decide as duas
+            # certo:
+            #   "5 de espadas" 74,4 s, 29% de voz: 2,43 -> 8,42 car/s, e as
+            #     ~40 palavras nao cabem em `recuperado_max_palavras`: FICA
+            #     (e o minuto de aula que sumia calado).
+            #   "6 de espadas"  8,8 s, 20% de voz: 0,57 -> 2,87 car/s, e ai
+            #     "Eu sei." cai na regra seguinte - 2 palavras, as duas
+            #     curtas: SAI. Sao 8,8 s de quase so silencio.
+            falado = l["dur"] * l["voz"]
+            cortar, motivo = classifica_fala(l["texto"], falado, sempre, ch)
+            if cortar:
+                # Cacoete: sai inteiro, num token so, e SEM a marca `ponta`.
+                # A marca e o que faz `protege_pontas` desfazer corte de
+                # regra; marcar aqui faria a guarda desfazer a decisao de
+                # quem ela deveria proteger - o "Eu sei." sairia daqui
+                # cortado e voltaria ao video 30 linhas adiante, calado, o
+                # defeito de sempre com a guarda no papel de quem apaga.
+                # Marca quer dizer "fala recuperada que sobreviveu ao
+                # nascimento", e o nascimento e a unica decisao desta ponta
+                # tomada com o divisor certo.
+                add("hesitacao", l["texto"], l["s"], l["e"], True, motivo)
+                return
+            # FICA - e ai a ponta e PARTIDA. Um bloco unico de 74,4 s e
+            # indivisivel: as regras de encurtar pausa nao entram dentro de
+            # um token, e a previa do "5 de espadas" ficou com quase um
+            # minuto de tempo morto que o resto do video nao tem. Partida
+            # pelo envelope, cada pausa longa vira token proprio e o
+            # `pausa_alvo` a encurta como encurta qualquer outra. MEDIDO:
+            # 74,4 s viram 30,0 s, sem perder "Os cinco de espadas."
+            por = poe_texto_na_ponta(parte_ponta(l, db, hop, limiar, C),
+                                     l.get("fatias"))
+            porque = (f"fala nao transcrita na {nome}: "
+                      f"{l['voz']*100:.0f}% de voz em {l['dur']:.1f}s")
+            for tipo, pa, pb, txt in por:
+                if tipo == "sil":
+                    # O rabo do video continua sendo do passo 2 do
+                    # `spans_corte`: dar-lhe um token aqui encurtaria a
+                    # cauda de todo video em 0,39 s sem medicao nenhuma
+                    # pedindo isso. Ja a pausa que ABRE o video precisa do
+                    # rotulo "abertura", que o `spans_corte` conhece pelo
+                    # nome para comecar a emenda no zero em vez de deixar
+                    # meio `pausa_alvo` de ar antes da primeira palavra.
+                    if nome == "fechamento" and pb >= l["e"] - 1e-6:
+                        continue
+                    rot = ("abertura" if nome == "abertura" and pa <= 1e-6
+                           else f"pausa {pb-pa:.1f}s")
+                    add("silencio", "", pa, pb, True, rot)
+                    continue
+                add("hesitacao", txt or f"?? {pb-pa:.1f}s", pa, pb, False,
+                    porque)
+                # cada pedaco que fica carrega a marca, senao `marca_ecos` e
+                # as irmas cortam pedaco por pedaco o que a guarda inteira
+                # protegia quando era um bloco so.
+                #
+                # Mesma familia de `ouviu`/`recusa` e `cauda`: campo extra
+                # no token, fora do `selo_stream` (so k/s/e/cut), entao nao
+                # invalida transcript.md nenhum.
+                stream[-1]["ponta"] = nome
             return
         # Sem texto a ponta e a lacuna do meio sao a mesma pergunta, e quem
         # responde e a mesma funcao. `eh_hesitacao` nao le mais a palavra

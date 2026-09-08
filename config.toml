@@ -83,6 +83,28 @@ volta_max = 25.0
 # vocalizacao, hesitacao arrastada ou ruido. Fala normal da ~13; fala lenta
 # com pausa dentro cai para 4-6; "Ous!" em 2,1s deu 1,4. Vale para TODOS os
 # caminhos que recuperam texto (ver `classifica_fala`).
+#
+# O NUMERO e o mesmo nos tres caminhos; o DENOMINADOR nao. Na lacuna do
+# meio e no `resolve_suspeitos` divide-se pela DURACAO, e ali isso e
+# honesto: sao trechos curtos, vocalizacao de ponta a ponta. Na PONTA do
+# video (abertura e fechamento) divide-se pelo tempo FALADO, `dur * voz` -
+# porque uma ponta pode ser um pedaco inteiro de aula, com as pausas da
+# aula dentro, e o relogio passa a medir o silencio junto.
+#
+# MEDIDO (08/09/2026) nas 24 pontas dos 12 fluxos de work/. So duas
+# chegam com texto que o `alucinou` aceita (as outras 11 que chegam ao
+# Whisper sao recusadas por frase-fantasma, loop, logprob ou densidade de
+# palavras - e o `alucinou` que filtra lixo nesta escala):
+#   "5 de espadas" 74,4s com 29% de voz = 53s de silencio no denominador.
+#     Pelo relogio: 2,43 car/s, abaixo do piso -> a regra cortava um minuto
+#     de aula com a frase "o 5 de espadas" dentro. Pelo tempo falado: 8,42.
+#   "6 de espadas"  8,8s com 20% de voz, o texto todo e "Eu sei.".
+#     Pelo relogio: 0,57. Pelo tempo falado: 2,87 - passa o piso, e ai quem
+#     decide e `recuperado_max_palavras` (2 palavras curtas), que corta.
+# Os dois passam a ser decididos pela regra que sabe responder. Baixar o
+# piso para 0,5 faria os dois ficarem, que e o que acontecia entre 05/09 e
+# 08/09, quando a densidade ficou DESLIGADA na ponta: "Eu sei." voltava ao
+# video junto com a aula.
 densidade_minima = 2.5
 # Os outros dois numeros de `classifica_fala`, que decidiam corte escritos
 # no braco dentro da funcao: quantas palavras ainda cabem num cacoete
@@ -238,6 +260,17 @@ minimo          = 0.28
 folga_palavra   = 0.06
 # Trecho mantido menor que isto e uma piscada: absorvido pelo corte vizinho
 # (so quando nao ha fala aproveitavel dentro dele).
+#
+# Vale em DOIS lugares, e de proposito: no `intervalos`, sobre o corte
+# pronto, e no `parte_ponta`, quando a ponta do video e quebrada em pedacos
+# pelo envelope. E a mesma pergunta ("este pedaco mantido e curto demais
+# para valer um pedaco?") com o mesmo numero, e nao dois numeros parecidos
+# em lugares diferentes. Na ponta ela serve contra o PISCAR do envelope: a
+# voz oscila entre silabas, entao o envelope cru devolve lampejos de 0,04 s
+# entre dois silencios longos, e emitir um token por lampejo encheria o
+# revisao.txt de "?? 0.0s" - MEDIDO na abertura do "5 de espadas": sem esta
+# absorcao sao 12 pedacos de fala, 4 deles menores que 0,25 s; com ela sao
+# 8, e nenhum e lampejo.
 ilha_minima     = 0.55
 # Raio de busca do ponto mais silencioso para pousar a emenda.
 #
