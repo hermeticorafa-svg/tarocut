@@ -1336,6 +1336,47 @@ def protege_naolidos(stream):
     return n
 
 
+def protege_pontas(stream):
+    """Regra de TEXTO nao desfaz a fala recuperada na ponta do video.
+
+    Irma de `protege_naolidos`, e pela mesma razao dela, um passo adiante.
+    La o trecho nao tinha texto e as regras decidiam sobre um texto que nao
+    existe; aqui ele TEM texto, e o problema e o tamanho: a abertura e o
+    fechamento podem ser um pedaco inteiro de aula, e as regras de texto
+    que correm depois do `analyze` foram todas calibradas em trecho
+    recuperado de 1 a 2 segundos.
+
+    MEDIDO (05/09/2026) no "5 de espadas": a abertura de 74,4 s foi
+    recuperada com "Os cinco de espadas. Essa carta tem uma dor, ela tem
+    uma cena tao triste..." - a aula que o Rafael ouviu faltando - e
+    `marca_ecos` a cortou inteira como `retomada colapsada`. A regra dela
+    esta certa e e estreita: trecho recuperado que repete uma palavra
+    vizinha e retomada. So que "vizinha" e uma janela de 6 tokens
+    (`[cacoete].eco_janela`, calibrada no "como se [como seja...] existisse
+    uma tradicao"), e um trecho recuperado de 74 s tem dezenas de palavras
+    - acertar uma das 6 seguintes e quase certo. A regra nao errou de
+    logica; foi aplicada num tamanho em que ninguem a mediu.
+
+    O mesmo vale para `marca_cacoetes` e `marca_tentativas`, que decidem
+    pelo mesmo texto. Por isso a guarda e por TOKEN DE PONTA, e nao por
+    regra: sao tres passadas com o mesmo defeito e uma pergunta so.
+
+    Nao protege de `ela mandou cortar` - ali quem mandou foi ela, em voz
+    alta, e uma introducao inteira e justamente onde ela diz "nao, corta
+    essa parte". Nem de anotacao: `aplica_anotacoes` corre depois desta
+    linha, de proposito, como na irma."""
+    n = 0
+    for t in stream:
+        if not t.get("ponta") or not t["cut"]:
+            continue
+        if str(t["why"]).startswith(("ela mandou cortar", "anotado:")):
+            continue
+        t["why"] = f"protegido: {t['ponta']} recuperada ({t['why']})"
+        t["cut"] = False
+        n += 1
+    return n
+
+
 def marca_tentativas(stream, cadeias):
     n = 0
     for c in cadeias:
@@ -1364,25 +1405,68 @@ def cmd_analyze(a):
           f"{100*voz.mean():.0f}% dos frames com voz", flush=True)
 
     # --- classifica lacunas -------------------------------------------
+    def mede_lacuna(i, ini, fim):
+        """Uma lacuna medida. `i` e a palavra ANTERIOR a ela (ver `porlac`).
+
+        `pico` vai junto da fracao porque a fracao sozinha nao distingue
+        folheio de carta (muitos quadros, todos fracos) de fala. As duas
+        medidas saem de `mede_voz`, a mesma que o resto do programa usa."""
+        f, pico = mede_voz(db, hop, ini, fim, limiar)
+        tipo = ("fala" if f > cs["frac_voz_fala"]
+                else "silencio" if f <= cs["frac_voz_silencio"] else "misto")
+        return {"i": i, "s": ini, "e": fim, "dur": round(fim - ini, 3),
+                "voz": round(f, 3), "pico": round(pico, 1), "tipo": tipo}
+
     lacunas = []
     for i, (x, y) in enumerate(zip(words, words[1:])):
         g = y["s"] - x["e"]
         if g < cs["gap_min"]:
             continue
-        # `pico` vai junto da fracao porque a fracao sozinha nao distingue
-        # folheio de carta (muitos quadros, todos fracos) de fala. As duas
-        # medidas saem de `mede_voz`, a mesma que o resto do programa usa.
-        f, pico = mede_voz(db, hop, x["e"], y["s"], limiar)
-        tipo = ("fala" if f > cs["frac_voz_fala"]
-                else "silencio" if f <= cs["frac_voz_silencio"] else "misto")
-        lacunas.append({"i": i, "s": x["e"], "e": y["s"], "dur": round(g, 3),
-                        "voz": round(f, 3), "pico": round(pico, 1),
-                        "tipo": tipo})
+        lacunas.append(mede_lacuna(i, x["e"], y["s"]))
+
+    # A ABERTURA (antes da primeira palavra) e o FECHAMENTO (depois da
+    # ultima) sao lacunas como as outras, e ate 05/09/2026 eram o unico
+    # lugar do programa que cortava sem NUNCA perguntar ao microfone. A
+    # abertura saia daqui com `cut=True` escrito no braco ("abertura"); o
+    # fechamento nem token tinha, era cortado la na geometria (passo 2 do
+    # `spans_corte`). Nos dois, a unica pergunta feita era "a lacuna passa
+    # de pausa_intocavel?" - enquanto a lacuna do MEIO, ao lado, ja media
+    # voz, ja re-transcrevia isolada com vad_filter=False e ja protegia o
+    # que ninguem conseguiu ler.
+    #
+    # O custo desse silencio: no "5 de espadas" o Whisper nao transcreveu
+    # NADA nos primeiros 74,4s, e o Rafael ouviu ali mais de um minuto de
+    # aula, com a frase "o 5 de espadas" dentro. Sumiu do corte sem `[??]`,
+    # sem pendencia, sem nada - o pior defeito deste programa por definicao
+    # propria, por um caminho que nenhuma das quatro guardas conhecidas
+    # cobria, porque todas elas moram DEPOIS desta linha.
+    #
+    # MEDIDO (05/09/2026) nos 12 fluxos de work/, com a MESMA regra das
+    # lacunas do meio: 7 das 12 aberturas e 6 dos 12 fechamentos dao
+    # fala/misto - 13 pontas com voz, nao um caso isolado.
+    #
+    # `-1` e `-2` sao indices que `porlac` nunca procura (ele so usa
+    # 0..len-2, porque a lacuna e sempre a que vem DEPOIS da palavra `i`):
+    # quem emite estes dois tokens e o `ponta`, mais abaixo, e nao o laco
+    # de fusao. O piso continua sendo `pausa_intocavel` - abaixo dele a
+    # ponta nao e tocada hoje, entao nao ha corte cego que medir.
+    ab = fe = None
+    if words:
+        if words[0]["s"] > cs["pausa_intocavel"]:
+            ab = mede_lacuna(-1, 0.0, words[0]["s"])
+            lacunas.insert(0, ab)
+        if dur_total - words[-1]["e"] > cs["pausa_intocavel"]:
+            fe = mede_lacuna(-2, words[-1]["e"], dur_total)
+            lacunas.append(fe)
 
     alvo = [l for l in lacunas if l["tipo"] in ("fala", "misto")
             and l["dur"] >= ch["isolar_min"]]
     print(f"[analyze] {len(lacunas)} lacunas; {len(alvo)} com voz e "
           f"duracao suficiente -> re-transcricao isolada", flush=True)
+    for l, nome in ((ab, "abertura"), (fe, "fechamento")):
+        if l:
+            print(f"[analyze] {nome}: {l['dur']:.1f}s, "
+                  f"{l['voz']*100:.0f}% de voz -> {l['tipo']}", flush=True)
 
     # --- re-transcreve as lacunas com voz ------------------------------
     _cache = {}
@@ -1439,8 +1523,79 @@ def cmd_analyze(a):
         stream.append({"k": kind, "t": texto, "s": round(s, 3),
                        "e": round(e, 3), "cut": cortar, "why": motivo})
 
-    if words and words[0]["s"] > cs["pausa_intocavel"]:
-        add("silencio", "", 0.0, words[0]["s"], True, "abertura")
+    def ponta(l, nome, silencio):
+        """Abertura e fechamento entram no fluxo pela MESMA decisao das
+        lacunas do meio: texto recuperado vira token de verdade, voz alta
+        que ninguem leu vira `??` (e `protege_naolidos` a segura mais
+        adiante), e o resto cai no `silencio` - que continua sendo a
+        decisao certa quando nao ha voz aproveitavel ali.
+
+        O `silencio` vem de fora porque as duas pontas o fazem diferente, e
+        as duas por causa da geometria. A abertura precisa do rotulo
+        "abertura", que o `spans_corte` conhece pelo nome para comecar a
+        emenda no zero. O fechamento nao emite token nenhum: quem corta o
+        rabo do video e o passo 2 do `spans_corte`, e dar-lhe um token aqui
+        encurtaria a cauda de todo video em 0,39 s sem nenhuma medicao
+        pedindo isso. O que muda aqui e o que se DECIDE; a geometria de
+        quem ja decidia certo fica onde estava."""
+        if l is None or l["tipo"] == "silencio" or (l["tipo"] == "misto"
+                                                    and not l.get("texto")):
+            silencio()
+            return
+        if l.get("texto"):
+            # A UNICA regra da lacuna do meio que a ponta nao herda, e a
+            # razao e o denominador. `densidade_fala` divide letras por
+            # DURACAO, e numa lacuna do meio isso e honesto: ela e curta e
+            # e vocalizacao de ponta a ponta. Uma ponta pode ser um pedaco
+            # inteiro de aula, com as pausas da aula dentro - no "5 de
+            # espadas" sao 74,4 s com 29% de voz, ou seja, 53 s de silencio
+            # no denominador. A conta deu 2,4 car/s e `classifica_fala`
+            # cortou "Os cinco de espadas. Essa carta tem uma dor, ela tem
+            # uma cena tao triste..." como se fosse um "eeee" arrastado. O
+            # trecho vinha de ser recuperado do escuro e sairia do video na
+            # linha seguinte.
+            #
+            # MEDIDO (05/09/2026) nos 12 fluxos de work/: a regra de
+            # densidade ja cortou 85 vezes e NUNCA acima de 8,0 s (mediana
+            # 1,60 s), e todos os casos acima de 4,5 s sao vogal sustentada
+            # ("É, é, é...", "O O", "E..."). Ela nao foi calibrada em nada
+            # deste tamanho e nao tem o que dizer aqui.
+            #
+            # MEDIDO tambem o que isso custa, nas 24 pontas dos 12 videos:
+            # 9 sao silencio puro e 13 tem a leitura recusada por
+            # `alucinou` (frase-fantasma, loop repetido, logprob, denso
+            # demais) - nessas 22 nada muda, e e o `alucinou` que faz a
+            # filtragem de lixo nesta escala, nao a densidade. Passam
+            # duas, as duas aberturas: os 74,4 s do "5 de espadas", que sao
+            # aula, e 8,8 s de "Eu sei." no "6 de espadas", que
+            # provavelmente nao sao. As duas viram pendencia numerada
+            # (`texto reconstruido`), que o `conferir` cobra ate alguem
+            # responder - a mesma troca que o `parece_frase` ja faz e que o
+            # config.toml registra com todas as letras: cacoete que sobra
+            # se conserta com uma anotacao; frase apagada nao se conserta,
+            # porque ninguem fica sabendo que existiu.
+            add("hesitacao", l["texto"], l["s"], l["e"], False,
+                f"fala nao transcrita na {nome}: {l['voz']*100:.0f}% de voz "
+                f"em {l['dur']:.1f}s")
+            # A marca sobrevive as passadas de texto (elas reescrevem o
+            # `why`, nao isto) e e por ela que `protege_pontas` reconhece o
+            # token depois. Mesma familia de `ouviu`/`recusa` e `cauda`:
+            # campo extra no token, fora do `selo_stream` (so k/s/e/cut),
+            # entao nao invalida transcript.md nenhum.
+            stream[-1]["ponta"] = nome
+            return
+        # Sem texto a ponta e a lacuna do meio sao a mesma pergunta, e quem
+        # responde e a mesma funcao. `eh_hesitacao` nao le mais a palavra
+        # anterior - a trava "nunca depois de numero" saiu quando o `align`
+        # passou a cobrir o numero falado inteiro -, e na abertura nao ha
+        # palavra anterior nenhuma.
+        cortar, motivo = eh_hesitacao(l, None, sempre, ch, limiar)
+        rot = "hesitação" if cortar else f"?? {l['dur']:.1f}s"
+        add("hesitacao", rot, l["s"], l["e"], cortar, motivo)
+
+    if ab is not None:
+        ponta(ab, "abertura",
+              lambda: add("silencio", "", 0.0, ab["e"], True, "abertura"))
 
     for i, x in enumerate(words):
         texto = corr.get(chave(x["w"]), x["w"])
@@ -1461,6 +1616,9 @@ def cmd_analyze(a):
             if not cortar and not l.get("texto"):
                 rot = f"?? {l['dur']:.1f}s"
             add("hesitacao", rot, l["s"], l["e"], cortar, motivo)
+
+    if fe is not None:
+        ponta(fe, "fechamento", lambda: None)
 
     n_cac = marca_cacoetes(stream, sempre, contextual, C["cacoete"])
     n_arr = marca_arrastadas(stream, sempre, C)
@@ -1484,6 +1642,7 @@ def cmd_analyze(a):
         print(f"[analyze] retomadas colapsadas: {n_eco}")
     n_prot = protege_enumeracoes(stream, C["contagem"])
     n_esc = protege_naolidos(stream)
+    n_pta = protege_pontas(stream)
     anot = encaixa_anotacoes(stream, carrega_anotacoes(d))
     for a in anot:
         if a.get("ajustada"):
@@ -1497,6 +1656,10 @@ def cmd_analyze(a):
         print(f"[analyze] cortes no escuro desfeitos: {n_esc} trecho(s) "
               f"`??` devolvidos ao video e ao revisao.txt - a regra "
               f"decidia por um texto que nao existe")
+    if n_pta:
+        print(f"[analyze] fala recuperada na ponta devolvida: {n_pta} "
+              f"trecho(s) - a regra de texto decidia num tamanho em que "
+              f"ninguem a mediu")
     if anot:
         print(f"[analyze] anotacoes de julgamento: {len(anot)} trechos, "
               f"{n_anot} tokens novos")
@@ -2107,9 +2270,21 @@ def spans_corte(stream, C, anot=None, dur=None):
     # 2. Silencio final: depois da ultima palavra nao ha token nenhum, entao
     #    marcar tokens nunca alcanca esse trecho. Era por aqui que passavam
     #    os 15s de ela em silencio, olhando para os lados e saindo de quadro.
+    #
+    #    "Depois da ultima palavra nao ha token nenhum" deixou de ser sempre
+    #    verdade: o `analyze` mede o fechamento como mede qualquer lacuna, e
+    #    quando ha voz legivel ali o trecho vira `hesitacao` de verdade. Por
+    #    isso a conta soma a hesitacao MANTIDA. Sem ela este passo cortaria
+    #    por cima da recuperacao, e a fala apareceria no transcript.md so
+    #    para sumir do video na linha seguinte - o defeito de sempre, com
+    #    uma etapa a mais no caminho.
+    #
+    #    MEDIDO nos 12 fluxos de work/ analisados pela versao antiga: a
+    #    conta larga da EXATAMENTE o mesmo numero que a estreita nos 12, e
+    #    por isso nenhum video ja analisado muda de corte por causa dela.
     if dur:
-        ult = max((t["e"] for t in stream if t["k"] == "palavra"
-                   and not t["cut"]), default=None)
+        ult = max((t["e"] for t in stream if not t["cut"]
+                   and t["k"] in ("palavra", "hesitacao")), default=None)
         if ult is not None and dur - ult > cs["pausa_intocavel"]:
             out.append([ult + alvo, dur])
 

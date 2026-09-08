@@ -431,10 +431,60 @@ def teste_naolido():
         "trecho protegido reaparece como pendencia no revisao.txt")
 
 
+def teste_ponta():
+    """A abertura e o fechamento do video eram a unica lacuna que o
+    programa cortava sem perguntar ao microfone. Hoje passam pelo mesmo
+    caminho da lacuna do meio - e ai aparece o defeito seguinte, que e o
+    que este teste guarda: as regras de TEXTO que correm depois do
+    `analyze` foram calibradas em trecho recuperado de 1 a 2s, e uma ponta
+    pode ser um pedaco inteiro de aula.
+
+    Um caso de verdade: os 74,4s de abertura do "5 de espadas", recuperados
+    como "Os cinco de espadas. Essa carta tem uma dor..." e cortados
+    inteiros por `marca_ecos` como `retomada colapsada`, porque uma das
+    dezenas de palavras do trecho reaparece na janela de 6 tokens
+    seguintes."""
+    print()
+    print("== fala recuperada na ponta (protege_pontas)")
+
+    def guarda(why, ponta="abertura"):
+        f = [tok("hesitacao", "Os cinco de espadas. Essa carta tem uma dor",
+                 0.0, 74.4, True, why)]
+        if ponta:
+            f[0]["ponta"] = ponta
+        tc.protege_pontas(f)
+        return f[0]["cut"]
+
+    diz(guarda("retomada colapsada: Os cinco de espa") is False,
+        "eco nao corta a abertura recuperada")
+    diz(guarda("nao e fala (2.4 car/s)") is False,
+        "nem a densidade, medida sobre 53s de silencio no denominador")
+    diz(guarda("tentativa", ponta="fechamento") is False,
+        "o fechamento vale a mesma promessa da abertura")
+    diz(guarda("anotado: introducao fora", ponta="abertura") is True,
+        "anotacao continua cortando - e gente, nao regra")
+    diz(guarda("ela mandou cortar: corta essa parte") is True,
+        "'ela mandou cortar' continua cortando, pelo mesmo motivo")
+    diz(guarda("retomada colapsada: qualquer", ponta=None) is True,
+        "token do MEIO segue as regras de sempre: a guarda so vale na ponta")
+
+    # o laco: protegida, a ponta vira PERGUNTA numerada. Sem isto a guarda
+    # so trocaria "sumiu calado" por "ficou calado".
+    f = [tok("hesitacao", "Os cinco de espadas. Essa carta tem uma dor",
+             0.0, 74.4, True, "retomada colapsada: Os cinco"),
+         tok("palavra", "espadas", 74.5, 75.2)]
+    f[0]["ponta"] = "abertura"
+    tc.protege_pontas(f)
+    pend = tc.pendencias(f, tc.cfg(), set())
+    diz(any(q["rot"] == "texto reconstruido" for q in pend),
+        "ponta protegida reaparece como pendencia no revisao.txt")
+
+
 def main():
     alvos = sys.argv[1:] or CALIBRACAO
     teste_gaguejada()
     teste_naolido()
+    teste_ponta()
     teste_vocabulario()
     teste_respostas()
     teste_texto_explica_o_tempo()

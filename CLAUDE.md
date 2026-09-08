@@ -331,6 +331,73 @@ propósito: rodá-la fora de ordem (num teste, num script de medição) sobre um
 e ressuscitar julgamento humano é o mesmo defeito de apagá-lo, do outro
 lado.
 
+**A ponta do vídeo é uma lacuna, e por muito tempo foi a única que ninguém
+media.** A lacuna do MEIO já media voz com `mede_voz`, já re-transcrevia
+isolado com `vad_filter=False` e já protegia o que não deu para ler. A
+ABERTURA (antes da 1ª palavra) saía do `cmd_analyze` com `cut=True` escrito
+no braço — um `silencio` rotulado `abertura` —, e o FECHAMENTO (depois da
+última) nem token tinha: era cortado lá na geometria, no passo 2 do
+`spans_corte`. Nos dois, a única pergunta feita era "a lacuna passa de
+`pausa_intocavel`?". Nenhuma das quatro guardas conhecidas cobria esse
+caminho, porque **todas elas moram depois dessa linha**.
+
+MEDIDO no "5 de espadas": o Whisper não transcreveu NADA nos primeiros
+74,4 s, e o Rafael ouviu ali mais de um minuto de aula, com a frase "o 5 de
+espadas" dentro. Sumiu do corte sem `[??]`, sem pendência, sem nada. Hoje as
+duas pontas passam pelo mesmo caminho da lacuna do meio, e a introdução volta
+transcrita ("Os cinco de espadas. Essa carta tem uma dor, ela tem uma cena
+tão triste…").
+
+MEDIDO (05/09/2026) nas 24 pontas dos 12 fluxos de `work/`: 9 são silêncio
+puro e 13 têm a leitura recusada por `alucinou` (frase-fantasma, loop
+repetido, logprob, denso demais) — nessas 22 nada muda, e **é o `alucinou`
+que filtra lixo nesta escala**, não a densidade. Passam duas, as duas
+aberturas: os 74,4 s do "5 de espadas", que são aula, e 8,8 s de "Eu sei." no
+"6 de espadas", que provavelmente não são. As duas viram pendência numerada
+(`texto reconstruido`), que o `conferir` cobra até alguém responder.
+
+Duas regras de texto tiveram de sair do caminho, e as duas pela MESMA razão —
+**foram calibradas em trecho recuperado de 1 a 2 s, e uma ponta pode ser um
+pedaço inteiro de aula**:
+
+- `classifica_fala` divide letras por DURAÇÃO, e numa ponta a duração
+  carrega as pausas da aula: 74,4 s a 29 % de voz são 53 s de silêncio no
+  denominador. Deu 2,4 car/s e a regra cortou a introdução como se fosse um
+  "eeee". MEDIDO: essa regra já cortou 85 vezes nos 12 fluxos e NUNCA acima
+  de 8,0 s (mediana 1,60 s); todos os casos acima de 4,5 s são vogal
+  sustentada. Por isso texto recuperado numa ponta não passa por ela.
+- `marca_ecos` cortou a mesma introdução como `retomada colapsada`. A regra
+  está certa e é estreita — trecho recuperado que repete palavra vizinha —,
+  só que "vizinha" é uma janela de 6 tokens (`[cacoete].eco_janela`,
+  calibrada no "como se [como seja…] existisse uma tradição"), e um trecho de
+  74 s tem dezenas de palavras: acertar uma das 6 seguintes é quase certo.
+
+`protege_pontas` fecha isso, irmã de `protege_naolidos`, no mesmo lugar e com
+a mesma forma — depois das passadas automáticas, antes de `aplica_anotacoes`,
+com as mesmas duas exceções (`ela mandou cortar` e `anotado:` são gente, não
+regra). A guarda é por TOKEN DE PONTA e não por regra de propósito: são três
+passadas com o mesmo defeito (`marca_cacoetes`, `marca_tentativas`,
+`marca_ecos`) e uma pergunta só. O token carrega `ponta` — campo extra, como
+`ouviu`/`recusa`/`cauda`, fora do `selo_stream` (só `k`/`s`/`e`/`cut`), então
+não invalida `transcript.md` nenhum.
+
+O que NÃO mudou, e é de propósito: quando a ponta é silêncio de verdade, ou
+quando a leitura é recusada, o comportamento é o de sempre, byte a byte — a
+abertura continua saindo como `silencio` rotulado `abertura` e o fechamento
+continua sem token, porque quem corta o rabo do vídeo é o passo 2 do
+`spans_corte` e dar-lhe um token ali encurtaria a cauda de TODO vídeo em
+0,39 s sem medição nenhuma pedindo isso. **Muda-se o que se decide, não a
+geometria de quem já decidia certo.** MEDIDO: IMG_0246, IMG_0247 e IMG_0248
+saem com o corte idêntico ao de antes — 22, 70 e 70 emendas, `conferir.txt`
+igual linha por linha.
+
+O passo 2 do `spans_corte` também teve de aprender que "depois da última
+palavra não há token nenhum" deixou de ser sempre verdade: a conta de `ult`
+agora soma a `hesitacao` MANTIDA, senão ela cortaria por cima da recuperação
+e a fala apareceria no `transcript.md` só para sumir do vídeo na linha
+seguinte. MEDIDO nos 12 fluxos analisados pela versão antiga: a conta larga
+dá exatamente o mesmo número que a estreita nos 12.
+
 **A segunda opinião sobre o tempo é do Whisper, e ela sai onde se confere.**
 Os seis outros achados do `conferir` medem o corte contra os tempos do
 ALINHADOR — os mesmos com que ele foi calculado. Quando é o alinhador que
@@ -532,8 +599,10 @@ sem resposta automática vira pendência numerada, toda pendência está
 ancorada no texto, e a lista não incha —, e o laço da resposta: a
 pendência sem resposta chega ao `conferir`, a resposta casa pelo tempo
 mesmo com a lista renumerada, e o arrasto que a poda não levou vira medida
-(sem disparar na folga de desenho), e a guarda do corte no escuro — regra
-não corta `??`, anotação corta, e o trecho protegido volta a ser pendência.
+(sem disparar na folga de desenho), e as duas guardas irmãs — no corte no
+escuro, regra não corta `??`; na ponta do vídeo, regra de texto não desfaz a
+fala recuperada, e nas duas anotação continua cortando e o trecho protegido
+volta a ser pendência.
 Foi este teste que achou a `[disputa]` sumindo quando caía num token
 cortado. Nele mora também a promessa invertida: a pergunta sobre trecho
 que **já saiu** continua sendo cobrada até alguém restaurar ou responder,
