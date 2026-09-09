@@ -128,10 +128,15 @@ na ordem em que você vai ouvir.
 venv\Scripts\python.exe tarocut.py editor "C:\Users\marip\Videos\IMG_0247.MOV"
 ```
 
-Abre uma página com o texto do vídeo inteiro, ipsis litteris, e **riscado**
-tudo o que não vai sair no .mov — inclusive o que as anotações do passe de
-julgamento tiraram. Não tem linha do tempo, não tem forma de onda: é o
-texto.
+Abre uma página em duas metades. Em cima, o texto do vídeo inteiro, ipsis
+litteris, e **riscado** tudo o que não vai sair no .mov — inclusive o que as
+anotações do passe de julgamento tiraram. Embaixo, a **faixa de áudio**: a
+mesma coisa dita em tempo, com a onda, os blocos de palavra e a régua nos
+dois relógios (o da fonte e o do `.m4a` que você ouve).
+
+As duas metades são a mesma coisa, e é esse o ponto: **selecionar uma
+palavra acende o trecho dela na onda; arrastar na onda acende as palavras;
+ocultar de um lado risca do outro.**
 
 Quatro marcas, e cada uma responde uma pergunta diferente:
 
@@ -149,12 +154,28 @@ confirmar ou corrigir. Isso não muda um milissegundo do corte — é texto,
 para a legenda que uma etapa futura vai gerar.
 
 Clique numa palavra e ela é selecionada; arraste para pegar um trecho.
-Aparecem quatro botõezinhos, um par de cada lado: **o de menos esconde mais
-um tanto daquele lado, o de mais devolve.** O tanto é a *unidade*, escolhida
-no canto da tela entre 1 ms e 1 s (teclas `1` a `7`). O mais desfaz o menos
-exato, então dá para tatear. `backspace` oculta a palavra inteira (e
-restaura, se já estiver oculta); `ctrl+clique` põe o cursor entre duas
-letras, para quando o corte tem de cair no meio de uma palavra.
+`backspace` oculta a seleção — e **oculta mesmo**: a palavra some do áudio,
+inclusive as curtas ("de", "que", "e"), que antes o programa avisava não ter
+conseguido tirar. `backspace` de novo restaura. As setas andam pelo texto,
+`shift`+setas estende.
+
+Na faixa de áudio, três gestos e nenhum botão:
+
+| você quer | faça |
+|---|---|
+| tirar um trecho | **arraste sobre a região limpa** (a que ainda toca) |
+| devolver um trecho | **arraste sobre a região hachurada** (a que já saiu) |
+| mexer numa emenda | **arraste a linha vertical** onde uma encontra a outra |
+
+A regra do começo vale para o arrasto inteiro: começou no que toca, tudo o
+que ele cobriu sai; começou no que já saiu, tudo o que ele cobriu volta.
+Arrastar de volta por cima desfaz exato. A roda do mouse dá zoom, arrastar a
+régua anda pelo vídeo, e clicar num bloco de palavra seleciona aquela
+palavra — igual a clicar nela no texto.
+
+Nada disso é calculado no navegador: cada gesto vai ao servidor e volta com
+o corte já feito pela mesma função que o `render` usa. Enquanto o dedo anda,
+a tela mostra um fantasma; quando a resposta chega, quem manda é ela.
 
 **Botão direito no texto**: tocar a seleção, ou tocar dali em diante — o
 corte, com `espaço` pausando — e **tocar o original (sem o corte)**, que é
@@ -167,6 +188,14 @@ palavra começa/termina nem se ela sai do vídeo, e serve para a legenda que
 uma etapa futura vai gerar. Clique, apague/reescreva, `enter` grava (ou
 clique fora); `esc` desiste. **Botão direito fora do texto**: exportar
 áudio, exportar vídeo, conferir.
+
+No **canto superior direito** ficam a caixa "ir para" — digite `1:29`, o
+tempo que você anotou ouvindo o `.m4a`, e a tela vai até a palavra — e um
+botão com a conta do que merece ouvido (`⚠ 37`). Ele abre o painel: o que
+você mandou e não saiu, o que o `conferir` acharia neste corte agora, o que
+a geometria não deu conta e o programa completou no tempo exato, e os botões
+de exportar. Fica escondido de propósito; a **conta** não, e fica vermelha
+quando há pedido desobedecido ou arquivo desatualizado.
 
 O que você faz aqui vai para `work/<video>/montagem.json` (o corte) e
 `work/<video>/correcoes.json` (o texto), sozinho, a cada gesto — não há
@@ -245,7 +274,7 @@ novo, repita até gostar. Só então renderize.
 Três linhas do `conferir` valem uma palavra à parte, porque o conserto
 delas não é anotação: `ARRASTO SOBREVIVE` é o rabo de uma palavra
 arrastada que o corte não levou (a poda era curta demais para virar
-emenda), e o lugar de apará-lo é o editor, com o botão de menos.
+emenda), e o lugar de apará-lo é o editor, arrastando na onda.
 `PENDENCIA SEM RESPOSTA` não é defeito de corte nenhum — é uma pergunta
 do `revisao.txt` esperando decisão. E `PALAVRA ENTERRADA` é o alinhador
 errando, não o corte: pelo relógio do Whisper — a única segunda opinião

@@ -30,7 +30,7 @@ mesmos comandos.
 | `alinhar.py` | wav2vec2 — fronteiras de palavra (o Whisper erra os tempos) |
 | `gui.py` | janela Tk; só dispara comandos e mostra estado |
 | `editor.py` | servidor do editor: a sessão, os gestos, o que a tela pergunta |
-| `editor.html` | a tela: a transcrição, os quatro botões, o motor de áudio |
+| `editor.html` | a tela: a transcrição em cima, a onda embaixo, o motor de áudio |
 | `teste_editor.py` | as promessas do editor que quebram em silêncio |
 | `teste_revisao.py` | as promessas do passe de julgamento que quebram em silêncio |
 | `lexico.py` | gera `lexicon/terms.txt` a partir do livro do Yala |
@@ -168,6 +168,18 @@ cobrança só vale onde trecho e pergunta coincidem (`proprio`): numa
 `retomada?` o trecho vai da primeira tentativa até a versão boa, e cortar
 só a primeira — o que se pede — deixa a segunda tocando.
 
+**Restaurar arrastando responde a pendência, e por um dia não respondia.**
+`pendencias` marca "já respondida à mão" pelo `why` de `MAO_MANTEM`, que só
+a camada de PALAVRA escreve. Com a onda, "trouxe de volta arrastando" é a
+mesma decisão humana dita em tempo, e a cobrança ficaria acesa para sempre
+depois de respondida pelo gesto mais direto que o editor oferece.
+`_mao_responde` fecha isso com a MESMA forma e o mesmo `tol` (0,15 s) de
+`anotacoes_desobedecidas`: o que sobrou tocando sobrou por mão da pessoa?
+O `vivo > tol` de dentro dela não é detalhe de borda — sem ele a pendência
+`cortada`, a única que nasce sobre trecho já cortado e cujo `vivo` é zero,
+passaria trivialmente (0 ≥ −0,15) e sairia da lista sem ninguém responder
+nada.
+
 A resposta se guarda pelo **tempo** da pendência, nunca pelo número: uma
 pendência do meio da lista que sai renumera todas as de baixo, e a resposta
 passaria a valer para outra pergunta. Mesma regra do `s`/`e` do
@@ -229,10 +241,112 @@ trechos, vindos da mesma `intervalos()` que o `render` usa. Refazer a
 geometria em JS é mais rápido e mente em algum canto. Não porte
 `spans_corte` para o front — nem "só para desenhar".
 
-Isso vale até para as contas pequenas: qual trecho cada botão vai tirar ou
-devolver sai do `Sessao.gestos`, e a letra dentro da palavra vira tempo no
-`Sessao.selecao`. A tela manda "palavra 137, letra 4 de 8" e desenha a
-resposta.
+Isso vale até para as contas pequenas: quais palavras um arrasto na onda
+pegou sai do `Sessao.selecao`, e a conversão entre os dois relógios sai da
+tabela que o servidor manda pronta (`somas_previa`, em `est.ivp`). A tela
+manda "de 42,3 s a 42,9 s" e desenha a resposta.
+
+O que a tela PODE fazer, e faz desde 08/09/2026: converter pixel em tempo
+dentro da janela que ela mesma desenhou, desenhar amplitude a partir do PCM
+que a Web Audio já decodificou para tocar, e mostrar um fantasma da borda
+enquanto o mouse anda. Isso é desenho e resposta ao dedo. **Um POST por
+gesto, ao soltar** — nunca um por quadro —, e o valor que vale é o `iv` que
+volta: quando o servidor corrige a borda, a tela obedece à correção, mesmo
+que precise puxar de volta o que o mouse tinha soltado.
+
+**"Ocultei a palavra e ela sumiu" é verdade, sem asterisco — e custou uma
+medição para virar verdade.** Até 08/09/2026 o programa AVISAVA que não
+tinha obedecido: `folga_palavra` (0,06 s de cada lado) mais `minimo`
+(0,28 s) anulam o corte de toda palavra menor que 0,40 s, e o aviso
+corretíssimo morava num painel lateral desconectado da palavra clicada.
+
+MEDIDO nos três de calibração, ocultando cada palavra mantida uma de cada
+vez: **a palavra sumia de verdade em 7 de 306 (IMG_0246), 21 de 660
+(IMG_0247) e 20 de 742 (IMG_0248)**, e sobrevivia INTEIRA em 168, 343 e
+391. Não é caso de borda — são quase todas as palavras curtas do português
+falado ("de", "que", "e", "um", "no", "ou"), que são exatamente as de uma
+gaguejada. Depois: 306/306, 660/660, 742/742, zero exceções.
+
+O conserto é o `_palavras` gravar a decisão nas DUAS camadas: a de palavra,
+que continua passando por toda a geometria de emenda, e o trecho de tempo
+do próprio token, que entra por último e não passa por nada. Onde as duas
+concordam ele não muda um milissegundo; onde discordam, quem se dobra é a
+geometria. Que os dois caminhos dão o MESMO corte não é sorte de
+implementação, é aritmética: o corte final é (geometria ∪ este trecho), e
+`[s,e]` = (o que está dentro do corte) ∪ (o que está fora). Completar só o
+resíduo daria byte a byte a mesma coisa — só que gravaria no `montagem.json`
+um número que não se pode reler ("os 60 ms que sobraram naquele dia") em
+vez do que a pessoa disse ("esta palavra").
+
+**O PREÇO, medido, é uma emenda a mais por palavra oculta, no máximo.**
+MEDIDO nos três, ocultando cada palavra mantida uma de cada vez: nunca mais
+de +1 emenda (média +0,52 a +0,55; nenhuma palavra piora em duas), e o corte
+tira em média 153 ms a mais — que é justamente a palavra que antes ficava.
+O corte de partida dos três não muda: IMG_0246 e IMG_0248 saem idênticos, e
+o IMG_0247 (o único com `montagem.json` de verdade) vai de 291,696 s para
+291,636 s nos mesmos 70 trechos — os 60 ms do `cartas` de 159,57 s, oculto à
+mão e que continuava tocando.
+
+O que se abre mão é a proteção de 0,06 s em volta da palavra vizinha, e
+`folga_palavra` é o erro de fronteira MEDIDO do alinhador (72% dos fins de
+palavra do Whisper caem tarde, mediana +27 ms — está no comentário dele no
+`config.toml`). Trocou-se "sobra farelo do que se mandou sair" por "pode
+comer a sílaba do vizinho": risco simétrico, e agora visível na onda,
+audível num clique e consertável num arrasto. **Nenhum número do
+`config.toml` foi tocado** - `folga_palavra` e `minimo` continuam mandando
+em tudo o que a regra automática decide, que é onde eles foram medidos.
+
+**Completar em silêncio seria a versão nova do defeito de sempre.** Por isso
+`completados` existe e é uma das quatro coisas que o painel mostra: "a
+geometria deixava 0,06 s de 'cartas' tocando; completei no tempo exato". Ele
+sai de `_geometria()`, o corte que a geometria faria SOZINHA com as decisões
+de palavra de agora - não é o corte que sai, e não serve para desenhar nada;
+serve só para essa testemunha.
+
+E `Sessao.avisos` mudou de papel junto: era "você mandou e não saiu", agora
+é **alarme de regressão**. Se ele disparar, a promessa acima deixou de valer
+e a resposta certa não é um botão, é um conserto. A exceção é o arrasto que
+contradiz a palavra de propósito (ocultar a palavra e devolver metade dela
+arrastando é um pedido perfeitamente claro): esse sai cinza, marcado `mao`,
+do mesmo jeito e pela mesma razão que a anotação reaberta à mão.
+
+**A onda é a mesma fração do riscado, desenhada sobre o eixo do tempo.** Ela
+sai do PCM que a Web Audio já decodificou para tocar — nenhum endpoint novo,
+nenhuma segunda leitura do arquivo —, e por isso é por construção o áudio
+que se ouve. A escala vertical é o PICO DO ARQUIVO INTEIRO: MEDIDO no
+IMG_0247, o pico é 0,32 e a fala corrente bate 0,05-0,15, então em escala
+absoluta a onda vira um fio de cabelo. Normalizar pela JANELA seria pior de
+outro jeito — cada rolagem mudaria a altura da mesma sílaba, e uma janela só
+de silêncio viraria uma cabeleira de ruído. Pelo arquivo, a altura quer
+dizer sempre a mesma coisa e não há limiar nenhum para escolher.
+
+A janela é FIXA ao redor da seleção, sempre no mesmo aumento (roda dá zoom,
+arrastar a régua anda). Seleção maior que a janela NÃO encolhe a escala: a
+janela rola e as duas pontas ficam marcadas na borda. É o que preserva a
+borda agarrável — com "cabe a seleção inteira", um parágrafo de 40 s em
+300 px dá 7 px/s e uma borda de 60 ms vira menos de um pixel.
+
+**Selecionar por tempo casa por METADE do token, não por um epsilon.** Os
+tokens são contíguos (o fim de um é o começo do outro) e às vezes se
+sobrepõem de verdade — o alinhador devolve `a` em 118,008-118,028 e `gente`
+começando em 118,010, no IMG_0248. Com um epsilon, selecionar `a` vinha com
+`gente` de brinde e clicar numa palavra na onda acendia três na folha.
+Metade é a mesma regra que o `Sessao.avisos` usa para a mesma espécie de
+pergunta ("12% de 'cavaleiras' é nada, 100% de 'de' é a palavra inteira"), e
+ela se paga sozinha: 18 ms de sobreposição não são metade de `gente`, e são
+a palavra `a` inteira.
+
+**Andar a seleção não muda o corte, e por um dia custou como se mudasse.**
+MEDIDO no IMG_0247: 247 ms e 338 KB de JSON por gesto, e um arrasto de dez
+palavras são dez gestos. `_chave_corte` separa o que depende do corte
+(`pecas`, `avisos`, `achados`, `completados`) do que depende da seleção, e
+`intervalos()` guarda o resultado pelas duas camadas que o produzem. Hoje:
+**seleção 7 ms e 8 KB; arrasto na onda 210-250 ms; gesto de palavra 500 ms**
+(esse recalcula `pendencias` e a geometria-testemunha, e não tem como não
+recalcular). O `enxuga` que corta as `pecas` da resposta mora no caminho do
+FIO, e não no `estado`: um `estado()` que às vezes devolve `pecas: None` é
+armadilha para todo mundo que não seja o navegador, e o teste caiu nela na
+primeira versão disto.
 
 **O riscado sai dos trechos mantidos, não do `cut` do token.** É o que faz a
 tela mostrar o corte de verdade — inclusive o que uma anotação tirou e o que
@@ -257,11 +371,20 @@ IMG_0247, sem nenhum token onde pendurar a marca.
 anota ouvindo o `.m4a` (`[01:29]`); a folha pensa em tempo de fonte, e até
 04/09/2026 não mostrava tempo nenhum — achar na tela o lugar de uma
 anotação pedia rodar `conferir --em` em outra janela. Agora a caixa "ir
-para" aceita `1:29`, a seleção mostra o tempo dela na prévia, e a lista "o
-que ouvir" corre na ordem da prévia (a da fonte fica no `title`), que é a
-ordem do `conferir.txt` porque é a ordem em que se ouve. Quem traduz é o
-servidor, pela `_mapa_previa` — o mapa é feito do corte, e corte não se
-calcula no navegador nem "só para navegar".
+para" aceita `1:29`, a régua da onda tem os dois relógios um sobre o outro,
+a seleção mostra o tempo dela na prévia, e a lista "o que ouvir" corre na
+ordem da prévia (a da fonte fica no `title`), que é a ordem do
+`conferir.txt` porque é a ordem em que se ouve. Quem traduz é o servidor,
+pela `_mapa_previa` — o mapa é feito do corte, e corte não se calcula no
+navegador nem "só para navegar".
+
+A régua é a única que precisa da conversão dez vezes por redesenho, e um
+POST por marca de tempo seria absurdo. Por isso `somas_previa` existe e o
+servidor manda a TABELA pronta em `est.ivp`: a tela lê a tabela, não a
+refaz. É a mesma função que o `_mapa_previa` usa nas duas direções — uma
+segunda soma corrida feita no navegador "só para desenhar a régua" seria a
+mesma conta dita duas vezes, e a que diverge calada é sempre a que ninguém
+está olhando.
 
 O aviso que vem junto é o que fecha o buraco: **o primeiro gesto no editor
 já invalida o `.m4a` do disco**, e um `[01:29]` anotado ouvindo o arquivo
@@ -471,13 +594,16 @@ o token cortado sobrevive por completo, seja qual for o tamanho — dois
 casos nos 10 fluxos, um `eu` de 0,08s e um `na` de 0,06s dentro de uma
 anotação.
 
-**Ocultar palavra curta pode não ocultar nada.** `_respeita_palavras` recua
-a emenda `folga_palavra` (0,06 s) de cada palavra mantida vizinha, então uma
-palavra mais curta que 0,12 s fica coberta pelas duas folgas e sobrevive
-inteira — medido no `de` de 100,19s do IMG_0248. Não se conserta baixando a
-folga: 0,06 é o erro de fronteira medido do alinhador. O `Sessao.avisos`
-pergunta e a tela diz; o conserto é a pessoa terminar com o botão de menos,
-que passa por cima da geometria.
+**Ocultar palavra curta não ocultava nada, e isso está fechado.**
+`_respeita_palavras` recua a emenda `folga_palavra` (0,06 s) de cada palavra
+mantida vizinha, então uma palavra mais curta que 0,12 s fica coberta pelas
+duas folgas; e `minimo` (0,28 s) descarta o resto do corte de qualquer
+palavra menor que 0,40 s. Medido no `de` de 100,19s do IMG_0248: sobrava
+inteiro. Não se conserta baixando a folga — 0,06 é o erro de fronteira
+medido do alinhador — e nem se conserta com um aviso, que foi o que se
+tentou primeiro. Hoje quem conserta é `_palavras`, gravando a decisão
+também na camada de tempo (ver "Ocultei a palavra e ela sumiu", acima); o
+`Sessao.avisos` continua perguntando, agora como alarme de regressão.
 
 **Restaurar à mão vale para qualquer token, e por um tempo não valia para
 metade deles.** A anotação de julgamento entra no corte como TRECHO DE
@@ -663,9 +789,19 @@ antes de mexer em qualquer outra coisa.
 
 Mexeu no editor ou na geometria? **`venv\Scripts\python.exe
 teste_editor.py`** roda nos três vídeos de calibração e checa o que quebra
-calado: o mais desfaz o menos exato, ocultar a palavra tira a palavra (ou
-avisa que não tirou), e o corte que a tela mostrou é byte a byte o que o
-`render` relê do disco.
+calado: arrastar de volta na onda desfaz exato, **ocultar a palavra tira a
+palavra** (ponto, e a amostra começa pelas mais curtas, que eram justamente
+as que nunca saíam), selecionar no texto e selecionar na onda dão o mesmo
+trecho, ocultar na onda risca a palavra no texto, restaurar devolve o token
+inteiro seja ele palavra, hesitação ou silêncio, restaurar arrastando
+responde a pendência sem responder as outras, e o corte que a tela mostrou é
+byte a byte o que o `render` relê do disco.
+
+Ele foi reescrito em 08/09/2026 junto com o editor. As promessas dos botões
+de mais e menos saíram com eles; a garantia por trás de cada uma — **nunca
+sumir decisão em silêncio** — continua valendo, e cada uma ganhou lá o
+equivalente do modelo novo. Um teste que sai deste arquivo tem de deixar no
+lugar a pergunta que ele fazia, não só o `ok`.
 
 Mexeu na marcação ou no `revisao.txt`? **`venv\Scripts\python.exe
 teste_revisao.py`**, o irmão dele para a outra metade: a gaguejada pela

@@ -5,18 +5,29 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>tarocut - editor</title>
 <!--
-  A tela do editor. Uma regra manda em tudo o que esta aqui dentro:
+  A tela do editor: a transcricao em cima, a faixa de audio embaixo, e as
+  duas dizendo a MESMA coisa. Selecionar palavra acende o tempo; arrastar no
+  tempo acende a palavra; ocultar de um lado risca do outro.
+
+  Uma regra manda em tudo o que esta aqui dentro:
 
   ESTE ARQUIVO NAO CALCULA CORTE. Nem um pedaco. Todo gesto vira um POST
   /acao e volta com os trechos ja calculados por `tarocut.intervalos()`, a
-  mesma funcao do render. Ate "quanto este botao vai devolver" vem de la.
-  O que se faz aqui e desenhar a resposta e tocar o audio - e desenhar
-  inclui o riscado, que sai dos trechos MANTIDOS e nao do `cut` do token:
-  o que aparece riscado e o que de fato nao vai sair no .mov.
+  mesma funcao do render, com o mesmo snap, a mesma fusao de ilhas, o mesmo
+  minimo. O riscado sai dos trechos MANTIDOS e nao do `cut` do token: o que
+  aparece riscado e o que de fato nao vai sair no .mov.
 
-  A unica conta de tempo que sobrou na tela e a posicao da letra dentro da
-  palavra, e mesmo essa e feita no servidor (`Sessao.selecao`): a pagina
-  manda "palavra 137, letra 4 de 8".
+  O que ESTE arquivo pode fazer, e faz: converter pixel em tempo dentro da
+  janela que ele mesmo desenhou, desenhar amplitude a partir do PCM que a
+  Web Audio ja decodificou para tocar, e mostrar um FANTASMA da borda
+  enquanto o mouse anda. Isso e desenho e resposta ao dedo, nao geometria -
+  o valor que vale e o `iv` que volta do servidor, e quando o servidor
+  corrige a borda a tela obedece, mesmo que precise puxar de volta o que o
+  mouse tinha soltado. Um POST por gesto, ao soltar; nunca um por quadro.
+
+  A regua fala nos dois relogios (fonte e previa). A tabela de conversao vem
+  pronta do servidor em `est.ivp` (`tc.somas_previa`) - a tela LE a tabela,
+  nao a refaz.
 -->
 <style>
 :root{
@@ -31,29 +42,26 @@
   --linha:#cfcbc3;
   --painel:#f3f1ec;
   --alarme:#8c3b2e;
+  --devolve:#3f6b46;    /* o gesto que TRAZ de volta */
 }
 *{box-sizing:border-box}
-html,body{margin:0;padding:0}
+html,body{margin:0;padding:0;height:100%}
 body{
   background:var(--papel);
   color:var(--tinta);
   font:20px/1.95 Cambria,Georgia,"Palatino Linotype","Book Antiqua",serif;
   -webkit-font-smoothing:antialiased;
+  /* tres quartos de transcricao, um quarto de onda. A faixa e fixa e nunca
+     rola junto: e o unico lugar da tela onde o tempo tem escala. */
+  display:grid;
+  grid-template-rows:1fr auto;
+  overflow:hidden;
 }
 
 /* ------------------------------------------------------------ a folha */
-/* A margem da direita e o lugar do painel E dos botoes de mais/menos, que
-   passam 55 px do fim da palavra: sem ela, uma palavra no fim da linha
-   ganhava botoes por baixo do painel. */
-body{padding-right:330px}
-#folha{
-  max-width:33em;
-  margin:0 auto;
-  padding:3.5rem 1.5rem 60vh;   /* fundo alto: da para rolar a ultima linha ate o meio */
-  user-select:none;
-  cursor:default;
-}
-#folha p{margin:0 0 1.5em;text-align:justify;hyphens:auto}
+#folha{overflow-y:auto;overflow-x:hidden;user-select:none;cursor:default}
+#texto{max-width:33em;margin:0 auto;padding:3rem 1.5rem 30vh}
+#texto p{margin:0 0 1.5em;text-align:justify;hyphens:auto}
 
 .tok{border-radius:2px;padding:1px 0}
 .tok.sel{background:var(--sel)}
@@ -66,108 +74,95 @@ body{padding-right:330px}
 .f{color:var(--fora);text-decoration:line-through;text-decoration-thickness:1px}
 /* Riscado que veio do passe de julgamento, e nao da regra automatica. Sao
    41, 179 e 14 tokens nos tres videos de calibracao - 19% do IMG_0247 -, e
-   ate 04/09/2026 saiam com o mesmo cinza do corte mecanico. A camada mais
-   cara de produzir era a unica sem marca nenhuma na folha: para saber que
-   uma palavra saiu por julgamento era preciso clicar nela e ler o "Por que
-   saiu", uma palavra de cada vez. Lapis azul e o que o revisor usa em
-   papel; a diferenca com o cinza tem de ser de COR, porque a forma
-   (riscado) ja diz outra coisa. */
+   ate 04/09/2026 saiam com o mesmo cinza do corte mecanico. Lapis azul e o
+   que o revisor usa em papel; a diferenca com o cinza tem de ser de COR,
+   porque a forma (riscado) ja diz outra coisa. */
 .tok.jul .f{color:var(--julga);text-decoration-color:var(--julga)}
 
-/* Vao: silencio, ou hesitacao de que o transcritor nao tirou texto. Nao
-   tem letra para riscar, entao o risco e o proprio traco - a largura
-   cresce com o que foi tirado, ate um teto, para 15 s de gravacao morta
-   nao sumirem da tela sem deixar marca. */
+/* Vao: silencio, ou hesitacao de que o transcritor nao tirou texto. Nao tem
+   letra para riscar, entao o risco e o proprio traco. A largura continua
+   sendo TIPOGRAFIA e nao escala de tempo (cresce com o que foi tirado ate um
+   teto, para 15 s de gravacao morta nao sumirem da folha) - quem mede tempo
+   agora e a faixa de baixo, e por isso esta largura nao precisa mais fingir
+   que mede. */
 .vao{display:inline-block;position:relative;height:.8em;vertical-align:baseline}
 .vao::before{
   content:"";position:absolute;left:0;right:0;top:.42em;
   border-top:1px solid var(--risco);
 }
 .vao.sel{background:var(--sel)}
-
 /* Vao com VOZ MEDIDA: ela falou e o Whisper nao leu. Pontilhado e em tinta,
-   nao no cinza do risco, porque ate 03/09/2026 as duas coisas eram o mesmo
-   pixel - no IMG_0247, 26 tracinhos de pausa e 34 de voz, iguais, e o title
-   dizia "sem som aqui" nos 34. Pontilhado e o que a tipografia usa ha
-   seculos para "aqui havia algo que nao se leu". */
+   nao no cinza do risco - pontilhado e o que a tipografia usa ha seculos
+   para "aqui havia algo que nao se leu". */
 .vao.voz::before{border-top:2px dotted var(--voz);top:.38em}
 /* Depois da regra da voz, de proposito: um vao anotado que tambem tem voz
    fica pontilhado E azul - as duas coisas sao verdade, e cada uma responde
    uma pergunta diferente (o que ha ali, e quem mandou tirar). */
 .vao.jul::before{border-top-color:var(--julga)}
-/* E ele nunca se esconde, nem quando nada foi ocultado: e justamente o
-   token cortado que sobrevive INTEIRO que dava oculto=0 e sumia da tela
-   (2, 6 e 11 por video nos de calibracao). Sumir por continuar no video e
-   o avesso do que este editor promete. */
 
-/* ------------------------------------------------------- botoes e caret */
-#capa{position:absolute;inset:0;pointer-events:none;z-index:5}
-/* Empilhados na vertical, e nao lado a lado, por medicao boba mas real:
-   dois botoes redondos de 22px em fila tapam cinco letras da palavra
-   vizinha, e este editor existe para mostrar o texto inteiro. Em coluna
-   cobrem duas. O par continua sendo um so gesto - mais em cima, menos
-   embaixo -, e o lado do par e que diz de que borda ele fala. */
-.grupo{position:absolute;display:flex;flex-direction:column;gap:2px;
-       pointer-events:auto}
-.bt{
-  width:17px;height:17px;border:1px solid var(--linha);border-radius:50%;
-  background:var(--painel);color:var(--tinta);
-  font:600 12px/1 system-ui,sans-serif;cursor:pointer;padding:0;
-  display:flex;align-items:center;justify-content:center;
-  box-shadow:0 1px 2px rgba(0,0,0,.10);
-}
-.bt:hover:not(:disabled){background:#fff}
-.bt:disabled{opacity:.28;cursor:default}
-#caret{
-  position:absolute;width:2px;background:var(--tinta);
-  animation:pisca 1.06s step-end infinite;pointer-events:none;
-}
-@keyframes pisca{50%{opacity:0}}
-
-/* --------------------------------------------------------- painel do canto */
-#painel{
-  position:fixed;top:12px;right:12px;width:288px;max-height:calc(100vh - 24px);
-  overflow:auto;background:var(--painel);border:1px solid var(--linha);
-  border-radius:6px;padding:10px 12px;z-index:20;
-  font:12px/1.5 system-ui,"Segoe UI",sans-serif;color:#4a463f;
-  box-shadow:0 2px 10px rgba(0,0,0,.07);
-}
-#cabecalho{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
-#painel h1{font:600 12px/1.4 inherit;margin:0 0 6px;color:var(--tinta)}
-#btAbrir{
-  flex:none;border:1px solid var(--linha);background:#fff;border-radius:4px;
-  padding:3px 7px;font:11px/1 system-ui,"Segoe UI",sans-serif;cursor:pointer;
-  color:#4a463f;
-}
-#btAbrir:hover{background:var(--tinta);color:var(--papel);border-color:var(--tinta)}
-#painel .bloco{margin:9px 0 0;padding-top:9px;border-top:1px solid var(--linha)}
-#painel b{color:var(--tinta);font-weight:600}
-.unid{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}
-.unid button{
-  border:1px solid var(--linha);background:#fff;border-radius:4px;
-  padding:3px 6px;font:11px/1 inherit;cursor:pointer;color:#4a463f;
-}
-.unid button[aria-pressed=true]{background:var(--tinta);color:var(--papel);border-color:var(--tinta)}
-.gesto{display:flex;justify-content:space-between;gap:8px;margin-top:2px}
-.gesto span:last-child{color:#7d786f;text-align:right}
-.gesto.off{opacity:.38}
-.chave{color:#7d786f}
-.chave kbd{
-  font:11px/1 ui-monospace,Consolas,monospace;background:#fff;
-  border:1px solid var(--linha);border-radius:3px;padding:1px 4px;
+/* -------------------------------------------------------- canto de cima */
+/* O painel some daqui: "nao me interessa nada disso, por mim pode ser um
+   painel oculto que aparece quando eu clico um botao no canto superior
+   direito da tela". O que NAO pode e virar mudo - por isso o botao carrega
+   a conta, sempre visivel sem abrir nada. */
+#topo{
+  position:fixed;top:10px;right:14px;z-index:22;display:flex;gap:6px;
+  align-items:center;font:12px/1 system-ui,"Segoe UI",sans-serif;
 }
 #emPrevia{
-  width:100%;margin-top:5px;border:1px solid var(--linha);border-radius:4px;
-  padding:4px 6px;font:12px/1.4 inherit;color:var(--tinta);background:#fff;
+  width:74px;border:1px solid var(--linha);border-radius:4px;
+  padding:5px 7px;font:12px/1.2 inherit;color:var(--tinta);background:#fff;
+  text-align:center;
 }
-#previaAviso{margin-top:5px;color:var(--alarme);line-height:1.4}
-#previaAviso:empty{display:none}
-.aviso{margin-top:5px;color:var(--alarme);cursor:pointer}
+#btPainel{
+  border:1px solid var(--linha);background:var(--painel);border-radius:4px;
+  padding:5px 9px;font:12px/1.2 inherit;cursor:pointer;color:#4a463f;
+}
+#btPainel:hover{background:#fff}
+#btPainel.forte{color:var(--alarme);border-color:var(--alarme);font-weight:600}
+
+/* --------------------------------------------------------- a faixa */
+#faixa{
+  position:relative;height:25vh;min-height:200px;max-height:330px;
+  border-top:1px solid var(--linha);background:var(--painel);
+}
+#onda{display:block;width:100%;height:100%}
+#dica{
+  position:absolute;pointer-events:none;background:var(--tinta);color:var(--papel);
+  border-radius:3px;padding:2px 6px;white-space:pre;z-index:3;
+  font:11px/1.35 ui-monospace,Consolas,monospace;display:none;
+}
+#legenda{
+  position:absolute;left:8px;bottom:4px;pointer-events:none;
+  font:10px/1.4 system-ui,sans-serif;color:#8b867d;
+}
+
+/* --------------------------------------------------------- painel */
+#painel{
+  position:fixed;top:0;right:0;bottom:0;width:340px;max-width:92vw;
+  overflow:auto;background:var(--painel);border-left:1px solid var(--linha);
+  padding:12px 14px 30px;z-index:30;
+  font:12px/1.5 system-ui,"Segoe UI",sans-serif;color:#4a463f;
+  box-shadow:-4px 0 18px rgba(0,0,0,.10);
+}
+#painel[hidden]{display:none}
+#cabecalho{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+#painel h1{font:600 12px/1.4 inherit;margin:0 0 6px;color:var(--tinta)}
+#painel .bloco{margin:9px 0 0;padding-top:9px;border-top:1px solid var(--linha)}
+#painel b{color:var(--tinta);font-weight:600}
+#painel button.mini{
+  border:1px solid var(--linha);background:#fff;border-radius:4px;
+  padding:4px 8px;font:11px/1 inherit;cursor:pointer;color:#4a463f;margin:3px 3px 0 0;
+}
+#painel button.mini:hover:not(:disabled){background:var(--tinta);color:var(--papel)}
+#painel button.mini:disabled{opacity:.35;cursor:default}
+#fechaPainel{border:0;background:none;font:19px/1 inherit;cursor:pointer;color:#7d786f}
+.aviso{margin-top:5px;color:var(--alarme);line-height:1.4}
 .aviso.mao{color:#6b665e}
+.aviso:empty{display:none}
 /* Uma linha da lista "o que ouvir". O rotulo e o MESMO nome que sai no
    conferir.txt, de proposito - dois vocabularios para os mesmos achados
-   fariam a pessoa aprender duas vezes -, mas em caixa alta ele pesa demais
-   num painel de 288 px, entao vai pequeno e espacado, numa linha propria. */
+   fariam a pessoa aprender duas vezes. */
 .ouvir{margin-top:6px;cursor:pointer;color:#57534b;line-height:1.4}
 .ouvir:hover{color:var(--tinta)}
 .ouvir.forte{color:var(--alarme)}      /* voce mandou e nao saiu */
@@ -175,19 +170,19 @@ body{padding-right:330px}
 .ouvir .rot{display:block;font:600 9.5px/1.6 system-ui,sans-serif;
             letter-spacing:.07em;opacity:.8}
 .ouvir .quando{font-variant-numeric:tabular-nums;opacity:.65}
+.chave{color:#7d786f}
+.chave kbd{
+  font:11px/1 ui-monospace,Consolas,monospace;background:#fff;
+  border:1px solid var(--linha);border-radius:3px;padding:1px 4px;
+}
 #log{
   margin-top:5px;max-height:150px;overflow:auto;white-space:pre-wrap;
   font:11px/1.45 ui-monospace,Consolas,monospace;color:#57534b;
 }
-@media (max-width:1180px){
-  #painel{top:auto;bottom:0;right:0;left:0;width:auto;max-height:38vh;border-radius:0}
-  body{padding-right:0}
-  #folha{padding-bottom:46vh}
-}
 
 /* -------------------------------------------------------------- menu */
 #menu{
-  position:absolute;z-index:30;min-width:186px;background:var(--painel);
+  position:fixed;z-index:40;min-width:196px;background:var(--painel);
   border:1px solid var(--linha);border-radius:6px;padding:4px;
   box-shadow:0 4px 14px rgba(0,0,0,.16);display:none;
   font:13px/1 system-ui,"Segoe UI",sans-serif;
@@ -202,7 +197,7 @@ body{padding-right:330px}
 
 /* ------------------------------------------------------------- abrir */
 #abrirVeu{
-  position:fixed;inset:0;background:rgba(33,31,28,.35);z-index:40;
+  position:fixed;inset:0;background:rgba(33,31,28,.35);z-index:50;
   display:flex;align-items:center;justify-content:center;
 }
 #abrirVeu[hidden]{display:none}
@@ -214,15 +209,8 @@ body{padding-right:330px}
 }
 #abrirTopo{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
 #abrirTopo b{color:var(--tinta);font-size:14px}
-#abrirFechar{
-  border:0;background:none;font:20px/1 inherit;cursor:pointer;
-  color:#7d786f;padding:0 4px;
-}
-#abrirFechar:hover{color:var(--tinta)}
-.abrirItem{
-  display:flex;justify-content:space-between;gap:10px;padding:8px 6px;
-  border-radius:5px;cursor:pointer;
-}
+#abrirFechar{border:0;background:none;font:20px/1 inherit;cursor:pointer;color:#7d786f;padding:0 4px}
+.abrirItem{display:flex;justify-content:space-between;gap:10px;padding:8px 6px;border-radius:5px;cursor:pointer}
 .abrirItem:hover{background:#e2dfd8}
 .abrirItem.atual{opacity:.45;cursor:default}
 .abrirItem span:last-child{color:#7d786f;white-space:nowrap}
@@ -231,57 +219,55 @@ body{padding-right:330px}
 </head>
 <body>
 
-<div id="folha"></div>
+<div id="folha"><div id="texto"></div></div>
 
-<div id="capa">
-  <div class="grupo" id="gEsq" hidden>
-    <button class="bt" data-lado="esq" data-op="mais"  title="">+</button>
-    <button class="bt" data-lado="esq" data-op="menos" title="">&minus;</button>
-  </div>
-  <div class="grupo" id="gDir" hidden>
-    <button class="bt" data-lado="dir" data-op="mais"  title="">+</button>
-    <button class="bt" data-lado="dir" data-op="menos" title="">&minus;</button>
-  </div>
-  <div id="caret" hidden></div>
+<div id="topo">
+  <!-- O relogio dele e o do .m4a: e ouvindo aquele arquivo que ele escreve
+       "[01:29]" no bloco de notas. Fica aqui fora, e nao dentro do painel,
+       porque e o gesto do fluxo /anotar e se usa dezenas de vezes seguidas.
+       Quem traduz e o servidor. -->
+  <input id="emPrevia" placeholder="1:29" spellcheck="false"
+         title="tempo que você anotou ouvindo a prévia; enter leva até a palavra">
+  <button id="btPainel" title="avisos, achados e exportar">painel</button>
 </div>
 
-<aside id="painel">
+<div id="faixa">
+  <canvas id="onda"></canvas>
+  <div id="dica"></div>
+  <div id="legenda"></div>
+</div>
+
+<aside id="painel" hidden>
   <div id="cabecalho">
     <h1 id="tit">carregando...</h1>
-    <button id="btAbrir" title="abrir outro vídeo já analisado">Abrir…</button>
+    <button id="fechaPainel" aria-label="fechar" title="fechar">&times;</button>
   </div>
   <div id="resumo"></div>
-
-  <!-- O relogio dele e o do .m4a: e ouvindo aquele arquivo que ele escreve
-       "[01:29]" no bloco de notas. A folha inteira pensa em tempo de fonte
-       e ate 04/09/2026 nao mostrava tempo nenhum, de nenhuma das duas
-       especies - achar na tela o lugar de uma anotacao pedia rodar
-       `conferir --em` noutra janela. Quem traduz e o servidor. -->
-  <div class="bloco" id="caixaPrevia">
-    <b>Ir para</b> <span class="chave">tempo do .m4a</span>
-    <input id="emPrevia" placeholder="1:29" spellcheck="false"
-           title="o tempo que você anotou ouvindo a prévia; enter leva até a palavra">
-    <div id="previaAviso"></div>
-  </div>
-
-  <div class="bloco">
-    <b>Unidade</b>
-    <div class="unid" id="unid"></div>
-  </div>
-
-  <div class="bloco" id="caixaGestos">
-    <b>Nesta seleção</b> <span class="chave" id="previaSel"></span>
-    <div id="gestos"></div>
-  </div>
+  <div id="avisoDoc" class="aviso"></div>
+  <div id="previaAviso" class="aviso"></div>
 
   <div class="bloco" id="caixaPorque" hidden>
     <b>Por que saiu</b>
     <div id="porque"></div>
   </div>
 
+  <div class="bloco" id="caixaCompl" hidden>
+    <b>Completei no tempo exato</b>
+    <div id="compl"></div>
+  </div>
+
   <div class="bloco" id="caixaAvisos" hidden>
     <b id="tituloOuvir">O que ouvir</b>
     <div id="avisos"></div>
+  </div>
+
+  <div class="bloco">
+    <b>Exportar</b><br>
+    <button class="mini" data-cmd="audio">áudio (~1 min)</button>
+    <button class="mini" data-cmd="render">vídeo (~6 min)</button>
+    <button class="mini" data-cmd="conferir">conferir</button>
+    <button class="mini" data-cmd="previa">prévia no mpv</button>
+    <button class="mini" id="btAbrir">abrir outro vídeo…</button>
   </div>
 
   <div class="bloco" id="caixaLog" hidden>
@@ -290,19 +276,17 @@ body{padding-right:330px}
   </div>
 
   <div class="bloco chave">
+    <b style="color:var(--tinta)">Na folha</b><br>
     <kbd>clique</kbd> palavra · <kbd>arrastar</kbd> trecho ·
-    <kbd>ctrl+clique</kbd> letra<br>
-    <kbd>&larr;</kbd><kbd>&rarr;</kbd> andar ·
-    <kbd>shift</kbd>+setas estende<br>
-    <kbd>&minus;</kbd><kbd>=</kbd> menos/mais à direita ·
-    <kbd>_</kbd><kbd>+</kbd> à esquerda<br>
-    <kbd>1</kbd>–<kbd>7</kbd> unidade ·
-    <kbd>backspace</kbd> oculta/restaura<br>
-    <kbd>espaço</kbd> toca e pausa ·
-    <kbd>enter</kbd> toca a seleção ·
-    <kbd>ctrl+z</kbd> desfaz<br>
-    <kbd>o</kbd> toca o original, sem o corte<br>
-    <kbd>botão direito</kbd> no texto: tocar · fora: exportar
+    <kbd>&larr;</kbd><kbd>&rarr;</kbd> andar · <kbd>shift</kbd>+setas estende<br>
+    <kbd>backspace</kbd> oculta/restaura · <kbd>ctrl+z</kbd> desfaz<br>
+    <b style="color:var(--tinta)">Na onda</b><br>
+    arrastar no <b>mantido</b> tira · arrastar no <b>cortado</b> devolve<br>
+    arrastar a <b>borda</b> move a emenda · roda dá zoom ·
+    arrastar a <b>régua</b> anda<br>
+    <b style="color:var(--tinta)">Ouvir</b><br>
+    <kbd>espaço</kbd> toca e pausa · <kbd>enter</kbd> toca a seleção ·
+    <kbd>o</kbd> toca o original, sem o corte · <kbd>esc</kbd> limpa
   </div>
 </aside>
 
@@ -325,23 +309,28 @@ body{padding-right:330px}
 /*  estado                                                              */
 /* ==================================================================== */
 
-const UNIDADES = [1, 10, 50, 100, 250, 500, 1000];   // ms; teclas 1..7
-
 const S = {
   doc: null,          // /doc: tokens, blocos, duracao
-  est: null,          // ultima resposta do servidor: iv, pecas, gestos
-  sel: null,          // {tipo:'faixa',i0,i1} | {tipo:'caret',i,k,n}
-  u: 100,             // unidade em ms
+  est: null,          // ultima resposta do servidor: iv, ivp, pecas, sel
+  sel: { i0: 0, i1: 0, ini: 0, fim: 0, previaIni: 0, previaFim: 0 },
   els: [],            // <span> de cada token
   vaos: [],           // marca do silencio comido ANTES de cada token
-  esps: [],           // o espaco depois de cada token (some quando nao ha texto)
+  esps: [],           // o espaco depois de cada token
   sig: [],            // assinatura do desenho de cada token (evita repintar)
-  ancora: null,       // token onde comecou o arraste
+  ancora: null,       // token onde comecou o arraste na folha
   arrastando: false,
+  jan: { c: 0, span: 6 },   // a janela da onda: centro e largura, em segundos
+  picos: null,        // piramide de min/max do PCM
+  pico: 1,            // o maior deles: a escala vertical da onda
+  bruto: null,        // Float32Array do canal, para o zoom mais fundo
+  gesto: null,        // {modo, ...} enquanto o mouse esta apertado na faixa
+  toque: null,        // tempo da fonte que esta soando, ou null
+  visto: null,        // a selecao que a janela ja centrou
 };
 
 const $ = (id) => document.getElementById(id);
-const folha = $("folha"), capa = $("capa"), menu = $("menu");
+const folha = $("folha"), texto = $("texto"), menu = $("menu");
+const cv = $("onda"), g = cv.getContext("2d");
 
 /* ---------------------------------------------------------- formatacao */
 
@@ -351,45 +340,80 @@ function ms(seg) {
   return v.toFixed(v < 10 ? 2 : 1).replace(".", ",") + " s";
 }
 function rel(seg) {
-  const m = Math.floor(seg / 60), s = seg - 60 * m;
+  const m = Math.floor(Math.max(0, seg) / 60), s = Math.max(0, seg) - 60 * m;
   return m + ":" + (s < 10 ? "0" : "") + s.toFixed(1).replace(".", ",");
+}
+function mmss(seg) {
+  const m = Math.floor(Math.max(0, seg) / 60), s = Math.floor(Math.max(0, seg) % 60);
+  return m + ":" + (s < 10 ? "0" : "") + s;
 }
 
 /* ==================================================================== */
 /*  conversa com o servidor                                             */
 /* ==================================================================== */
 
-function selParaServidor() {
-  if (!S.sel) return {};
-  if (S.sel.tipo === "faixa") return { i0: S.sel.i0, i1: S.sel.i1 };
-  return { i: S.sel.i, k: S.sel.k, n: S.sel.n };
-}
-
 let vez = 0;
 async function acao(nome, extra) {
+  // Gesto de gente e o fim da posicao pausada do som - ver `soltaToque`.
+  // Antes do fetch, de proposito: a tela nao fica verde esperando o servidor.
+  soltaToque();
   const meu = ++vez;
+  const corpo = Object.assign(
+    { acao: nome, sel: { i0: S.sel.i0, i1: S.sel.i1 } }, extra || {});
   const r = await fetch("/acao", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(Object.assign(
-      { acao: nome, sel: selParaServidor(), unidade: S.u / 1000 },
-      extra || {})),
+    body: JSON.stringify(corpo),
   });
   const est = await r.json();
   if (meu !== vez) return est;      // chegou tarde: outro gesto ja mandou
+  // `pecas` vem `null` quando nada nelas mudou: sao 330 KB dos 338 da
+  // resposta, e andar a selecao nao mexe numa letra do riscado. Quem decide
+  // e o servidor (`_chave_corte`); aqui e so nao jogar fora o que se tem.
+  if (!est.pecas) est.pecas = S.est.pecas;
   S.est = est;
+  S.sel = est.sel;
   pinta();
   return est;
 }
 
+/* Um gesto de tempo NOMEIA TEMPO, e por isso nao manda selecao de palavra
+   nenhuma: manda os dois numeros que o dedo produziu. A selecao volta de la
+   traduzida, e e ela que a folha acende. */
+function selecionaTempo(a, b) { return acao("nada", { sel: { ini: a, fim: b } }); }
+function selecionaFaixa(i0, i1) { return acao("nada", { sel: { i0, i1 } }); }
+
 /* ==================================================================== */
-/*  desenho                                                             */
+/*  os dois relogios                                                    */
+/* ==================================================================== */
+
+function paraPrevia(t) {
+  /* Tempo da fonte -> tempo do .m4a, pela TABELA que o servidor mandou
+     (`est.ivp`, de `tc.somas_previa`). A tela le a tabela; nao a refaz, e
+     nao teria como - quem sabe onde a lamina caiu e quem cortou. Existe
+     porque a regua precisa da conversao uma vez por marca, dez vezes por
+     redesenho, e um POST por marca seria absurdo. */
+  const iv = S.est.iv, p = S.est.ivp;
+  for (let k = 0; k < iv.length; k++) {
+    if (t < iv[k][0]) return p[k];
+    if (t <= iv[k][1]) return p[k] + (t - iv[k][0]);
+  }
+  return iv.length ? p[iv.length - 1] + (iv[iv.length - 1][1] - iv[iv.length - 1][0]) : 0;
+}
+
+function dentro(t) {
+  for (const [a, b] of S.est.iv) if (t >= a && t <= b) return true;
+  return false;
+}
+
+/* ==================================================================== */
+/*  a folha                                                             */
 /* ==================================================================== */
 
 function monta() {
   /* Uma vez so: cria os elementos. Depois disso `pinta` so troca o que
      mudou - repintar 900 tokens a cada gesto pisca e perde a rolagem. */
-  folha.textContent = "";
+  texto.textContent = "";
   const toks = S.est.pecas.tokens;
   for (const b of S.doc.blocos) {
     const p = document.createElement("p");
@@ -417,18 +441,19 @@ function monta() {
       S.esps[i] = esp;
       p.appendChild(esp);
     }
-    folha.appendChild(p);
+    texto.appendChild(p);
   }
   const fim = document.createElement("p");
   const v = document.createElement("span");
   v.className = "vao"; v.hidden = true; v.id = "vaoFim";
   fim.appendChild(v);
-  folha.appendChild(fim);
+  texto.appendChild(fim);
 }
 
 function larguraVao(oculto) {
-  /* Nao e linha do tempo - e tipografia. Cresce com o que foi tirado e
-     para num teto, para uma pausa de 30 s nao empurrar a linha inteira. */
+  /* Tipografia, nao linha do tempo: cresce com o que foi tirado e para num
+     teto, para uma pausa de 30 s nao empurrar a linha inteira. Quem mede
+     tempo e a faixa de baixo. */
   return Math.min(4.2, 0.55 + oculto * 0.5).toFixed(2) + "em";
 }
 
@@ -437,10 +462,10 @@ function marcaVao(el, oculto, voz, anot) {
      tenha sido ocultado nele, porque a marca ali nao fala do corte - fala
      de fala que nao virou palavra nenhuma.
 
-     `anot` e o motivo que uma PESSOA escreveu no passe de julgamento, e
-     vem vazio quando quem cortou foi a regra automatica. Uma anotacao
-     pode cair inteira em silencio: sao 22 vaos assim no IMG_0247, sem
-     nenhum token onde pendurar a marca. */
+     `anot` e o motivo que uma PESSOA escreveu no passe de julgamento, e vem
+     vazio quando quem cortou foi a regra automatica. Uma anotacao pode cair
+     inteira em silencio: sao 22 vaos assim no IMG_0247, sem nenhum token
+     onde pendurar a marca. */
   if (!voz && oculto < 0.02) { el.hidden = true; return; }
   el.hidden = false;
   el.className = "vao" + (voz ? " voz" : "") + (anot ? " jul" : "");
@@ -453,9 +478,6 @@ function marcaVao(el, oculto, voz, anot) {
 }
 
 function rotuloVoz(p) {
-  /* O que este trecho de fala e, quanto dele sobra, e o que o Whisper leu
-     antes de o programa recusar. O `ouviu`/`recusa` estava gravado em
-     stream.json desde sempre (`lacunas[].bruto`) e nunca chegava a tela. */
   const dur = p.e - p.s;
   const viva = dur * p.vivo.reduce((a, [x, y]) => a + (y - x), 0);
   let s = ms(dur) + " de voz que o Whisper não leu";
@@ -492,17 +514,15 @@ function pintaToken(i, p) {
   el.hidden = false;
   el.className = "tok" + (p.anot ? " jul" : "");
   el.style.width = "";
-  // o motivo de quem mandou cortar. O azul diz que foi uma pessoa; isto
-  // diz O QUE ela viu - ate agora o motivo so existia no painel do canto,
-  // uma palavra clicada de cada vez.
   el.title = (p.anot ? "anotado: " + p.anot + "\n" : "") +
              (oculto > 0.02 ? ms(oculto) + " desta palavra saiu" : "");
   el.textContent = "";
 
   /* Que letras sobrevivem. `vivo` vem do servidor como fatia do tempo do
-     token; repartir isso pelas letras e a unica leitura possivel - o
-     alinhador entrega a fronteira da PALAVRA, nao a do fonema. E so
-     desenho: nenhum corte sai daqui. */
+     token; repartir isso pelas letras e a unica leitura possivel na FOLHA -
+     o alinhador entrega a fronteira da palavra, nao a do fonema. Quem quiser
+     a estrutura de verdade olha a onda, que e a mesma fracao desenhada sobre
+     o eixo do tempo. E so desenho: nenhum corte sai daqui. */
   const L = p.txt.length;
   let atual = null, buf = "";
   const despeja = () => {
@@ -523,7 +543,12 @@ function pintaToken(i, p) {
     buf += p.txt[k];
   }
   despeja();
-  el.dataset.n = L;
+}
+
+function marcaSelecao() {
+  for (const el of S.els) if (el) el.classList.remove("sel");
+  for (let i = S.sel.i0; i < S.sel.i1; i++)
+    if (S.els[i]) S.els[i].classList.add("sel");
 }
 
 function pinta() {
@@ -536,287 +561,544 @@ function pinta() {
   }
   marcaVao($("vaoFim"), pc.fim, pc.fimVoz, pc.fimAnot);
   marcaSelecao();
+  centraJanela();
   painel();
-  posBotoes();
-}
-
-/* ------------------------------------------------------------ selecao */
-
-function marcaSelecao() {
-  for (const el of S.els) if (el) el.classList.remove("sel");
-  if (S.sel && S.sel.tipo === "faixa")
-    for (let i = S.sel.i0; i < S.sel.i1; i++)
-      if (S.els[i]) S.els[i].classList.add("sel");
+  desenha();
 }
 
 /* ==================================================================== */
-/*  painel do canto                                                     */
+/*  a faixa: janela                                                     */
 /* ==================================================================== */
 
-function linhaGesto(rot, span, tecla) {
-  const d = document.createElement("div");
-  d.className = "gesto" + (span ? "" : " off");
-  const a = document.createElement("span");
-  a.innerHTML = rot + ' <kbd>' + tecla + '</kbd>';
-  const b = document.createElement("span");
-  b.textContent = span
-    ? ms(span[1] - span[0]) + " em " + rel(span[0])
-    : "nada aqui";
-  d.append(a, b);
-  return d;
+const SPAN_MIN = 0.4, SPAN_MAX = 240;
+
+function limpaJanela() {
+  const dur = S.doc ? S.doc.dur : 60;
+  S.jan.span = Math.min(SPAN_MAX, Math.max(SPAN_MIN, S.jan.span));
+  const meia = S.jan.span / 2;
+  if (S.jan.span >= dur) S.jan.c = dur / 2;
+  else S.jan.c = Math.min(dur - meia, Math.max(meia, S.jan.c));
 }
 
-function painel() {
-  const e = S.est;
-  $("tit").textContent = S.doc.nome + " · " + S.doc.arquivo;
-  $("resumo").innerHTML =
-    "<b>" + rel(e.mantido) + "</b> de " + rel(S.doc.dur) +
-    " · " + e.trechos + " trechos · " + e.mao + " ajustes seus" +
-    (S.doc.anot.length ? " · " + S.doc.anot.length + " anotações" : "");
-  // O aviso de montagem caducada vive AQUI, e nao na partida: o painel
-  // reescreve o `resumo` inteiro a cada gesto, entao pendurado na partida
-  // ele sumia no primeiro clique. Ele diz que decisoes de palavra foram
-  // descartadas - a ultima coisa desta tela que pode sumir sozinha.
-  if (S.doc.aviso) {
-    const d = document.createElement("div");
-    d.className = "aviso";
-    d.textContent = S.doc.aviso;
-    $("resumo").appendChild(d);
+function chaveSel() {
+  const s = S.sel;
+  return s.i0 + ":" + s.i1 + ":" + s.ini + ":" + s.fim;
+}
+
+function centraJanela() {
+  /* A janela e FIXA ao redor da selecao, sempre no mesmo aumento - foi a
+     escolha dele, e ela e a que preserva a borda agarravel: com "cabe a
+     selecao inteira", um paragrafo de 40 s em 300 px da 7 px/s e uma borda
+     de 60 ms vira menos de um pixel.
+
+     Selecao maior que a janela nao encolhe a escala: a janela rola ate o
+     comeco dela e as duas pontas ficam marcadas na borda da faixa
+     (`desenhaBordasSel`). E ela so se mexe quando a SELECAO muda - depois
+     disso a roda e a regua mandam, senao o zoom do dedo seria desfeito pelo
+     proximo redesenho. */
+  const s = S.sel;
+  const chave = chaveSel();
+  if (chave === S.visto) { limpaJanela(); return; }
+  S.visto = chave;
+  const larg = s.fim - s.ini;
+  if (larg <= S.jan.span) S.jan.c = (s.ini + s.fim) / 2;
+  else {
+    const t0 = S.jan.c - S.jan.span / 2, t1 = t0 + S.jan.span;
+    if (t1 < s.ini || t0 > s.fim) S.jan.c = s.ini + S.jan.span * 0.4;
   }
+  limpaJanela();
+}
 
-  // o relogio do arquivo que ele ouve, e o aviso de quando esse arquivo
-  // deixou de ser este corte (ver `Sessao.previa_no_disco`).
-  $("previaSel").textContent = S.sel ? "· " + rel(e.previaSel) + " no .m4a" : "";
-  const pv = e.previa;
-  $("previaAviso").textContent = (pv && pv.tem && pv.velho)
-    ? "o .m4a no disco tem " + rel(pv.dur) + " e este corte tem " +
-      rel(e.mantido) + ": os tempos aqui são do corte de agora, não do "
-      + "arquivo que você ouviu. Exporte o áudio de novo antes de anotar."
-    : "";
+let LARG = 800, ALT = 220;
+const H_REGUA = 30, H_PAL = 26;
+function yOnda() { return H_REGUA + H_PAL; }
+function altOnda() { return Math.max(30, ALT - yOnda() - 2); }
 
-  const g = $("gestos");
-  g.textContent = "";
-  if (!S.sel) {
-    g.textContent = "clique numa palavra";
-  } else {
-    g.append(
-      linhaGesto("&minus; esquerda", e.gestos.esq.menos, "_"),
-      linhaGesto("+ esquerda", e.gestos.esq.mais, "+"),
-      linhaGesto("&minus; direita", e.gestos.dir.menos, "&minus;"),
-      linhaGesto("+ direita", e.gestos.dir.mais, "="));
+function tpx(t) { return (t - (S.jan.c - S.jan.span / 2)) / S.jan.span * LARG; }
+function pxt(x) { return S.jan.c - S.jan.span / 2 + x / LARG * S.jan.span; }
+
+function redimensiona() {
+  const r = $("faixa").getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  LARG = Math.max(200, Math.round(r.width));
+  ALT = Math.max(120, Math.round(r.height));
+  cv.width = Math.round(LARG * dpr);
+  cv.height = Math.round(ALT * dpr);
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  if (S.est) desenha();
+}
+
+/* ==================================================================== */
+/*  a faixa: os picos do PCM                                            */
+/* ==================================================================== */
+
+function piramide(dados) {
+  /* min/max por balde, alguns niveis, UMA vez por sessao. Reamostrar 10,8 M
+     de amostras a cada redesenho poe meio segundo entre a roda do mouse e a
+     onda; cada nivel se constroi do anterior, entao a conta inteira custa
+     uma passada e meia pelos dados.
+
+     Passo 32 no nivel de baixo: a 16 kHz sao 2 ms, e a janela de 6 s em
+     1200 px da 5 ms por pixel. Abaixo disso a tela le a amostra crua. */
+  const niveis = [];
+  let ant = null, passo = 32;
+  for (let k = 0; k < 6; k++) {
+    const n = Math.ceil((ant ? ant.mn.length : dados.length) /
+                        (ant ? 4 : passo));
+    const mn = new Float32Array(n), mx = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      let a = 1, b = -1;
+      if (ant) {
+        const f = i * 4, t = Math.min(f + 4, ant.mn.length);
+        for (let j = f; j < t; j++) {
+          if (ant.mn[j] < a) a = ant.mn[j];
+          if (ant.mx[j] > b) b = ant.mx[j];
+        }
+      } else {
+        const f = i * passo, t = Math.min(f + passo, dados.length);
+        for (let j = f; j < t; j++) {
+          const v = dados[j];
+          if (v < a) a = v;
+          if (v > b) b = v;
+        }
+      }
+      mn[i] = a > b ? 0 : a;
+      mx[i] = a > b ? 0 : b;
+    }
+    ant = { passo, mn, mx };
+    niveis.push(ant);
+    passo *= 4;
   }
+  return niveis;
+}
 
-  const i = S.sel ? (S.sel.tipo === "faixa" ? S.sel.i0 : S.sel.i) : -1;
-  const p = i >= 0 ? e.pecas.tokens[i] : null;
-  const fora = p && p.vivo.reduce((a, [x, y]) => a + (y - x), 0) < 0.99;
-  $("caixaPorque").hidden = !(fora && p.why);
-  if (fora && p.why) $("porque").textContent = p.why;
+function nivelPara(spp) {
+  if (!S.picos) return null;
+  let esc = null;
+  for (const nv of S.picos) if (nv.passo <= spp) esc = nv;
+  return esc;
+}
 
-  const lista = paraOuvir(e);
-  const av = $("avisos");
-  av.textContent = "";
-  $("caixaAvisos").hidden = !lista.length;
-  $("tituloOuvir").textContent =
-    lista.length ? "O que ouvir · " + lista.length : "O que ouvir";
-  for (const a of lista) {
-    const d = document.createElement("div");
-    d.className = "ouvir" + (a.forte ? " forte" : "") + (a.mao ? " mao" : "");
-    const r = document.createElement("span");
-    r.className = "rot";
-    r.textContent = a.rot;
-    const q = document.createElement("span");
-    q.className = "quando";
-    q.textContent = rel(a.previa) + " · ";
-    d.title = "no .m4a " + rel(a.previa) + "   ·   na fonte " + rel(a.ini);
-    d.append(r, q, document.createTextNode(a.txt.slice(0, 120)));
-    d.onclick = () => vaiPara(a.ini);
-    av.appendChild(d);
+/* ==================================================================== */
+/*  a faixa: desenho                                                    */
+/* ==================================================================== */
+
+let hachura = null;
+function fazHachura() {
+  const c = document.createElement("canvas");
+  c.width = c.height = 7;
+  const h = c.getContext("2d");
+  h.strokeStyle = "rgba(33,31,28,.11)";
+  h.lineWidth = 1;
+  h.beginPath(); h.moveTo(-1, 8); h.lineTo(8, -1); h.stroke();
+  return g.createPattern(c, "repeat");
+}
+
+function passoRegua(span) {
+  /* Uma marca a cada ~90 px, num degrau que se le: 0,1 / 0,25 / 0,5 / 1 /
+     2 / 5 / 10 / 15 / 30 s e daí em minutos. */
+  for (const p of [0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600])
+    if (p / span * LARG >= 90) return p;
+  return 600;
+}
+
+function desenhaRegua() {
+  const t0 = pxt(0), t1 = pxt(LARG);
+  g.fillStyle = "#ece9e3";
+  g.fillRect(0, 0, LARG, H_REGUA);
+  g.strokeStyle = "#d4d0c8";
+  g.lineWidth = 1;
+  g.beginPath(); g.moveTo(0, H_REGUA - .5); g.lineTo(LARG, H_REGUA - .5); g.stroke();
+
+  const p = passoRegua(S.jan.span);
+  g.font = "10px system-ui,sans-serif";
+  g.textBaseline = "alphabetic";
+  for (let t = Math.ceil(t0 / p) * p; t <= t1; t += p) {
+    const x = Math.round(tpx(t)) + .5;
+    g.strokeStyle = "#c6c1b8";
+    g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H_REGUA); g.stroke();
+    g.fillStyle = "#57534b";
+    g.fillText(mmss(t) + (p < 1 ? "," + Math.round((t % 1) * 10) : ""), x + 3, 11);
+    // o segundo relogio, o do arquivo que ele OUVE. Dois relogios na mesma
+    // regua e o ponto: ele anota em [01:29] e a folha pensa em fonte.
+    g.fillStyle = "#9a948a";
+    g.fillText("▸ " + mmss(paraPrevia(t)), x + 3, 24);
   }
 }
 
-function paraOuvir(e) {
-  /* As duas listas viram UMA, em ordem de tempo.
-
-     Elas respondem perguntas diferentes - `avisos` e "voce mandou e nao
-     saiu", `achados` e "a geometria produziu isto" -, mas quem esta
-     editando faz uma pergunta so: o que nesta montagem merece um ouvido?
-     Duas caixas obrigariam a comparar tempos entre elas com o dedo. O
-     rotulo de cada linha continua dizendo de qual familia ela e, e o
-     vermelho fica so nas de `avisos`, que sao as que acusam um pedido
-     desobedecido.
-
-     Nada aqui e recalculado: o servidor ja tirou de `achados` o que
-     `avisos` diz melhor (ver `Sessao.achados`), e mandou o tempo das duas
-     no relogio da PREVIA. E nele que a lista corre, pela mesma razao que
-     o `conferir.txt` corre: quem le isto vai ouvir o .m4a na ordem, e
-     ordenar por tempo de fonte manda pular para tras. O tempo da fonte
-     fica no title, que e onde se anota.
-
-     O rotulo de palavra tem duas caras porque o pedido tem duas: quem
-     ocultou reclama de que NAO SAIU, quem restaurou reclama de que NAO
-     VOLTOU. Ate 04/09/2026 os dois saiam como "NAO SAIU", e no restauro
-     isso dizia o contrario do que aconteceu - a linha que existe para
-     contar que um pedido foi desobedecido contava a desobediencia
-     trocada. Quem sabe qual e qual e o servidor, no `estado`. */
-  const L = [];
-  for (const a of e.avisos)
-    L.push({ ini: a.ini, previa: a.previa, forte: true, mao: !!a.mao,
-             txt: a.motivo,
-             rot: a.palavra
-                    ? (a.estado === "manter" ? "NÃO VOLTOU" : "NÃO SAIU")
-                : a.mao ? "REABERTA POR VOCÊ" : "ANOTAÇÃO NÃO OBEDECIDA" });
-  for (const a of e.achados)
-    L.push({ ini: a.ini, previa: a.previa, forte: false, mao: false,
-             rot: a.rot, txt: a.txt });
-  L.sort((x, y) => x.previa - y.previa);
-  return L;
+function desenhaCortes() {
+  /* O que NAO vai sair no .mov, pintado por cima de tudo: ground apagado e
+     hachura. Sai dos trechos MANTIDOS (`iv`), nunca do `cut` do token - e
+     por isso ele mostra tambem o que uma anotacao tirou e o que o snap
+     raspou, que e onde moram os defeitos deste programa. */
+  const y = H_REGUA, h = ALT - H_REGUA;
+  const iv = S.est.iv;
+  let t = 0;
+  const buracos = [];
+  for (const [a, b] of iv) { if (a > t) buracos.push([t, a]); t = Math.max(t, b); }
+  if (t < S.doc.dur) buracos.push([t, S.doc.dur]);
+  for (const [a, b] of buracos) {
+    const x0 = tpx(a), x1 = tpx(b);
+    if (x1 < 0 || x0 > LARG) continue;
+    g.fillStyle = "#e2ded7";
+    g.fillRect(x0, y, x1 - x0, h);
+    g.fillStyle = hachura;
+    g.fillRect(x0, y, x1 - x0, h);
+  }
 }
 
-async function vaiParaPrevia() {
-  /* O tempo que ele digita e o do .m4a; a folha e a fonte. Quem traduz e o
-     servidor (`Sessao.em_previa`), pela mesma `_mapa_previa` do `conferir
-     --em` e da fase 2 do `/anotar` - o mapa e feito do corte, e corte nao
-     se calcula aqui, nem "so para navegar".
-
-     Aceita "89", "1:29" e "1:29,5". Antes disto, achar na folha o lugar de
-     um `[01:29]` anotado de ouvido pedia rodar um comando noutra janela e
-     voltar com um numero que a folha tambem nao mostrava. */
-  const cx = $("emPrevia");
-  const p = cx.value.trim().replace(",", ".").split(":").map(Number);
-  if (!p.length || p.some(isNaN)) return;
-  const t = p.reduce((a, x) => a * 60 + x, 0);
-  const r = await (await fetch("/em", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ previa: t }),
-  })).json();
-  if (typeof r.i !== "number" || !S.els[r.i]) return;
-  cx.blur();                        // devolve o teclado para a folha
-  selecionaFaixa(r.i, r.i + 1);
-  S.els[r.i].scrollIntoView({ block: "center", behavior: "smooth" });
-}
-
-$("emPrevia").addEventListener("keydown", (ev) => {
-  if (ev.key === "Enter") { ev.preventDefault(); vaiParaPrevia(); }
-  else if (ev.key === "Escape") { ev.preventDefault(); ev.target.blur(); }
-});
-
-function vaiPara(t) {
+function desenhaPalavras() {
+  const y = H_REGUA, h = H_PAL;
   const toks = S.est.pecas.tokens;
-  for (let i = 0; i < toks.length; i++) {
-    if (toks[i].e > t) {
-      selecionaFaixa(i, i + 1);
-      S.els[i].scrollIntoView({ block: "center", behavior: "smooth" });
-      return;
+  g.font = "11px system-ui,'Segoe UI',sans-serif";
+  g.textBaseline = "middle";
+  for (const p of toks) {
+    if (p.e < pxt(0) || p.s > pxt(LARG)) continue;
+    const x0 = tpx(p.s), x1 = tpx(p.e), w = Math.max(1, x1 - x0);
+    // cor de quem mandou: azul quando uma PESSOA anotou, marrom quando ha
+    // voz medida que ninguem leu, tinta no resto. A mesma regra da folha.
+    const cor = p.anot ? "#5c6b80" : (!p.txt && p.voz) ? "#8a6534" : "#4a463f";
+    g.fillStyle = "rgba(0,0,0,.05)";
+    g.fillRect(x0, y + 3, w, h - 7);
+    // a fatia VIVA, que e a mesma fracao que risca a palavra na folha -
+    // agora desenhada sobre o eixo de tempo, que e onde ela e medida.
+    g.fillStyle = cor;
+    g.globalAlpha = 0.24;
+    for (const [f0, f1] of p.vivo)
+      g.fillRect(x0 + w * f0, y + 3, Math.max(1, w * (f1 - f0)), h - 7);
+    g.globalAlpha = 1;
+    g.strokeStyle = "rgba(0,0,0,.10)";
+    g.strokeRect(Math.round(x0) + .5, y + 3.5, Math.round(w) - 1, h - 8);
+    if (p.txt && w > 20) {
+      g.save();
+      g.beginPath(); g.rect(x0 + 2, y, w - 4, h); g.clip();
+      g.fillStyle = cor;
+      g.fillText(p.txt, x0 + 4, y + h / 2);
+      g.restore();
     }
   }
 }
 
-/* ==================================================================== */
-/*  botoes de mais e menos                                              */
-/* ==================================================================== */
-
-function retLetra(el, k) {
-  /* Retangulo da fronteira entre a letra k-1 e a k. Precisa andar pelos
-     nos de texto porque o token vem partido em pedacos riscados e nao
-     riscados. */
-  const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-  let acc = 0, no;
-  while ((no = w.nextNode())) {
-    const L = no.nodeValue.length;
-    if (acc + L >= k) {
-      const r = document.createRange();
-      r.setStart(no, k - acc); r.setEnd(no, k - acc);
-      return r.getBoundingClientRect();
+function desenhaOnda() {
+  const y0 = yOnda(), h = altOnda(), meio = y0 + h / 2;
+  const spp = S.jan.span * S.doc.sr / LARG;
+  const nv = nivelPara(spp);
+  const iv = S.est.iv;
+  const meia = h * 0.46, esc = meia / S.pico;
+  let k = 0, vivoAgora = null;
+  for (let x = 0; x < LARG; x++) {
+    const ta = pxt(x), tb = pxt(x + 1);
+    let mn = 0, mx = 0;
+    if (S.bruto) {
+      if (nv) {
+        let i0 = Math.max(0, Math.floor(ta * S.doc.sr / nv.passo));
+        let i1 = Math.min(nv.mn.length, Math.max(i0 + 1,
+                          Math.ceil(tb * S.doc.sr / nv.passo)));
+        let a = 1, b = -1;
+        for (let i = i0; i < i1; i++) {
+          if (nv.mn[i] < a) a = nv.mn[i];
+          if (nv.mx[i] > b) b = nv.mx[i];
+        }
+        if (a <= b) { mn = a; mx = b; }
+      } else {
+        let i0 = Math.max(0, Math.floor(ta * S.doc.sr));
+        let i1 = Math.min(S.bruto.length, Math.max(i0 + 1,
+                          Math.ceil(tb * S.doc.sr)));
+        let a = 1, b = -1;
+        for (let i = i0; i < i1; i++) {
+          const v = S.bruto[i];
+          if (v < a) a = v;
+          if (v > b) b = v;
+        }
+        if (a <= b) { mn = a; mx = b; }
+      }
     }
-    acc += L;
+    while (k < iv.length && iv[k][1] < ta) k++;
+    const vivo = k < iv.length && ta >= iv[k][0] && ta <= iv[k][1];
+    if (vivo !== vivoAgora) {
+      vivoAgora = vivo;
+      g.fillStyle = vivo ? "rgba(33,31,28,.72)" : "rgba(33,31,28,.20)";
+    }
+    const yt = meio - Math.max(-meia, Math.min(meia, mx * esc));
+    const yb = meio - Math.max(-meia, Math.min(meia, mn * esc));
+    g.fillRect(x, yt, 1, Math.max(1, yb - yt));
   }
-  return el.getBoundingClientRect();
+  g.strokeStyle = "rgba(33,31,28,.12)";
+  g.beginPath(); g.moveTo(0, meio + .5); g.lineTo(LARG, meio + .5); g.stroke();
 }
 
-function ancoras() {
-  if (!S.sel) return null;
-  if (S.sel.tipo === "caret") {
-    const r = retLetra(S.els[S.sel.i], S.sel.k);
-    return [r, r];
+function bordas() {
+  /* Onde mantido encontra cortado. E o que se agarra para mover a emenda -
+     e o unico lugar da tela onde um gesto pede pontaria. */
+  const out = [];
+  for (const [a, b] of S.est.iv) {
+    if (a > 0.001) out.push(a);
+    if (b < S.doc.dur - 0.001) out.push(b);
   }
-  const a = S.els[S.sel.i0], b = S.els[S.sel.i1 - 1];
-  if (!a || !b) return null;
-  return [a.getBoundingClientRect(), b.getBoundingClientRect()];
+  return out;
 }
 
-function posBotoes() {
-  const car = $("caret");
-  const an = ancoras();
-  if (!an || !S.est) {
-    $("gEsq").hidden = $("gDir").hidden = true;
-    car.hidden = true;
+function desenhaBordas() {
+  const y0 = H_REGUA, h = ALT - H_REGUA;
+  for (const t of bordas()) {
+    const x = Math.round(tpx(t)) + .5;
+    if (x < -2 || x > LARG + 2) continue;
+    g.strokeStyle = "rgba(33,31,28,.55)";
+    g.lineWidth = 1;
+    g.beginPath(); g.moveTo(x, y0); g.lineTo(x, ALT); g.stroke();
+    g.fillStyle = "rgba(33,31,28,.55)";
+    g.fillRect(x - 2, y0 + h / 2 - 9, 4, 18);
+  }
+}
+
+function desenhaSelecao() {
+  const f = S.gesto && S.gesto.selFantasma;
+  const s = f ? { ini: f[0], fim: f[1], i0: 0, i1: 1 } : S.sel;
+  if (s.fim <= s.ini && s.i1 <= s.i0) return;
+  const x0 = tpx(s.ini), x1 = tpx(s.fim);
+  g.fillStyle = "rgba(216,207,168,.42)";
+  g.fillRect(x0, H_REGUA, Math.max(2, x1 - x0), ALT - H_REGUA);
+  g.strokeStyle = "rgba(120,105,55,.75)";
+  g.lineWidth = 1;
+  g.beginPath();
+  g.moveTo(Math.round(x0) + .5, H_REGUA); g.lineTo(Math.round(x0) + .5, ALT);
+  g.moveTo(Math.round(x1) + .5, H_REGUA); g.lineTo(Math.round(x1) + .5, ALT);
+  g.stroke();
+  // As duas pontas quando a selecao nao cabe na janela: a escala nao encolhe
+  // (a borda tem de continuar agarravel), entao quem avisa e a marca.
+  g.fillStyle = "rgba(120,105,55,.9)";
+  if (x0 < 0) { g.beginPath(); g.moveTo(0, ALT - 20); g.lineTo(9, ALT - 26); g.lineTo(9, ALT - 14); g.fill(); }
+  if (x1 > LARG) { g.beginPath(); g.moveTo(LARG, ALT - 20); g.lineTo(LARG - 9, ALT - 26); g.lineTo(LARG - 9, ALT - 14); g.fill(); }
+}
+
+function desenhaFantasma() {
+  /* O que o gesto VAI pedir, enquanto o dedo ainda esta em cima. E otimista
+     de proposito: quem manda e o `iv` que volta do servidor, e se ele
+     corrigir a borda a tela obedece a correcao. */
+  const f = S.gesto && S.gesto.fantasma;
+  if (!f) return;
+  const x0 = tpx(Math.min(f.ini, f.fim)), x1 = tpx(Math.max(f.ini, f.fim));
+  g.fillStyle = f.corta ? "rgba(140,59,46,.22)" : "rgba(63,107,70,.22)";
+  g.fillRect(x0, H_REGUA, Math.max(2, x1 - x0), ALT - H_REGUA);
+  g.strokeStyle = f.corta ? "rgba(140,59,46,.9)" : "rgba(63,107,70,.9)";
+  g.lineWidth = 1.5;
+  g.beginPath();
+  g.moveTo(x0, H_REGUA); g.lineTo(x0, ALT);
+  g.moveTo(x1, H_REGUA); g.lineTo(x1, ALT);
+  g.stroke();
+}
+
+function desenhaToque() {
+  if (S.toque === null) return;
+  const x = Math.round(tpx(S.toque)) + .5;
+  if (x < 0 || x > LARG) return;
+  g.strokeStyle = "#3f6b46";
+  g.lineWidth = 1.5;
+  g.beginPath(); g.moveTo(x, 0); g.lineTo(x, ALT); g.stroke();
+}
+
+function desenha() {
+  if (!S.est || !S.doc) return;
+  if (!hachura) hachura = fazHachura();
+  g.clearRect(0, 0, LARG, ALT);
+  g.fillStyle = "#f3f1ec";
+  g.fillRect(0, 0, LARG, ALT);
+  desenhaCortes();
+  desenhaOnda();
+  desenhaPalavras();
+  desenhaBordas();
+  desenhaSelecao();
+  desenhaFantasma();
+  desenhaToque();
+  desenhaRegua();
+  $("legenda").textContent =
+    "janela " + ms(S.jan.span) + " · " + S.est.trechos + " trechos · " +
+    rel(S.est.mantido) + " de " + rel(S.doc.dur);
+}
+
+/* ==================================================================== */
+/*  a faixa: gestos                                                     */
+/* ==================================================================== */
+
+const PERTO = 5;      // px: o quanto se pode errar a borda e ainda pega-la
+
+function bordaPerto(x) {
+  let melhor = null, dist = PERTO;
+  for (const t of bordas()) {
+    const d = Math.abs(tpx(t) - x);
+    if (d <= dist) { dist = d; melhor = t; }
+  }
+  return melhor;
+}
+
+function ondeY(y) {
+  if (y < H_REGUA) return "regua";
+  if (y < H_REGUA + H_PAL) return "palavra";
+  return "onda";
+}
+
+function posMouse(ev) {
+  const r = cv.getBoundingClientRect();
+  return [ev.clientX - r.left, ev.clientY - r.top];
+}
+
+cv.addEventListener("mousedown", (ev) => {
+  if (ev.button !== 0 || !S.est) return;
+  ev.preventDefault();
+  const [x, y] = posMouse(ev);
+  const t = pxt(x), banda = ondeY(y);
+  if (banda === "regua") {
+    S.gesto = { modo: "anda", x0: x, c0: S.jan.c };
     return;
   }
-  const [ra, rb] = an;
-  const sx = window.scrollX, sy = window.scrollY;
-
-  car.hidden = S.sel.tipo !== "caret";
-  if (S.sel.tipo === "caret") {
-    car.style.left = (ra.left + sx - 1) + "px";
-    car.style.top = (ra.top + sy) + "px";
-    car.style.height = (ra.height || 24) + "px";
+  if (banda === "palavra") {
+    S.gesto = { modo: "sel", t0: t };
+    selecionaTempo(t, t).then(rolaAteSelecao);
+    return;
   }
+  const b = bordaPerto(x);
+  if (b !== null) S.gesto = { modo: "borda", t0: b };
+  else S.gesto = { modo: "corte", t0: t, corta: dentro(t) };
+  S.gesto.fantasma = null;
+});
 
-  const ge = $("gEsq"), gd = $("gDir");
-  ge.hidden = gd.hidden = false;
-  ge.style.left = (ra.left + sx - 22) + "px";
-  ge.style.top = (ra.top + sy + ra.height / 2 - 18) + "px";
-  gd.style.left = (rb.right + sx + 5) + "px";
-  gd.style.top = (rb.top + sy + rb.height / 2 - 18) + "px";
-
-  for (const bt of document.querySelectorAll(".bt")) {
-    const span = S.est.gestos[bt.dataset.lado][bt.dataset.op];
-    bt.disabled = !span;
-    bt.title = span
-      ? (bt.dataset.op === "menos" ? "tira " : "devolve ") +
-        ms(span[1] - span[0]) + " em " + rel(span[0])
-      : (bt.dataset.op === "mais"
-         ? "nada ocultado desse lado" : "nada para tirar");
+window.addEventListener("mousemove", (ev) => {
+  const [x, y] = posMouse(ev);
+  if (!S.gesto) { dicaEm(x, y, ev); return; }
+  const t = pxt(x);
+  const G = S.gesto;
+  if (G.modo === "anda") {
+    S.jan.c = G.c0 - (x - G.x0) * S.jan.span / LARG;
+    limpaJanela();
+    desenha();
+    return;
   }
+  if (G.modo === "sel") {
+    // fantasma local enquanto o dedo anda, um POST ao soltar - a mesma
+    // regra do arrasto de corte, e pela mesma razao: um POST por quadro
+    // seriam sessenta por segundo, e a resposta que vale e a de quem
+    // traduziu tempo em palavra (`Sessao.selecao`), nao a que a tela
+    // adivinhou.
+    G.selFantasma = [Math.min(G.t0, t), Math.max(G.t0, t)];
+    desenha();
+    return;
+  }
+  /* A REGRA DO INICIO vale para o arrasto inteiro: comecou no mantido, tudo
+     o que ele cobriu sai; comecou no cortado, tudo o que ele cobriu volta.
+     Sem ambiguidade, e reversivel pelo gesto contrario.
+
+     Na borda nao ha "inicio" - o ponto de partida e a propria fronteira -,
+     entao quem decide e a DIRECAO: um milimetro para o lado a que se vai ja
+     esta de um dos dois lados, e a mesma regra responde. */
+  if (G.modo === "borda") {
+    const ref = G.t0 + (t > G.t0 ? 0.001 : -0.001);
+    G.corta = dentro(ref);
+  }
+  G.fantasma = { ini: G.t0, fim: t, corta: G.corta };
+  desenha();
+});
+
+window.addEventListener("mouseup", async () => {
+  const G = S.gesto;
+  S.gesto = null;
+  S.arrastando = false;
+  if (G && G.selFantasma) {
+    await selecionaTempo(G.selFantasma[0], G.selFantasma[1]);
+    rolaAteSelecao();
+    return;
+  }
+  if (!G || !G.fantasma) { if (G) desenha(); return; }
+  const a = Math.min(G.fantasma.ini, G.fantasma.fim);
+  const b = Math.max(G.fantasma.ini, G.fantasma.fim);
+  desenha();
+  if (b - a <= 0.001) return;
+  await acao(G.corta ? "cortar_tempo" : "restaurar_tempo",
+             { ini: a, fim: b });
+});
+
+cv.addEventListener("wheel", (ev) => {
+  ev.preventDefault();
+  const [x] = posMouse(ev);
+  const t = pxt(x);
+  const antes = S.jan.span;
+  S.jan.span = Math.min(SPAN_MAX, Math.max(SPAN_MIN,
+                        S.jan.span * (ev.deltaY > 0 ? 1.3 : 1 / 1.3)));
+  if (S.jan.span === antes) return;
+  // o tempo sob o cursor fica onde estava: e o zoom que nao perde o lugar
+  S.jan.c = t + (S.jan.c - t) * (S.jan.span / antes);
+  limpaJanela();
+  // a janela passa a ser do dedo, e nao da selecao: marcar a selecao como
+  // ja vista impede o proximo redesenho de recentrar e desfazer o zoom.
+  S.visto = chaveSel();
+  desenha();
+}, { passive: false });
+
+function dicaEm(x, y, ev) {
+  const d = $("dica");
+  if (!S.est || x < 0 || x > LARG || y < 0 || y > ALT) {
+    d.style.display = "none"; return;
+  }
+  const t = pxt(x);
+  const naBorda = ondeY(y) === "onda" && bordaPerto(x) !== null;
+  cv.style.cursor = ondeY(y) === "regua" ? "grab"
+    : naBorda ? "col-resize"
+    : ondeY(y) === "palavra" ? "pointer" : "crosshair";
+  d.textContent = rel(t) + "  ▸ " + rel(paraPrevia(t)) +
+    (naBorda ? "\nemenda — arraste" : "");
+  d.style.display = "block";
+  const r = $("faixa").getBoundingClientRect();
+  d.style.left = Math.min(LARG - 130, Math.max(2, x + 12)) + "px";
+  d.style.top = Math.max(2, y - 38) + "px";
 }
 
-for (const bt of document.querySelectorAll(".bt")) {
-  bt.onclick = () => acao(bt.dataset.op, { lado: bt.dataset.lado });
-}
+$("faixa").addEventListener("mouseleave", () => {
+  $("dica").style.display = "none";
+});
 
 /* ==================================================================== */
-/*  selecionar                                                          */
+/*  selecionar na folha                                                 */
 /* ==================================================================== */
-
-function selecionaFaixa(i0, i1) {
-  S.sel = { tipo: "faixa", i0: Math.max(0, i0), i1: i1 };
-  acao("nada");
-}
-function selecionaCaret(i, k) {
-  const n = (S.est.pecas.tokens[i].txt || "").length || 1;
-  S.sel = { tipo: "caret", i, k: Math.max(0, Math.min(n, k)), n };
-  acao("nada");
-}
 
 function tokenDe(alvo) {
   const el = alvo.closest ? alvo.closest(".tok") : null;
   if (el && el.dataset.i !== undefined) return +el.dataset.i;
-  /* O tracinho de vao nao e token: nao ha o que selecionar nele. Seleciona
-     a palavra logo DEPOIS - e sobre esse mesmo vao que o par de botoes da
-     ESQUERDA dela trabalha, entao o clique cai onde ja mora o gesto que
-     ele pede. Antes disto, clicar num tracinho limpava a selecao. */
+  /* O tracinho de vao nao e token: seleciona a palavra logo DEPOIS - a
+     mesma escolha que o servidor faz quando um clique na onda cai num vao
+     (`Sessao.selecao`). */
   const v = alvo.closest ? alvo.closest("[data-vao]") : null;
   return v ? +v.dataset.vao : null;
 }
+
+texto.addEventListener("mousedown", (ev) => {
+  if (ev.button !== 0) return;
+  const i = tokenDe(ev.target);
+  if (edicaoAtual && i === edicaoAtual.i) return;   // clique DENTRO do campo
+  if (i !== null) ev.preventDefault();
+  (async () => {
+    if (edicaoAtual) await edicaoAtual.acabar(true);   // clicou fora
+    if (i === null) return;
+    S.ancora = i;
+    S.arrastando = true;
+    selecionaFaixa(i, i + 1);
+  })();
+});
+
+texto.addEventListener("mousemove", (ev) => {
+  if (!S.arrastando) return;
+  const i = tokenDe(ev.target);
+  if (i === null) return;
+  const a = Math.min(S.ancora, i), b = Math.max(S.ancora, i) + 1;
+  if (S.sel.i0 !== a || S.sel.i1 !== b) selecionaFaixa(a, b);
+});
 
 /* ==================================================================== */
 /*  corrigir transcrição                                                */
 /* ==================================================================== */
 
-/* So o TEXTO da palavra, nunca quando ela comeca/termina nem se ela sai
-   do video - por isso isto nunca chama acao("menos"/"mais"/"alterna"),
-   so o novo tipo "corrigir", que so troca t["t"] no servidor. */
-let edicaoAtual = null;   // {i, acabar} enquanto uma palavra esta em edicao
+/* So o TEXTO da palavra, nunca quando ela comeca/termina nem se ela sai do
+   video - por isso isto nunca chama um gesto de corte, so o "corrigir", que
+   so troca t["t"] no servidor. */
+let edicaoAtual = null;
 
 function iniciaCorrecao(i) {
   if (edicaoAtual) edicaoAtual.acabar(true);
@@ -825,9 +1107,7 @@ function iniciaCorrecao(i) {
   const p = S.est.pecas.tokens[i];
   const atual = p.txt;
   // Num vao a caixa abre com o que o Whisper LEU ali antes de o programa
-  // recusar a leitura. E sugestao, nao fato - o title diz de onde veio e
-  // por que foi recusada -, mas e exatamente o que a pessoa digitaria a
-  // mao depois de ouvir. QUEM decide se ha sugestao e o servidor: nem toda
+  // recusar a leitura. QUEM decide se ha sugestao e o servidor: nem toda
   // recusa e uma leitura plausivel (ver `Sessao._sugestao`).
   const partida = atual || p.sugestao || "";
   let terminado = false;
@@ -849,33 +1129,20 @@ function iniciaCorrecao(i) {
     el.removeEventListener("blur", aoSair);
     const novo = el.textContent.trim();
     if (salvar && novo && novo !== atual) {
-      // o DOM ja mudou por fora do pinta() (o contentEditable). Se o
-      // servidor recusar (por exemplo, a selecao nao assentou a tempo),
-      // a assinatura em S.sig[i] continuaria igual a de antes e o
-      // pinta() pularia o repintar - o texto digitado ficaria na tela
-      // parecendo salvo sem ter sido. Invalidar aqui forca o repaint
-      // nos dois casos: aceito (mostra o novo) ou recusado (volta ao
-      // salvo).
+      // o DOM ja mudou por fora do pinta() (o contentEditable). Invalidar a
+      // assinatura forca o repaint nos dois casos: aceito (mostra o novo) ou
+      // recusado (volta ao salvo).
       S.sig[i] = null;
       // `i` explicito, nunca a selecao da tela: ver o comentario em
-      // editor.py sobre a corrida do clique com botao direito. Devolve
-      // a promise: quem chamou `acabar` fora de um evento de teclado
-      // (mousedown/contextmenu clicando em outra palavra) precisa
-      // esperar ela terminar antes de mandar o proprio gesto - senao os
-      // dois pedidos correm e o `vez` descarta sempre o do "corrigir",
-      // ficando com a resposta do outro gesto, de ANTES da correcao.
+      // editor.py sobre a corrida do clique com botao direito.
       return acao("corrigir", { i, texto: novo });
-    } else {
-      pintaToken(i, S.est.pecas.tokens[i]);   // desiste: volta ao salvo
     }
+    pintaToken(i, S.est.pecas.tokens[i]);   // desiste: volta ao salvo
   }
 
   edicaoAtual = { i, acabar };
   el.contentEditable = "true";
   el.spellcheck = false;
-  // um vao tem largura fixa e classe de tracinho; enquanto se escreve ele
-  // e uma caixa de texto como qualquer outra. O `pintaToken` devolve as
-  // duas coisas ao terminar, salvando ou desistindo.
   el.classList.remove("vao", "voz", "jul");
   el.style.width = "";
   el.classList.add("editando");
@@ -890,77 +1157,16 @@ function iniciaCorrecao(i) {
   s.addRange(r);
 }
 
-folha.addEventListener("mousedown", (ev) => {
-  if (ev.button !== 0) return;
-  const i = tokenDe(ev.target);
-  if (edicaoAtual && i === edicaoAtual.i) return;   // clique DENTRO do
-    // campo em edicao: deixa o navegador posicionar o cursor, sem
-    // entrar na logica de selecao de token.
-  // decide e previne JA, antes de qualquer espera: preventDefault()
-  // depois de um await pode chegar tarde demais para o navegador
-  // respeitar.
-  if (i !== null && !ev.ctrlKey) ev.preventDefault();
-  (async () => {
-    if (edicaoAtual) await edicaoAtual.acabar(true);   // clicou fora
-      // durante uma edicao: fecha salvando ANTES de mandar o proximo
-      // gesto - se os dois pedidos corressem juntos, o `vez` sempre
-      // descartaria a resposta do "corrigir" a favor da do gesto
-      // seguinte, que reflete o estado de ANTES da correcao.
-    if (i === null) { S.sel = null; acao("nada"); return; }
-    if (ev.ctrlKey) {
-      const el = S.els[i], n = (S.est.pecas.tokens[i].txt || "").length;
-      let melhor = 0, dist = Infinity;
-      for (let k = 0; k <= n; k++) {
-        const d = Math.abs(retLetra(el, k).left - ev.clientX);
-        if (d < dist) { dist = d; melhor = k; }
-      }
-      selecionaCaret(i, melhor);
-      return;
-    }
-    S.ancora = i;
-    S.arrastando = true;
-    selecionaFaixa(i, i + 1);
-  })();
-});
-
-folha.addEventListener("mousemove", (ev) => {
-  if (!S.arrastando) return;
-  const i = tokenDe(ev.target);
-  if (i === null) return;
-  const a = Math.min(S.ancora, i), b = Math.max(S.ancora, i) + 1;
-  if (!S.sel || S.sel.i0 !== a || S.sel.i1 !== b) selecionaFaixa(a, b);
-});
-
-document.addEventListener("mouseup", () => { S.arrastando = false; });
-window.addEventListener("scroll", posBotoes, { passive: true });
-window.addEventListener("resize", posBotoes);
-
 /* ==================================================================== */
 /*  teclado                                                             */
 /* ==================================================================== */
 
 function andaToken(passo, estende) {
-  if (!S.sel) return;
   const toks = S.est.pecas.tokens;
   /* Onde a seta PARA. Texto ou voz medida - o mesmo criterio que libera
      escrever ali (`_corrigivel`, no servidor), e pela mesma razao: sao os
-     lugares onde ha o que ouvir. Ate 04/09/2026 a seta so parava em
-     palavra, e os 16, 49 e 48 vaos com voz de cada video de calibracao
-     estavam fora do alcance do teclado - inclusive os que aceitam texto,
-     que e justamente onde ele precisa chegar para escrever o que ouviu.
-     Pausa muda continua de fora: la nao ha nada para ouvir nem escrever. */
+     lugares onde ha o que ouvir. Pausa muda continua de fora. */
   const ouvivel = (i) => toks[i] && (toks[i].txt || toks[i].voz);
-  if (S.sel.tipo === "caret") {
-    let { i, k, n } = S.sel;
-    k += passo;
-    if (k < 0 || k > n) {              // saiu da palavra: pula para a vizinha
-      let j = i + passo;
-      while (j >= 0 && j < toks.length && !ouvivel(j)) j += passo;
-      if (j < 0 || j >= toks.length) return;
-      selecionaCaret(j, passo > 0 ? 0 : toks[j].txt.length);
-    } else selecionaCaret(i, k);
-    return;
-  }
   let { i0, i1 } = S.sel;
   if (estende) {
     if (passo > 0) { let j = i1; while (j < toks.length && !ouvivel(j)) j++;
@@ -978,8 +1184,6 @@ function andaToken(passo, estende) {
 }
 
 document.addEventListener("keydown", (ev) => {
-  // `-`, `=`, `1`..`7` e espaco sao gestos de corte na folha e caracteres
-  // dentro de uma caixa de texto. Quem tem o foco manda.
   if (ev.target && ev.target.tagName === "INPUT") return;
   if (!$("abrirVeu").hidden) {
     if (ev.key === "Escape") { fechaVeu(); ev.preventDefault(); }
@@ -988,22 +1192,15 @@ document.addEventListener("keydown", (ev) => {
   if (menu.style.display === "block" && ev.key === "Escape") {
     fechaMenu(); return;
   }
-  if (ev.key >= "1" && ev.key <= "7" && !ev.ctrlKey) {
-    poeUnidade(UNIDADES[+ev.key - 1]); ev.preventDefault(); return;
-  }
   if (ev.ctrlKey && (ev.key === "z" || ev.key === "Z")) {
     acao("desfazer"); ev.preventDefault(); return;
   }
+  if (ev.ctrlKey || ev.altKey || ev.metaKey) return;
   switch (ev.key) {
     case "ArrowLeft":  andaToken(-1, ev.shiftKey); ev.preventDefault(); break;
     case "ArrowRight": andaToken(+1, ev.shiftKey); ev.preventDefault(); break;
-    case "_": acao("menos", { lado: "esq" }); ev.preventDefault(); break;
-    case "+": acao("mais",  { lado: "esq" }); ev.preventDefault(); break;
-    case "-": acao("menos", { lado: "dir" }); ev.preventDefault(); break;
-    case "=": acao("mais",  { lado: "dir" }); ev.preventDefault(); break;
     case "Backspace": case "Delete":
-      if (S.sel && S.sel.tipo === "faixa") acao("alterna", {});
-      ev.preventDefault(); break;
+      acao("alterna"); ev.preventDefault(); break;
     case " ":
       espaco(); ev.preventDefault(); break;
     case "Enter":
@@ -1011,16 +1208,10 @@ document.addEventListener("keydown", (ev) => {
     case "o": case "O":
       tocaOriginal(); ev.preventDefault(); break;
     case "Escape":
-      para(); S.sel = null; acao("nada"); ev.preventDefault(); break;
+      para(); fechaPainel(); acao("nada", { sel: {} });
+      ev.preventDefault(); break;
   }
 });
-
-function poeUnidade(u) {
-  S.u = u;
-  for (const b of $("unid").children)
-    b.setAttribute("aria-pressed", +b.dataset.u === u);
-  acao("nada");
-}
 
 /* ==================================================================== */
 /*  audio: toca o corte, nao o original                                 */
@@ -1034,6 +1225,26 @@ async function carregaAudio() {
     { sampleRate: S.doc.sr });     // mesma taxa do wav: nao reamostra 21 MB
   const r = await fetch("/audio.wav");
   A.buf = await A.ctx.decodeAudioData(await r.arrayBuffer());
+  // O MESMO PCM que toca e o que desenha: nenhum endpoint novo, nenhuma
+  // segunda leitura do arquivo, e a onda e por construcao o audio que se
+  // ouve. A piramide custa uma passada e meia e roda uma vez.
+  S.bruto = A.buf.getChannelData(0);
+  S.picos = piramide(S.bruto);
+  // O PICO DO ARQUIVO INTEIRO, e nao o da janela. MEDIDO no IMG_0247: o
+  // pico e 0,32 e a fala corrente bate 0,05-0,15 - desenhada em escala
+  // absoluta, a onda vira um fio de cabelo e nao serve para nada. Normalizar
+  // pela JANELA seria pior de outro jeito: cada rolagem mudaria a altura da
+  // mesma silaba, e uma janela so de silencio viraria uma cabeleira de
+  // ruido. Pelo arquivo, a altura quer dizer sempre a mesma coisa e nao ha
+  // limiar nenhum para escolher - o numero vem do proprio audio.
+  const alto = S.picos[S.picos.length - 1];
+  let pico = 0;
+  for (let i = 0; i < alto.mx.length; i++) {
+    if (alto.mx[i] > pico) pico = alto.mx[i];
+    if (-alto.mn[i] > pico) pico = -alto.mn[i];
+  }
+  S.pico = pico || 1;
+  desenha();
   return A.buf;
 }
 
@@ -1042,6 +1253,30 @@ function para() {
   A.fontes = []; A.mapa = null;
   if (A.rot) cancelAnimationFrame(A.rot), A.rot = 0;
   for (const el of S.els) if (el) el.classList.remove("toca");
+  S.toque = null;
+  desenha();
+}
+
+function soltaToque() {
+  /* O verde e a POSICAO DO SOM, e pausado ele fica parado na tela dizendo
+     "aqui" muito depois de a pessoa ter apontado outro lugar. Mentia de dois
+     jeitos ao mesmo tempo: `.tok.toca` vem DEPOIS de `.tok.sel` no CSS, e
+     por isso a palavra verde nao mudava de cor ao ser selecionada - passar a
+     selecao por cima dela abria um buraco verde no meio da faixa, e clicar
+     nela parecia nao selecionar nada -, e o laco de `segue` seguia girando
+     sobre um relogio parado (o comentario esta lah).
+
+     Quem pausou e fez outro gesto desistiu daquele ponto: o espaco volta a
+     tocar a selecao nova, do comeco dela. Enquanto o som SOA nao se mexe -
+     ali o verde diz a verdade, e o quadro seguinte o acenderia de novo.
+
+     Mora no caminho de TODO gesto (`acao`), e nao so no do clique que pediu
+     isto: a mesma mentira vale para o corte: pausar, apertar backspace e
+     apertar espaco resumia a geometria de antes do corte, com o verde por
+     cima de uma palavra ja riscada. */
+  if (!A.mapa) return;
+  if (A.ctx && A.ctx.state === "running") return;
+  para();
 }
 
 async function toca(lista) {
@@ -1061,12 +1296,12 @@ async function toca(lista) {
     if (d <= 0.005) continue;
     const src = A.ctx.createBufferSource();
     src.buffer = A.buf;
-    const g = A.ctx.createGain();
-    g.gain.setValueAtTime(0, t0 + saida);
-    g.gain.linearRampToValueAtTime(1, t0 + saida + fade);
-    g.gain.setValueAtTime(1, t0 + saida + Math.max(fade, d - fade));
-    g.gain.linearRampToValueAtTime(0, t0 + saida + d);
-    src.connect(g).connect(A.ctx.destination);
+    const gn = A.ctx.createGain();
+    gn.gain.setValueAtTime(0, t0 + saida);
+    gn.gain.linearRampToValueAtTime(1, t0 + saida + fade);
+    gn.gain.setValueAtTime(1, t0 + saida + Math.max(fade, d - fade));
+    gn.gain.linearRampToValueAtTime(0, t0 + saida + d);
+    src.connect(gn).connect(A.ctx.destination);
     src.start(t0 + saida, a, d);
     A.fontes.push(src);
     mapa.push([saida, saida + d, a]);
@@ -1077,16 +1312,36 @@ async function toca(lista) {
 }
 
 function segue() {
-  /* Acende a palavra que esta soando. Sem isso, "tocar a partir daqui"
-     faz perder o lugar no texto na primeira emenda. */
+  /* Acende a palavra que esta soando E anda a linha na onda. Sem isso,
+     "tocar a partir daqui" faz perder o lugar nas duas vistas na primeira
+     emenda. */
   const passo = () => {
     if (!A.mapa) return;
+    /* Pausado, o relogio do Web Audio para - e o laco continuava girando
+       sobre o mesmo instante: sessenta redesenhos por segundo sem nada para
+       redesenhar, e a janela puxada de volta ao ponto pausado toda vez que a
+       roda ou a regua a tirava de la, com `S.visto` escrito por cima para a
+       selecao nova nem chegar a ser centrada. Enquanto o som SOA quem manda
+       e o som; parado, ele nao manda em nada. */
+    if (A.ctx.state !== "running") { A.rot = requestAnimationFrame(passo); return; }
     const t = A.ctx.currentTime - A.t0;
     let fonte = null;
     for (const [x, y, a] of A.mapa) if (t >= x && t < y) fonte = a + (t - x);
     if (fonte === null) {
       if (t > 0) { para(); return; }
-    } else acende(fonte);
+    } else {
+      acende(fonte);
+      S.toque = fonte;
+      // a janela segue o som: sem isso a linha sai pela borda na primeira
+      // emenda e a faixa passa a mostrar outro lugar do video.
+      const t0 = S.jan.c - S.jan.span / 2;
+      if (fonte < t0 + S.jan.span * 0.1 || fonte > t0 + S.jan.span * 0.9) {
+        S.jan.c = fonte + S.jan.span * 0.3;
+        limpaJanela();
+        S.visto = chaveSel();
+      }
+      desenha();
+    }
     A.rot = requestAnimationFrame(passo);
   };
   A.rot = requestAnimationFrame(passo);
@@ -1106,8 +1361,8 @@ function acende(t) {
   const el = S.els[achou];
   if (!el) return;
   el.classList.add("toca");
-  const r = el.getBoundingClientRect();
-  if (r.top < 90 || r.bottom > innerHeight - 90)
+  const r = el.getBoundingClientRect(), rf = folha.getBoundingClientRect();
+  if (r.top < rf.top + 60 || r.bottom > rf.bottom - 60)
     el.scrollIntoView({ block: "center", behavior: "smooth" });
 }
 
@@ -1120,46 +1375,26 @@ function recorta(ini, fim) {
   return out;
 }
 
-function tempoSel() {
-  /* Os tempos da selecao vem do servidor a cada gesto, junto com os
-     botoes: o primeiro instante de que o botao da esquerda fala e o
-     ultimo de que fala o da direita. Aqui basta o token. */
-  if (!S.sel) return null;
-  const toks = S.est.pecas.tokens;
-  if (S.sel.tipo === "caret") {
-    const p = toks[S.sel.i];
-    const t = p.s + (p.e - p.s) * S.sel.k / (S.sel.n || 1);
-    return [t, t];
-  }
-  return [toks[S.sel.i0].s, toks[S.sel.i1 - 1].e];
-}
-
 function tocaSelecao(ateOFim) {
-  const t = tempoSel();
-  if (!t) { toca(S.est.iv); return; }
-  toca(recorta(t[0], ateOFim ? S.doc.dur : Math.max(t[1], t[0] + 0.05)));
+  const s = S.sel;
+  if (s.i1 <= s.i0) { toca(S.est.iv); return; }
+  toca(recorta(s.ini, ateOFim ? S.doc.dur : Math.max(s.fim, s.ini + 0.05)));
 }
 
 function tocaOriginal() {
   /* A ÚNICA coisa desta tela que nao passa pelo corte.
 
-     Tudo o mais aqui toca `S.est.iv`, que e o corte - de proposito: o
-     editor existe para ouvir o que vai sair. Mas isso deixava sem resposta
-     a pergunta que mais aparece na hora de decidir se um corte esta certo:
-     "o que foi que sumiu aqui?". Nao havia como ouvir o que a lamina levou
-     sem abrir o .MOV em outro programa.
+     Tudo o mais aqui toca `S.est.iv`, que e o corte - de proposito: o editor
+     existe para ouvir o que vai sair. Mas isso deixava sem resposta a
+     pergunta que mais aparece na hora de decidir se um corte esta certo: "o
+     que foi que sumiu aqui?".
 
-     A margem em volta e para ouvir a EMENDA, nao a palavra: uma palavra
-     isolada nao diz se o corte comeu uma silaba do vizinho, e e essa a
-     duvida que traz alguem aqui. 0,35 s de cada lado e o bastante para a
-     fronteira aparecer e pouco para nao virar outra frase. */
-  if (!S.sel) return;
-  const toks = S.est.pecas.tokens;
-  const i0 = S.sel.tipo === "faixa" ? S.sel.i0 : S.sel.i;
-  const i1 = S.sel.tipo === "faixa" ? S.sel.i1 : S.sel.i + 1;
-  if (!toks[i0] || !toks[i1 - 1]) return;
-  toca([[Math.max(0, toks[i0].s - 0.35),
-         Math.min(S.doc.dur, toks[i1 - 1].e + 0.35)]]);
+     A margem em volta e para ouvir a EMENDA, nao a palavra: 0,35 s de cada
+     lado e o bastante para a fronteira aparecer e pouco para nao virar outra
+     frase. */
+  const s = S.sel;
+  if (s.i1 <= s.i0) return;
+  toca([[Math.max(0, s.ini - 0.35), Math.min(S.doc.dur, s.fim + 0.35)]]);
 }
 
 function espaco() {
@@ -1169,12 +1404,170 @@ function espaco() {
 }
 
 /* ==================================================================== */
+/*  o painel do canto                                                   */
+/* ==================================================================== */
+
+function abrePainel() { $("painel").hidden = false; painel(); }
+function fechaPainel() { $("painel").hidden = true; }
+$("btPainel").onclick = () =>
+  ($("painel").hidden ? abrePainel() : fechaPainel());
+$("fechaPainel").onclick = fechaPainel;
+
+function paraOuvir(e) {
+  /* As duas listas viram UMA, em ordem de tempo.
+
+     Elas respondem perguntas diferentes - `avisos` e "voce mandou e nao
+     saiu", `achados` e "a geometria produziu isto" -, mas quem esta
+     editando faz uma pergunta so: o que nesta montagem merece um ouvido?
+
+     A lista corre no relogio da PREVIA, pela mesma razao que o
+     `conferir.txt` corre: quem le isto vai ouvir o .m4a na ordem. O tempo da
+     fonte fica no title, que e onde se anota. */
+  const L = [];
+  for (const a of e.avisos)
+    L.push({ ini: a.ini, previa: a.previa, forte: !a.mao, mao: !!a.mao,
+             txt: a.motivo,
+             rot: a.palavra
+                    ? (a.mao ? "VOCÊ DESDISSE NA ONDA"
+                             : a.estado === "manter" ? "NÃO VOLTOU" : "NÃO SAIU")
+                : a.mao ? "REABERTA POR VOCÊ" : "ANOTAÇÃO NÃO OBEDECIDA" });
+  for (const a of e.achados)
+    L.push({ ini: a.ini, previa: a.previa, forte: false, mao: false,
+             rot: a.rot, txt: a.txt });
+  L.sort((x, y) => x.previa - y.previa);
+  return L;
+}
+
+function painel() {
+  const e = S.est;
+  // O contador vive FORA do painel, e e a condicao de ele poder estar
+  // escondido: "nao me interessa nada disso" nao pode virar "nada disso me
+  // alcanca". Vermelho so quando ha pedido desobedecido ou arquivo caduco -
+  // se tudo pesasse igual, nada pesaria.
+  const lista = paraOuvir(e);
+  const pv = e.previa;
+  const grave = e.avisos.some((a) => !a.mao) || !!S.doc.aviso ||
+                !!(pv && pv.tem && pv.velho);
+  const bt = $("btPainel");
+  bt.textContent = lista.length ? "⚠ " + lista.length : "painel";
+  bt.classList.toggle("forte", grave);
+  bt.title = grave ? "há pedido desobedecido ou arquivo desatualizado"
+                   : lista.length + " coisa(s) para ouvir";
+
+  if ($("painel").hidden) return;   // o resto so custa quando esta aberto
+
+  $("tit").textContent = S.doc.nome + " · " + S.doc.arquivo;
+  $("resumo").innerHTML =
+    "<b>" + rel(e.mantido) + "</b> de " + rel(S.doc.dur) +
+    " · " + e.trechos + " trechos · " + e.mao + " ajustes seus" +
+    (S.doc.anot.length ? " · " + S.doc.anot.length + " anotações" : "");
+  // decisoes de palavra descartadas por caducidade, e o que a garantia
+  // completou ao abrir. As duas coisas mudam o corte de um video ja julgado,
+  // e nenhuma pode passar calada.
+  $("avisoDoc").textContent = S.doc.aviso || "";
+  $("previaAviso").textContent = (pv && pv.tem && pv.velho)
+    ? "o .m4a no disco tem " + rel(pv.dur) + " e este corte tem " +
+      rel(e.mantido) + ": os tempos aqui são do corte de agora, não do "
+      + "arquivo que você ouviu. Exporte o áudio de novo antes de anotar."
+    : "";
+
+  const p = S.sel.i1 > S.sel.i0 ? e.pecas.tokens[S.sel.i0] : null;
+  const fora = p && p.vivo.reduce((a, [x, y]) => a + (y - x), 0) < 0.99;
+  $("caixaPorque").hidden = !(fora && p.why);
+  if (fora && p.why) $("porque").textContent = p.why;
+
+  // "A geometria deixou 0,06 s de 'de' tocando; completei no tempo exato."
+  // Completar calado seria a versao nova do defeito que este programa
+  // inteiro persegue.
+  const cx = $("compl");
+  cx.textContent = "";
+  $("caixaCompl").hidden = !e.completados.length;
+  for (const c of e.completados) {
+    const d = document.createElement("div");
+    d.className = "ouvir mao";
+    d.textContent = (c.estado === "cortar"
+      ? "a geometria deixava " + ms(c.seg) + " de "
+      : "a geometria tirava " + ms(c.seg) + " de ") + "“" + c.palavra + "”"
+      + (c.estado === "cortar" ? " tocando" : "") + "; completei no tempo exato";
+    d.onclick = () => vaiPara(c.ini);
+    cx.appendChild(d);
+  }
+
+  const av = $("avisos");
+  av.textContent = "";
+  $("caixaAvisos").hidden = !lista.length;
+  $("tituloOuvir").textContent =
+    lista.length ? "O que ouvir · " + lista.length : "O que ouvir";
+  for (const a of lista) {
+    const d = document.createElement("div");
+    d.className = "ouvir" + (a.forte ? " forte" : "") + (a.mao ? " mao" : "");
+    const r = document.createElement("span");
+    r.className = "rot";
+    r.textContent = a.rot;
+    const q = document.createElement("span");
+    q.className = "quando";
+    q.textContent = rel(a.previa) + " · ";
+    d.title = "no .m4a " + rel(a.previa) + "   ·   na fonte " + rel(a.ini);
+    d.append(r, q, document.createTextNode(a.txt.slice(0, 120)));
+    d.onclick = () => vaiPara(a.ini);
+    av.appendChild(d);
+  }
+}
+
+function rolaAteSelecao() {
+  /* "arrastar na onda acende as palavras, e a folha rola ate elas" - a
+     outra metade do pedido de mao dupla. So depois da resposta: quem diz
+     que palavras sao e o servidor. */
+  const el = S.els[S.sel.i0];
+  if (el && !el.hidden) el.scrollIntoView({ block: "center", behavior: "smooth" });
+}
+
+function vaiPara(t) {
+  const toks = S.est.pecas.tokens;
+  for (let i = 0; i < toks.length; i++) {
+    if (toks[i].e > t) {
+      selecionaFaixa(i, i + 1).then(() => {
+        if (S.els[i]) S.els[i].scrollIntoView({ block: "center", behavior: "smooth" });
+      });
+      return;
+    }
+  }
+}
+
+/* ==================================================================== */
+/*  o relógio da prévia                                                 */
+/* ==================================================================== */
+
+async function vaiParaPrevia() {
+  /* O tempo que ele digita e o do .m4a; a folha e a fonte. Quem traduz e o
+     servidor (`Sessao.em_previa`), pela mesma `_mapa_previa` do `conferir
+     --em` e da fase 2 do `/anotar`. Aceita "89", "1:29" e "1:29,5". */
+  const cx = $("emPrevia");
+  const p = cx.value.trim().replace(",", ".").split(":").map(Number);
+  if (!p.length || p.some(isNaN)) return;
+  const t = p.reduce((a, x) => a * 60 + x, 0);
+  const r = await (await fetch("/em", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ previa: t }),
+  })).json();
+  if (typeof r.i !== "number" || !S.els[r.i]) return;
+  cx.blur();                        // devolve o teclado para a folha
+  await selecionaFaixa(r.i, r.i + 1);
+  S.els[r.i].scrollIntoView({ block: "center", behavior: "smooth" });
+}
+
+$("emPrevia").addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter") { ev.preventDefault(); vaiParaPrevia(); }
+  else if (ev.key === "Escape") { ev.preventDefault(); ev.target.blur(); }
+});
+
+/* ==================================================================== */
 /*  menus de botao direito                                              */
 /* ==================================================================== */
 
 function fechaMenu() { menu.style.display = "none"; }
 document.addEventListener("click", fechaMenu);
-document.addEventListener("scroll", fechaMenu, { passive: true });
+folha.addEventListener("scroll", fechaMenu, { passive: true });
 
 function abreMenu(x, y, itens) {
   menu.textContent = "";
@@ -1187,47 +1580,56 @@ function abreMenu(x, y, itens) {
     menu.appendChild(b);
   }
   menu.style.display = "block";
-  menu.style.left = Math.min(x, innerWidth - 200) + window.scrollX + "px";
-  menu.style.top = Math.min(y, innerHeight - menu.offsetHeight - 8)
-    + window.scrollY + "px";
+  menu.style.left = Math.min(x, innerWidth - 210) + "px";
+  menu.style.top = Math.min(y, innerHeight - menu.offsetHeight - 8) + "px";
+}
+
+function menuDaPalavra(x, y, i) {
+  const toks = S.est.pecas.tokens;
+  const dentroSel = i >= S.sel.i0 && i < S.sel.i1;
+  const a = dentroSel ? S.sel.i0 : i, b = dentroSel ? S.sel.i1 : i + 1;
+  const oculto = (() => {
+    let v = 0;
+    for (let j = a; j < b; j++)
+      v += toks[j].vivo.reduce((s, [p, q]) => s + (q - p), 0);
+    return v / Math.max(1, b - a) < 0.5;
+  })();
+  // so uma palavra por vez: um trecho de varias nao tem como virar texto
+  // novo sem inventar uma correspondencia com os tokens originais. Quem
+  // decide se ESTE token aceita texto e o servidor (`_corrigivel`).
+  const podeCorrigir = (b - a === 1) && toks[a].corrigivel;
+  abreMenu(x, y, [
+    ["tocar", () => tocaSelecao(false)],
+    ["tocar o original (sem o corte)", () => tocaOriginal()],
+    ["tocar a partir daqui", () => tocaSelecao(true)],
+    "-",
+    [oculto ? "restaurar" : "ocultar", () => acao("alterna")],
+    [toks[a].txt ? "corrigir transcrição" : "escrever o que se ouve",
+     () => iniciaCorrecao(a), !podeCorrigir],
+    "-",
+    ["desfazer", () => acao("desfazer"), !S.est.podeDesfazer],
+  ]);
 }
 
 document.addEventListener("contextmenu", async (ev) => {
   ev.preventDefault();
   if (!S.est) return;
-  // espera a edicao em curso terminar de salvar ANTES de ler S.est/S.sel
-  // pra montar o menu - mesma razao do mousedown: um "corrigir" e o
-  // gesto seguinte disparados juntos deixam o "vez" descartar sempre a
-  // resposta do "corrigir".
+  // espera a edicao em curso terminar de salvar ANTES de ler S.est/S.sel -
+  // um "corrigir" e o gesto seguinte disparados juntos deixam o "vez"
+  // descartar sempre a resposta do "corrigir".
   if (edicaoAtual) await edicaoAtual.acabar(true);
+  if (ev.target === cv) {
+    const [x, y] = posMouse(ev);
+    if (ondeY(y) === "palavra") {
+      await selecionaTempo(pxt(x), pxt(x));
+      menuDaPalavra(ev.clientX, ev.clientY, S.sel.i0);
+      return;
+    }
+  }
   const i = tokenDe(ev.target);
   if (i !== null) {
-    const dentro = S.sel && S.sel.tipo === "faixa" &&
-      i >= S.sel.i0 && i < S.sel.i1;
-    if (!dentro) selecionaFaixa(i, i + 1);
-    const toks = S.est.pecas.tokens;
-    const oculto = (a, b) => {
-      let v = 0;
-      for (let j = a; j < b; j++)
-        v += toks[j].vivo.reduce((s, [x, y]) => s + (y - x), 0);
-      return v / Math.max(1, b - a) < 0.5;
-    };
-    const a = dentro ? S.sel.i0 : i, b = dentro ? S.sel.i1 : i + 1;
-    // so uma palavra por vez: um trecho de varias nao tem como virar
-    // texto novo sem inventar uma correspondencia com os tokens
-    // originais que a geometria de risco depois teria de respeitar.
-    // Quem decide se ESTE token aceita texto e o servidor (`_corrigivel`),
-    // uma vez so: a tela apenas obedece o que veio na peca.
-    const podeCorrigir = (b - a === 1) && toks[a].corrigivel;
-    abreMenu(ev.clientX, ev.clientY, [
-      ["tocar", () => tocaSelecao(false)],
-      ["tocar o original (sem o corte)", () => tocaOriginal()],
-      ["tocar a partir daqui", () => tocaSelecao(true)],
-      "-",
-      [oculto(a, b) ? "restaurar" : "ocultar", () => acao("alterna", {})],
-      [toks[a].txt ? "corrigir transcrição" : "escrever o que se ouve",
-       () => iniciaCorrecao(a), !podeCorrigir],
-    ]);
+    if (!(i >= S.sel.i0 && i < S.sel.i1)) await selecionaFaixa(i, i + 1);
+    menuDaPalavra(ev.clientX, ev.clientY, i);
     return;
   }
   abreMenu(ev.clientX, ev.clientY, [
@@ -1246,6 +1648,7 @@ document.addEventListener("contextmenu", async (ev) => {
 let vigia = null;
 async function roda(cmd) {
   para();
+  abrePainel();
   $("caixaLog").hidden = false;
   $("logTit").textContent = cmd;
   $("log").textContent = "iniciando...";
@@ -1265,18 +1668,21 @@ async function roda(cmd) {
     if (!r.rodando && r.rc !== null) {
       clearInterval(vigia); vigia = null;
       $("logTit").textContent = cmd + (r.rc === 0 ? " · pronto" : " · falhou");
+      acao("nada");        // o .m4a no disco pode ter deixado de ser velho
     }
   }, 700);
 }
+
+for (const b of document.querySelectorAll("#painel button.mini[data-cmd]"))
+  b.onclick = () => roda(b.dataset.cmd);
 
 /* ==================================================================== */
 /*  abrir outro vídeo                                                   */
 /* ==================================================================== */
 
-/* Nunca oferece um caminho de arquivo pra digitar: so lista o que o
-   servidor ja confirmou que passou pelo pipeline (mesmo `stream.json` +
-   `audio.wav` que a Sessao exige pra abrir) e manda so o nome de volta -
-   o navegador escolhe DENTRO do que foi oferecido, nunca inventa. */
+/* Nunca oferece um caminho de arquivo pra digitar: so lista o que o servidor
+   ja confirmou que passou pelo pipeline e manda so o nome de volta - o
+   navegador escolhe DENTRO do que foi oferecido, nunca inventa. */
 
 function fechaVeu() { $("abrirVeu").hidden = true; }
 
@@ -1328,21 +1734,19 @@ $("abrirVeu").addEventListener("click", (ev) => {
 /*  partida                                                             */
 /* ==================================================================== */
 
+new ResizeObserver(redimensiona).observe($("faixa"));
+document.addEventListener("mouseup", () => { S.arrastando = false; });
+
 (async function () {
   S.doc = await (await fetch("/doc")).json();
   S.est = S.doc.estado;
+  S.sel = S.est.sel;
   document.title = "tarocut · " + S.doc.nome;
-
-  const u = $("unid");
-  for (const v of UNIDADES) {
-    const b = document.createElement("button");
-    b.dataset.u = v;
-    b.textContent = v < 1000 ? v + " ms" : "1 s";
-    b.onclick = () => poeUnidade(v);
-    u.appendChild(b);
-  }
-  poeUnidade(S.u);
+  redimensiona();
   pinta();
+  // o aviso de carga (montagem caduca, garantia cumprida ao abrir) so
+  // aparece se alguem abrir o painel; ele muda o corte, entao abre sozinho.
+  if (S.doc.aviso) abrePainel();
   carregaAudio().catch(() => {});   // adianta os 21 MB antes do primeiro toque
 })();
 </script>

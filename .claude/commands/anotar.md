@@ -77,8 +77,8 @@ venv\Scripts\python.exe -c "import tarocut,subprocess,json; p=r'C:\Users\marip\V
   lugar (não recomendado). **Não decida sozinho.**
 
 Esse teste não é perfeito e é bom saber onde ele é cego: um `cortes` do
-`montagem.json` não tem mínimo nenhum (o botão de menos do editor tira 1 ms
-se você pedir), e uma mudança dessas passa por baixo da tolerância. Ele
+`montagem.json` não tem mínimo nenhum (um arrasto de 1 ms na onda do editor
+tira 1 ms), e uma mudança dessas passa por baixo da tolerância. Ele
 pega o que muda o corte de verdade, não toda mexida concebível.
 
 ### Então pare e peça as anotações

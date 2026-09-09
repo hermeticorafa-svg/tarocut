@@ -1,30 +1,41 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""editor.py - edita o corte pela transcricao, no navegador.
+"""editor.py - edita o corte pela transcricao e pela onda, no navegador.
 
-Nao e um editor de video. E a transcricao ipsis litteris com o que sai do
-video riscado por cima dela, e quatro botoes que movem a borda do corte. Quem
-usa isto odeia linha do tempo; tudo aqui e palavra, numero e tecla.
+Nao e um editor de video. Sao duas vistas da MESMA coisa: a transcricao
+ipsis litteris em cima, com o que sai do video riscado por cima dela, e a
+faixa de audio embaixo, onde o mesmo trecho aparece como tempo. Selecionar
+palavra acende o tempo; arrastar no tempo acende a palavra. Quem usa isto
+nao e editor de video e nao quer aprender a ser.
 
 Por que navegador e nao Tk: o que faz este editor valer a pena e ouvir o
 corte enquanto se corta, sem renderizar nada. Isso pede um motor de audio que
 toque uma lista de trechos com emenda precisa e sem lacuna - a Web Audio API
 faz isso de graca, agendando cada trecho num relogio de amostra. Em Tk seria
-preciso escrever esse motor do zero.
+preciso escrever esse motor do zero. E o mesmo PCM que ela decodifica para
+tocar e o que a tela usa para desenhar a onda: nenhum endpoint novo.
 
 O PONTO DELICADO deste arquivo e um so, e esta escrito no CLAUDE.md: **o
-navegador nao calcula corte**. A cada gesto ele manda "menos 100 ms na
-esquerda desta selecao" e recebe de volta os trechos ja calculados por
-`tarocut.intervalos()` - a mesma funcao do `render`, com o mesmo snap, a
-mesma fusao de ilhas, o mesmo minimo. O navegador so desenha e toca a lista
-que recebeu. Ate a conta de "que trecho este botao vai devolver" e daqui: a
-tela nunca aritmetiza tempo, porque uma reimplementacao em JS seria mais
-rapida e mentiria em algum canto, mais cedo ou mais tarde.
+navegador nao calcula corte**. Todo gesto vira um POST e volta com os trechos
+ja calculados por `tarocut.intervalos()` - a mesma funcao do `render`, com o
+mesmo snap, a mesma fusao de ilhas, o mesmo minimo. A tela converte pixel em
+tempo dentro da janela que ela mesma desenhou (isso e desenho), e nada mais:
+uma reimplementacao da geometria em JS seria mais rapida e mentiria em algum
+canto, mais cedo ou mais tarde.
 
 E por isso o riscado nao vem do `cut` do token, e sim dos trechos mantidos:
 o que aparece riscado e o que de fato nao vai sair no .mov, depois de toda a
 geometria. Foi essa a exigencia - ver na transcricao tudo o que foi ocultado,
 inclusive o que uma anotacao de julgamento tirou.
+
+A GARANTIA deste arquivo, e a razao de ele ter sido reescrito em 08/09/2026:
+**ocultei a palavra e ela sumiu, sem asterisco.** Ate aqui o programa AVISAVA
+que nao tinha obedecido - `folga_palavra` (0,06 s de cada lado) e `minimo`
+(0,28 s) anulavam o corte de qualquer palavra curta, e o aviso corretissimo
+morava num painel que ninguem lia. Hoje a decisao de palavra desce tambem
+para a camada de tempo (ver `_palavras`), que entra por ultimo e nao passa
+por geometria nenhuma. Quando as duas divergem, quem se dobra e a geometria,
+e em voz alta: `completados` diz quanto ela teve de ceder e onde.
 
 O que sai daqui e `work/<video>/montagem.json`, lido pelo `_base` do tarocut.
 Depois de salvar, `audio` e `render` produzem exatamente o corte ouvido.
@@ -130,6 +141,17 @@ class Sessao:
         # de disco, e nao muda enquanto a sessao vive (43 ms por leitura).
         self._vocab = tc.carrega_vocabulario(self.d)
         self._pend, self._pend_chave = [], None
+        # o corte que a GEOMETRIA sozinha faria com as decisoes de palavra
+        # de agora, sem a camada de tempo. Nao e o corte que sai: e a
+        # testemunha de quanto a geometria teve de ceder (ver
+        # `completados`). Cacheado pela mesma chave que o `_pend`, e pela
+        # mesma razao - so muda quando a camada de palavra muda.
+        self._geo, self._geo_chave = None, object()
+        # o que so depende do corte (pecas, avisos, achados) e a ultima
+        # versao das pecas que ja saiu daqui. Ver `_chave_corte`.
+        self._corte, self._corte_chave = {}, object()
+        self._pecas_chave = object()
+        self._iv, self._iv_chave = [], object()
 
         self.tokens, self.cortes, self.restauros = {}, [], []
         self.aviso = ""
@@ -154,6 +176,8 @@ class Sessao:
         # threads, um /doc no meio de um /acao leria o fluxo com o
         # estado do outro pela metade.
         self.lock = threading.RLock()
+        # por ultimo: precisa da tranca e do fluxo inteiro montado.
+        self._cumpre_carga()
 
     def _carrega(self, mont):
         """Montagem do disco. Decisao de palavra que caducou nao entra.
@@ -173,13 +197,46 @@ class Sessao:
             return
         copia = self.d / "montagem-anterior.json"
         copia.write_bytes((self.d / "montagem.json").read_bytes())
-        self.aviso = (f"o montagem.json era de outra analise: os ajustes de "
-                      f"milissegundo foram mantidos, {len(mont['tokens'])} "
-                      f"decisoes de palavra foram descartadas. Copia em "
-                      f"{copia.name}")
+        self.aviso = (f"o montagem.json era de outra analise: os trechos de "
+                      f"tempo foram mantidos (tempo nao caduca), "
+                      f"{len(mont['tokens'])} decisoes de palavra foram "
+                      f"descartadas. Copia em {copia.name}")
         print(f"[editor] {self.aviso}")
         for r in ruins[:6]:
             print(f"    {r}")
+
+    def _cumpre_carga(self):
+        """A garantia vale tambem para o que ja estava decidido no disco.
+
+        Um `montagem.json` escrito pelo editor de botoes tem decisao de
+        palavra e NAO tem o trecho de tempo que hoje a acompanha (ver
+        `_palavras`). Abrir esse arquivo e continuar mostrando a palavra
+        oculta que continua tocando seria manter a promessa quebrada por
+        onde ela veio.
+
+        Nao e silencioso, e nao pode ser: mudar o corte de um video ja
+        julgado sem dizer e o defeito que este programa mais persegue.
+        Quando muda alguma coisa, a mudanca vai para o `aviso`, que a tela
+        mostra por cima de tudo. E so entra no disco no primeiro gesto -
+        abrir e fechar o editor nao reescreve nada.
+
+        MEDIDO no IMG_0247, o unico dos tres de calibracao com montagem de
+        verdade: 3 decisoes de palavra, e a diferenca esta no `cartas` de
+        159,57s, oculto a mao, que continuava tocando 60 ms."""
+        antes = self.intervalos()
+        for i, est in sorted(self.tokens.items()):
+            t = self.stream[i]
+            (self._corta if est == "cortar" else self._restaura)(
+                [t["s"], t["e"]])
+        depois = self.intervalos()
+        if depois == antes:
+            return
+        d = abs(sum(b - a for a, b in depois) - sum(b - a for a, b in antes))
+        aviso = (f"a geometria deixava {d*1000:.0f} ms de palavra decidida a "
+                 f"mao do lado errado do corte; completei no tempo exato "
+                 f"({len(antes)} trechos -> {len(depois)})")
+        self.aviso = f"{self.aviso} {aviso}" if self.aviso else aviso
+        print(f"[editor] {aviso}")
 
     def _carrega_correcoes(self, doc):
         """correcoes.json do disco. Mesma regra do `_carrega`, pela mesma
@@ -503,153 +560,86 @@ class Sessao:
         self._aplica_correcoes()
 
     def intervalos(self):
-        """A unica fonte de verdade do corte, para a tela e para o render."""
+        """A unica fonte de verdade do corte, para a tela e para o render.
+
+        Cacheado pelas duas camadas que o produzem, e por mais nada: andar a
+        selecao nao muda um milissegundo do corte, e mesmo assim custava os
+        44 ms desta funcao a cada palavra por que um arrasto passava. As
+        correcoes ficam FORA da chave de proposito - `correcoes.json` e sobre
+        o que a palavra diz, nunca sobre se ela sai, e nenhum passo daqui
+        para baixo le `t["t"]`. No dia em que ler, esta linha vira mentira e
+        e aqui que ela se conserta.
+
+        A lista devolvida e a mesma referencia entre chamadas; ninguem neste
+        programa escreve num `iv` (o `aplica_manual` ja constroi listas
+        novas)."""
         with self.lock:
             self._aplica()
-            return tc.intervalos(self.stream, self.C, self.dur, self.db,
-                                 self.hop, self.anot, self.montagem())
+            chave = (tuple(sorted(self.tokens.items())),
+                     repr(self.cortes), repr(self.restauros))
+            if chave != self._iv_chave:
+                self._iv = tc.intervalos(self.stream, self.C, self.dur,
+                                         self.db, self.hop, self.anot,
+                                         self.montagem())
+                self._iv_chave = chave
+            return self._iv
 
-    # -------------------------------------------------------- onde a lamina
+    # ------------------------------------------------ o que a geometria cede
 
-    @staticmethod
-    def _trecho_em(iv, t):
-        """O trecho MANTIDO que contem `t`, ou None. Borda conta como
-        dentro: e nela que os botoes trabalham."""
-        for a, b in iv:
-            if a - 1e-9 <= t <= b + 1e-9:
-                return [a, b]
-        return None
+    def _geometria(self):
+        """O corte que a GEOMETRIA sozinha faria com as decisoes de palavra
+        de agora - sem a camada de tempo.
 
-    def _lacuna_em(self, iv, t):
-        for h1, h2 in tc.lacunas(iv, self.dur):
-            if h1 - 1e-9 <= t <= h2 + 1e-9:
-                return [h1, h2]
-        return None
+        Nao e o corte que sai, e nao serve para desenhar nada. Serve para
+        UMA pergunta: quanto a geometria teve de ceder para a promessa ser
+        cumprida? Sem esta testemunha, `_palavras` completaria em silencio -
+        e completar em silencio e a versao nova do defeito que este programa
+        inteiro persegue.
 
-    def _devolve(self, lac, u, direita):
-        """Que trecho o botao de mais devolve dentro desta lacuna.
+        Cacheado pela mesma chave que o `_pend`, e pela mesma razao: um
+        gesto de milissegundo mexe no `iv`, nunca na camada de palavra."""
+        with self.lock:
+            chave = tuple(sorted(self.tokens.items()))
+            if chave != self._geo_chave:
+                self._aplica()
+                self._geo = tc.intervalos(self.stream, self.C, self.dur,
+                                          self.db, self.hop, self.anot, None)
+                self._geo_chave = chave
+            return self._geo
 
-        PRIORIDADE PARA O QUE A PESSOA TIROU. O mais e o desfazer do menos,
-        e desfazer que devolve outra coisa nao e desfazer: sem esta regra,
-        cinco menos seguidos e cinco mais seguidos deixavam a fala cortada
-        de fora e traziam meio segundo de silencio no lugar dela - medido,
-        era o unico jeito de os dois botoes nao voltarem ao mesmo corte. So
-        quando nao ha corte seu dentro da lacuna e que o mais desfaz o corte
-        AUTOMATICO, e ai a partir da borda colada na selecao.
+    def completados(self):
+        """"A geometria deixou 0,06 s de 'de' tocando; completei no tempo
+        exato." Uma linha por palavra em que as duas camadas divergiram.
 
-        A fatia devolvida sempre encosta em material que ja se ouve. Corte
-        seu que esteja boiando no meio da lacuna e pulado de proposito:
-        devolver so ele deixaria uma ilha de 100 ms cercada de silencio, que
-        e o defeito que o `_garante_ilhas` evita do outro lado.
+        MEDIDO: `folga_palavra` recua a emenda 0,06 s de cada palavra
+        mantida vizinha e `minimo` descarta corte menor que 0,28 s, entao
+        ocultar 'de', 'que', 'e', 'um', 'no' ou 'ou' - as palavras que mais
+        aparecem numa gaguejada - nao fazia nada. O programa avisava, num
+        painel lateral desconectado da palavra clicada, e o aviso estava
+        certo e ninguem lia.
 
-        Devolve (trecho, e_seu) - quem chama precisa saber se e desfazer ou
-        se e material que a analise tirou."""
-        h1, h2 = lac
-        meus = [[max(c[0], h1), min(c[1], h2)] for c in self.cortes
-                if c[1] > h1 + 1e-9 and c[0] < h2 - 1e-9]
-        meus = [c for c in meus if c[1] - c[0] > MINIMO]
-        meus.sort(reverse=not direita)          # o mais perto da selecao antes
-        for c0, c1 in meus:
-            encosta_perto = (c0 <= h1 + 1e-6) if direita else (c1 >= h2 - 1e-6)
-            encosta_longe = (c1 >= h2 - 1e-6) if direita else (c0 <= h1 + 1e-6)
-            if encosta_perto:
-                return ([c0, min(c1, c0 + u)] if direita
-                        else [max(c0, c1 - u), c1]), True
-            if encosta_longe:
-                return ([max(c0, c1 - u), c1] if direita
-                        else [c0, min(c1, c0 + u)]), True
-        return ([h1, min(h2, h1 + u)] if direita
-                else [max(h1, h2 - u), h2]), False
-
-    def vizinhanca(self, i0, i1):
-        """Ate onde vai o "ao redor" do botao de mais.
-
-        Restaurar e devolver o que foi ocultado PERTO da palavra, e sem um
-        limite "perto" vira "a proxima lacuna do corte" - que pode estar
-        quatro segundos adiante. Medido no IMG_0247: com a palavra `cartas`
-        de 3:11,6 selecionada, o mais da direita acendia e devolvia 100 ms
-        de uma pausa em 3:16,1, no meio de outra frase. Nao e o que o botao
-        promete.
-
-        O limite e o TOKEN vizinho, e nao um numero em segundos, porque e
-        exatamente o que a pessoa ve na tela: a marca de vao ao lado da
-        palavra. Corte que a propria pessoa fez escapa deste limite (ver
-        `gestos`) - o mais tem de desfazer o menos onde quer que ele tenha
-        caido, senao deixa de ser desfazer."""
-        n = len(self.stream)
-        esq = self.stream[max(0, i0 - 1)]["s"]
-        dir_ = self.stream[min(n - 1, i1 if i1 > i0 else i0 + 1)]["e"]
-        return esq, dir_
-
-    def gestos(self, iv, ini, fim, u, viz=None):
-        """O que cada um dos quatro botoes faria, agora, nesta selecao.
-
-        Aqui mora o modelo inteiro da interface, e ele e mais simples do que
-        parece: **os botoes movem a borda da lacuna colada na selecao.** Do
-        lado esquerdo, o menos empurra a borda de fora para longe (esconde
-        mais) e o mais puxa a borda de dentro para perto (devolve). Do lado
-        direito, espelhado.
-
-        Duas consequencias, e sao elas que fazem a coisa parecer obvia na
-        mao:
-
-        - mais desfaz menos EXATO. O menos abre a lacuna [s-u, s]; o mais
-          devolve [s-u, s]. E o mesmo trecho, e por isso o botao de mais
-          acende sozinho depois de um menos.
-        - apertar o mesmo botao de novo continua de onde parou, porque a
-          borda andou. Nao ha estado escondido: a lacuna esta no corte, e o
-          corte e recalculado a cada gesto.
-
-        O menos ancora no que ainda se OUVE (primeiro instante mantido do
-        lado, pulando a lacuna que ja existe) e nunca atravessa uma lacuna
-        num aperto so - come no maximo ate o fim do trecho em que entrou.
-        Assim uma tecla segurada nao pula por cima de uma frase inteira sem
-        que ninguem veja."""
-        out = {"esq": {"menos": None, "mais": None},
-               "dir": {"menos": None, "mais": None}}
-        viz_esq, viz_dir = viz if viz else (0.0, self.dur)
-
-        # --- esquerda: o que se ouve ANTES da selecao
-        for a, b in reversed(iv):
-            if a < ini - 1e-9:
-                q = min(b, ini)
-                if q - a > MINIMO:
-                    out["esq"]["menos"] = [max(a, q - u), q]
-                break
-        borda = self._trecho_em(iv, ini)
-        e_esq = borda[0] if borda else ini
-        lac = self._lacuna_em(iv, e_esq)
-        # A lacuna e aparada na selecao: quando a propria palavra esta
-        # oculta, a lacuna atravessa os dois lados dela, e o botao da
-        # esquerda so tem o que dizer sobre o que fica a esquerda.
-        if lac:
-            lac = [lac[0], min(lac[1], e_esq)]
-            if lac[1] - lac[0] > MINIMO:
-                span, meu = self._devolve(lac, u, False)
-                if meu or lac[1] >= viz_esq:
-                    out["esq"]["mais"] = span
-
-        # --- direita: o que se ouve DEPOIS da selecao
-        for a, b in iv:
-            if b > fim + 1e-9:
-                p = max(a, fim)
-                if b - p > MINIMO:
-                    out["dir"]["menos"] = [p, min(b, p + u)]
-                break
-        borda = self._trecho_em(iv, fim)
-        e_dir = borda[1] if borda else fim
-        lac = self._lacuna_em(iv, e_dir)
-        if lac:
-            lac = [max(lac[0], e_dir), lac[1]]
-            if lac[1] - lac[0] > MINIMO:
-                span, meu = self._devolve(lac, u, True)
-                if meu or lac[0] <= viz_dir:
-                    out["dir"]["mais"] = span
-
-        for lado in out.values():
-            for k, v in list(lado.items()):
-                if v and v[1] - v[0] <= MINIMO:
-                    lado[k] = None
+        O preco de cortar na fronteira alinhada esta escrito no comentario
+        de `folga_palavra`: 0,06 e o erro MEDIDO de fronteira do alinhador
+        (72% dos fins de palavra do Whisper caem tarde, mediana +27 ms).
+        Cortar exato troca "sobra farelo do que se mandou sair" por "pode
+        comer a silaba do vizinho" - risco simetrico, e agora visivel na
+        onda e audivel num clique."""
+        geo = self._geometria()
+        out = []
+        for i in sorted(self.tokens):
+            t = self.stream[i]
+            span = [[t["s"], t["e"]]]
+            if self.tokens[i] == "cortar":
+                falta = [[max(a, t["s"]), min(b, t["e"])] for a, b in geo
+                         if min(b, t["e"]) - max(a, t["s"]) > MINIMO]
+            else:
+                falta = tc.subtrai_spans(span, geo)
+            seg = sum(b - a for a, b in falta)
+            if seg <= MINIMO:
+                continue
+            out.append({"i": i, "ini": round(t["s"], 3),
+                        "fim": round(t["e"], 3), "seg": round(seg, 3),
+                        "estado": self.tokens[i], "palavra": t["t"]})
         return out
 
     # --------------------------------------------------------------- gestos
@@ -663,7 +653,9 @@ class Sessao:
 
     def _corta(self, span):
         """Corte de milissegundo. Sai do conjunto contrario antes de entrar
-        no seu - e essa disjuncao que faz o mais desfazer o menos."""
+        no seu - e essa disjuncao que faz arrastar de volta desfazer EXATO,
+        sem heuristica nenhuma: o gesto nomeia o trecho, e o gesto contrario
+        sobre o mesmo trecho o devolve."""
         self.restauros = tc.subtrai_spans(self.restauros, [span])
         self.cortes = tc.uniao_spans(self.cortes, [span])
 
@@ -672,23 +664,69 @@ class Sessao:
         self.restauros = tc.uniao_spans(self.restauros, [span])
 
     def _palavras(self, i0, i1, estado):
+        """A decisao de palavra, nas DUAS camadas.
+
+        A camada de palavra e a que importa e a que continua mandando: ela
+        passa por toda a geometria de emenda, e e por isso que o corte sai
+        com poucas emendas e cada uma pousada no silencio. O trecho de tempo
+        que desce junto e a garantia - ele entra por ultimo, sem snap e sem
+        minimo, e so pode ACRESCENTAR o que a geometria nao deu conta de
+        tirar (ou devolver o que ela nao deu conta de trazer). Onde as duas
+        concordam, ele nao muda um milissegundo; onde discordam, quem se
+        dobra e a geometria.
+
+        Que os dois caminhos dao o MESMO corte nao e sorte de implementacao,
+        e aritmetica: o corte final e (geometria uniao este trecho), e
+        [s,e] = ([s,e] dentro do corte) uniao ([s,e] fora dele). Completar
+        so o residuo daria byte a byte a mesma coisa - so que gravaria no
+        `montagem.json` um numero que nao se pode reler ("os 60 ms que
+        sobraram naquele dia") em vez do que a pessoa disse ("esta palavra").
+
+        MEDIDO nos tres de calibracao, ocultando cada palavra mantida uma de
+        cada vez: a palavra sumia de verdade em 7 de 306 (IMG_0246), 21 de
+        660 (IMG_0247) e 20 de 742 (IMG_0248) - e sobrevivia INTEIRA em 168,
+        343 e 391. Nao e caso de borda: `minimo` (0,28) mais as duas folgas
+        de `folga_palavra` (0,06) anulam o corte de toda palavra menor que
+        0,40 s, que sao quase todas as palavras curtas do portugues falado.
+
+        Voltar a proposta automatica tira as duas camadas, e tem de tirar:
+        o trecho de tempo aqui nao e ajuste de milissegundo de ninguem, e a
+        sombra de uma decisao de palavra. Deixa-lo para tras faria a palavra
+        continuar cortada depois de restaurada - a promessa quebrada do
+        outro lado."""
         for i in range(max(0, i0), min(len(self.stream), i1)):
             cut, _ = self.base[i]
+            t = self.stream[i]
+            span = [t["s"], t["e"]]
             if (estado == "cortar") == cut:
                 self.tokens.pop(i, None)   # voltou a proposta: nao e decisao
+                self.cortes = tc.subtrai_spans(self.cortes, [span])
+                self.restauros = tc.subtrai_spans(self.restauros, [span])
             else:
                 self.tokens[i] = estado
+                (self._corta if estado == "cortar" else self._restaura)(span)
 
     def selecao(self, sel):
         """A selecao da tela -> (ini, fim, i0, i1) em segundos e em tokens.
 
-        A pagina manda palavra e letra, nunca tempo: `{i0, i1}` para uma
-        faixa de palavras, `{i, k, n}` para o cursor entre letras. A
-        interpolacao da letra dentro da palavra mora aqui pelo mesmo motivo
-        que todo o resto - o dia em que a regra mudar, ha de haver um lugar
-        so onde mudar. E ela e interpolacao mesmo: o alinhador entrega a
-        fronteira da PALAVRA, medida no audio; dentro dela nao existe
-        medida, so repartir o tempo pelas letras."""
+        Palavra e tempo tem de ser a MESMA selecao, dita de dois jeitos: o
+        texto manda `{i0, i1}`, a onda manda `{ini, fim}`, e as duas voltam
+        com os quatro numeros. Foi esse o pedido - "se eu selecionar uma
+        palavra na transcricao, o correspondente a ela aparece na faixa de
+        audio" -, e a traducao mora aqui, de um lado so, pela mesma razao
+        que tudo o mais: duas conversoes da mesma coisa divergem, e a que
+        diverge calada e a que ninguem esta olhando.
+
+        A varredura por tempo e linear de proposito: o alinhador as vezes
+        devolve tokens fora de ordem (ver `tc.fora_de_ordem`) e uma
+        bisseccao responderia errado justo neles.
+
+        O cursor entre LETRAS saiu junto com os botoes. Ele repartia o tempo
+        do token por interpolacao de caractere, e isso nunca foi a posicao
+        fonetica: o alinhador entrega a fronteira da PALAVRA, e num "eee" de
+        200 caracteres para uma vogal so o texto mentia por completo sobre a
+        estrutura do som. Quem responde "que instante e este" agora e a
+        onda, que mostra o instante."""
         sel = sel or {}
         n = len(self.stream)
         if not n:
@@ -697,21 +735,67 @@ class Sessao:
             i0 = max(0, min(n - 1, int(sel["i0"])))
             i1 = max(i0 + 1, min(n, int(sel["i1"])))
             return self.stream[i0]["s"], self.stream[i1 - 1]["e"], i0, i1
-        if "i" in sel:
-            i = max(0, min(n - 1, int(sel["i"])))
-            t = self.stream[i]
-            letras = max(1, int(sel.get("n") or 1))
-            k = max(0, min(letras, int(sel.get("k") or 0)))
-            p = t["s"] + (t["e"] - t["s"]) * k / letras
-            return p, p, i, i
+        if "ini" in sel:
+            a = max(0.0, min(self.dur, float(sel["ini"])))
+            b = max(a, min(self.dur, float(sel.get("fim", a))))
+            # METADE do token, e nao um epsilon: os tokens sao contiguos (o
+            # fim de um e o comeco do outro) e as vezes se SOBREPOEM de
+            # verdade - o alinhador devolve 'a' em 118,008-118,028 e 'gente'
+            # comecando em 118,010, no IMG_0248. Com um epsilon, selecionar
+            # 'a' vinha com 'gente' de brinde e clicar numa palavra na onda
+            # acendia tres na folha. Metade e a mesma regra que o
+            # `Sessao.avisos` usa para a mesma especie de pergunta ("12% de
+            # 'cavaleiras' e nada, 100% de 'de' e a palavra inteira"), e ela
+            # se paga sozinha: 18 ms de sobreposicao nao sao metade de
+            # 'gente', e sao a palavra 'a' inteira.
+            meio = (a + b) / 2
+            dentro = [i for i, t in enumerate(self.stream)
+                      if min(t["e"], b) - max(t["s"], a) > (t["e"] - t["s"]) / 2]
+            if not dentro:
+                # Um clique (largura zero) ou um arrasto pequeno dentro de
+                # uma palavra grande: nao cobre metade de ninguem. Vale o
+                # token que CONTEM o instante, e entre dois que o contenham,
+                # aquele de que ele esta mais no meio.
+                cont = [i for i, t in enumerate(self.stream)
+                        if t["s"] <= meio < t["e"]]
+                if cont:
+                    dentro = [min(cont, key=lambda i: abs(
+                        (self.stream[i]["s"] + self.stream[i]["e"]) / 2 - meio))]
+                else:
+                    # Caiu num vao entre dois tokens. Pega o SEGUINTE, a
+                    # mesma escolha que `em_previa` faz e a mesma que clicar
+                    # no tracinho da folha faz desde sempre.
+                    dentro = [next((k for k, tk in enumerate(self.stream)
+                                    if tk["e"] > meio), n - 1)]
+            i0, i1 = min(dentro), max(dentro) + 1
+            return self.stream[i0]["s"], self.stream[i1 - 1]["e"], i0, i1
         return 0.0, 0.0, 0, 0
 
     def acao(self, b):
-        """Um gesto -> o estado novo. Toda a tela sai daqui."""
+        """Um gesto -> o estado novo. Toda a tela sai daqui.
+
+        Dois tipos de gesto, e a diferenca entre eles e a diferenca entre as
+        duas camadas do `montagem.json`:
+
+        - `ocultar`/`restaurar`/`alterna` NOMEIAM PALAVRA. Passam pela
+          geometria e descem tambem para o tempo (ver `_palavras`).
+        - `cortar_tempo`/`restaurar_tempo` NOMEIAM TEMPO. E o arrasto na
+          onda: entra exato, sem snap e sem minimo, porque quem arrastou
+          esta olhando a onda e quer aquilo. Um gesto desfaz o outro por
+          construcao - `_corta` e `_restaura` mantem os dois conjuntos
+          disjuntos com `subtrai_spans`, entao arrastar de volta por cima
+          devolve exatamente o que se tirou, sem heuristica nenhuma.
+
+        Os botoes de mais e menos e as teclas de passo fixo sairam daqui em
+        08/09/2026, e com eles a pergunta "o que este botao faria agora"
+        (`gestos`, `_devolve`, `vizinhanca`): a resposta deles era boa e a
+        pergunta era o problema. O passo fixo obrigava a escolher uma
+        unidade antes de saber de quanto era o pedaco, e a prioridade
+        "desfaz o SEU corte antes do automatico" - correta e invisivel - era
+        a origem provavel do "peco para restaurar e ele nao restaura"."""
         with self.lock:
             tipo = b.get("acao") or "nada"
             ini, fim, i0, i1 = self.selecao(b.get("sel"))
-            u = max(MINIMO, float(b.get("unidade") or 0.1))
             mudou = True
 
             if tipo == "desfazer":
@@ -753,44 +837,107 @@ class Sessao:
                     self._empilha()
                     self._palavras(i0, i1,
                                    "cortar" if tipo == "ocultar" else "manter")
-            elif tipo in ("menos", "mais"):
-                g = self.gestos(self.intervalos(), ini, fim, u,
-                                self.vizinhanca(i0, i1))
-                span = g.get(b.get("lado") or "dir", {}).get(tipo)
-                if not span:
+            elif tipo in ("cortar_tempo", "restaurar_tempo"):
+                # O arrasto na onda. Aparado na duracao do video e recusado
+                # com largura zero pelo mesmo 1 ms de `tc._spans`: a 48 kHz
+                # sao 48 amostras, e ninguem arrasta isso de proposito.
+                try:
+                    x = max(0.0, min(self.dur, float(b.get("ini"))))
+                    y = max(0.0, min(self.dur, float(b.get("fim"))))
+                except (TypeError, ValueError):
+                    x = y = 0.0
+                x, y = min(x, y), max(x, y)
+                if y - x <= MINIMO:
                     mudou = False
                 else:
                     self._empilha()
-                    (self._corta if tipo == "menos" else self._restaura)(span)
+                    (self._corta if tipo == "cortar_tempo"
+                     else self._restaura)([x, y])
             else:
                 mudou = False
 
             if mudou:
                 tc.jdump(self.montagem(), self.d / "montagem.json")
                 tc.jdump(self.correcoes_doc(), self.d / "correcoes.json")
-            return self.estado(ini, fim, u, mudou,
-                               self.vizinhanca(i0, i1))
+            return self.enxuga(self.estado(ini, fim, i0, i1, mudou))
 
     # ------------------------------------------------------------- a tela
 
-    def estado(self, ini=0.0, fim=0.0, u=0.1, mudou=False, viz=None):
+    def _chave_corte(self, iv):
+        """A impressao digital de tudo o que NAO depende da selecao.
+
+        Mover a selecao nao muda o corte, nao muda o riscado e nao muda um
+        achado sequer - e mesmo assim `pecas` + `achados` custavam 120 ms de
+        servidor e 330 KB de JSON a cada palavra por que o arrasto passava.
+        MEDIDO no IMG_0247: 247 ms por gesto, e um arrasto de dez palavras
+        sao dez gestos. Agora, medido do mesmo jeito: **selecao 7 ms e 8 KB,
+        arrasto na onda 210-250 ms, gesto de palavra 500 ms** - esse ultimo
+        refaz `pendencias` e a geometria-testemunha, e nao tem como nao
+        refazer.
+
+        As correcoes entram na chave porque mudam o TEXTO das pecas sem
+        mexer num milissegundo do corte - foi por isso que elas nasceram
+        separadas -, e os tokens entram porque `completados` compara a
+        camada de palavra com a geometria."""
+        return (repr(iv), tuple(sorted(self.tokens.items())),
+                tuple(sorted((i, c["novo"])
+                             for i, c in self.correcoes.items())))
+
+    def estado(self, ini=0.0, fim=0.0, i0=0, i1=0, mudou=False):
+        """O retrato INTEIRO. Quem chama isto sempre recebe as pecas."""
         with self.lock:
             iv = self.intervalos()
-            return self._retrato(iv, ini, fim, u, mudou, viz)
+            return self._retrato(iv, ini, fim, i0, i1, mudou)
 
-    def _retrato(self, iv, ini, fim, u, mudou, viz):
+    def enxuga(self, est):
+        """Tira da resposta as pecas que a tela ja tem.
+
+        Sao 330 KB dos 338 de cada resposta, e nao mudam quando o gesto so
+        anda a selecao - que e o gesto mais frequente que existe aqui, um
+        por palavra por que um arrasto passa.
+
+        Mora no caminho do FIO, e nao no `estado`, de proposito: um
+        `estado()` que as vezes devolve `pecas: None` e uma armadilha para
+        todo mundo que nao seja o navegador (o teste caiu nela na primeira
+        versao disto). Aqui e o unico lugar que sabe o que ja foi mandado."""
+        with self.lock:
+            if self._corte_chave == self._pecas_chave:
+                return dict(est, pecas=None)
+            self._pecas_chave = self._corte_chave
+            return est
+
+    def _retrato(self, iv, ini, fim, i0, i1, mudou):
         mantido = sum(b - a for a, b in iv)
         _, para_previa = tc._mapa_previa(iv)
+        chave = self._chave_corte(iv)
+        if chave != self._corte_chave:
+            self._corte_chave = chave
+            self._corte = {
+                "pecas": self.pecas(iv),
+                "avisos": self.avisos(iv),
+                "completados": self.completados(),
+                "achados": self.achados(iv),
+            }
         return {
             "iv": iv,
-            "pecas": self.pecas(iv),
-            "gestos": self.gestos(iv, ini, fim, u, viz),
+            # O tempo de PREVIA em que cada trecho de `iv` comeca - a soma
+            # corrida dos anteriores. E a mesma conta da `tc._mapa_previa`,
+            # feita aqui e mandada pronta porque a regua da onda precisa
+            # dela dez vezes por redesenho e um POST por marca de tempo
+            # seria absurdo. A tela LE esta tabela; nao a recalcula, e nao
+            # tem como: quem sabe onde a lamina caiu e quem cortou.
+            "ivp": [round(p, 3) for p in tc.somas_previa(iv)],
+            "pecas": self._corte["pecas"],
+            # A selecao RESOLVIDA. A tela pode ter mandado palavra ou tempo;
+            # volta sempre com os dois, e e assim que "selecionei no texto e
+            # acendeu na onda" (e o contrario) e uma coisa so, e nao duas
+            # implementacoes que um dia divergem.
+            "sel": {"i0": i0, "i1": i1,
+                    "ini": round(ini, 3), "fim": round(fim, 3),
+                    "previaIni": round(para_previa(ini), 2),
+                    "previaFim": round(para_previa(fim), 2)},
             "mantido": mantido,
-            # UM numero, nao novecentos: o resto da tela continua em tempo
-            # de fonte. Este e o unico relogio que ele tem na mao quando
-            # esta anotando de ouvido, e ate agora a folha nao mostrava
-            # tempo nenhum, de nenhuma das duas especies.
-            "previaSel": round(para_previa(ini), 2),
+            "dur": self.dur,
             "previa": self.previa_no_disco(mantido),
             # "trechos", e nao "emendas": o `conferir` ja chama len(iv)
             # de emendas, e dois numeros diferentes com o mesmo nome na
@@ -798,20 +945,27 @@ class Sessao:
             "trechos": len(iv),
             "mao": len(self.tokens) + len(self.cortes) + len(self.restauros),
             "podeDesfazer": bool(self.pilha),
-            "avisos": self.avisos(iv),
-            "achados": self.achados(iv),
+            "avisos": self._corte["avisos"],
+            "completados": self._corte["completados"],
+            "achados": self._corte["achados"],
             "mudou": mudou,
         }
 
     def pecas(self, iv):
         """Um item por token, ja pronto para desenhar.
 
-        As fracoes em `vivo` sao a fatia MANTIDA do token, de 0 a 1, e e por
-        elas que a pagina risca meia palavra quando a lamina cai no meio de
-        uma. Fracao, e nao tempo: dentro de uma palavra nao existe medida
-        melhor que interpolar pelas letras - o alinhador entrega a fronteira
-        da palavra, nao a do fonema -, e a conta de "que letra e esta" e
-        assunto da tela, nao do corte.
+        As fracoes em `vivo` sao a fatia MANTIDA do token, de 0 a 1, e elas
+        servem as duas vistas: na FOLHA riscam meia palavra repartindo o
+        tempo pelas letras, que e a unica leitura possivel ali (o alinhador
+        entrega a fronteira da palavra, nao a do fonema); na ONDA sao a
+        mesma fracao desenhada sobre o eixo do tempo, onde ela foi medida -
+        estritamente mais fiel, e sem numero novo saindo daqui.
+
+        Foi por isso que o corte "por letra" (o ctrl+clique) pode sair: ele
+        fingia que a interpolacao era posicao fonetica, e num "eee" de 200
+        caracteres para uma vogal so o texto mentia por completo sobre a
+        estrutura do som. Quem responde "que instante e este" agora e a
+        onda, que mostra o instante.
 
         `ocultoAntes` e o silencio comido no vao entre um token e o
         anterior. Sem ele, 15 s de gravacao morta no fim do video sumiriam
@@ -905,18 +1059,24 @@ class Sessao:
         pessoa que mandou ficar, nao e a anotacao sumindo no calculo, e ela
         sendo desdita de olhos abertos. Sao duas frases diferentes.
 
-        A segunda e nova e vale por si: **uma palavra que voce ocultou pode
-        continuar tocando inteira.** `_respeita_palavras` recua a emenda
-        `folga_palavra` (0,06 s) de cada palavra mantida vizinha, e quando a
-        palavra oculta e mais curta que 0,12 s as duas folgas cobrem ela por
-        completo - o corte e anulado. MEDIDO: o `de` de 100,19-100,33 do
-        IMG_0248 sobra 140 ms, ou seja, sobra todo.
+        A segunda MUDOU DE PAPEL em 08/09/2026, e a mudanca e o assunto
+        deste editor. Ela dizia "voce ocultou 'de' e 140 ms dela continuam
+        tocando; termine com o botao de menos" - correta, e frequente: nos
+        tres videos de calibracao, ocultar uma palavra sozinha nao tirava
+        NADA dela em 168, 343 e 391 casos. Hoje `_palavras` cumpre o pedido
+        pela camada de tempo, e esta linha vira o que sempre deveria ter
+        sido: **alarme de regressao.** Ela dispara quando a promessa deixou
+        de valer, e a resposta certa a ela nao e um botao, e um conserto
+        aqui dentro.
 
-        Nao se conserta baixando a folga: 0,06 e o erro de fronteira MEDIDO
-        do alinhador, e abaixar devolve silaba comida. O caminho e a pessoa
-        terminar o servico com os botoes de menos, que passam por cima de
-        toda a geometria - mas ela precisa SABER. Sem esta linha, a palavra
-        continuava no video e nada em lugar nenhum dizia isso."""
+        Com uma excecao, e ela e legitima: o arrasto na onda entra DEPOIS e
+        pode contradizer a palavra de proposito - ocultar a palavra e
+        devolver a metade dela arrastando e um pedido perfeitamente claro.
+        Quem sabe distinguir e este lado, pelos `restauros`/`cortes` que a
+        propria pessoa escreveu; sai como `mao`, cinza, do mesmo jeito e
+        pela mesma razao que a anotacao reaberta a mao. Alarme que acende
+        sobre o que alguem acabou de pedir vira papel de parede, e papel de
+        parede e o mesmo que apagar o alarme."""
         out = []
         # o mesmo relogio que o `conferir` poe na primeira coluna: esta
         # lista se ouve no .m4a, e nao adianta ordenar por tempo de fonte
@@ -942,24 +1102,40 @@ class Sessao:
             # e nada, 100% de "de" e a palavra inteira.
             fora = (vivo / larg < 0.5) if estado == "cortar" else (
                 vivo / larg > 0.5)
-            if not fora:
-                out.append({
-                    "ini": t["s"], "fim": t["e"], "vivo": round(vivo, 2),
-                    "previa": round(para_previa(t["s"]), 2),
-                    "mao": False, "palavra": t["t"],
-                    # QUAL dos dois pedidos foi desobedecido. A frase abaixo
-                    # ja dizia, mas o rotulo da lista "o que ouvir" era
-                    # "NAO SAIU" nos dois casos, e no restauro isso diz o
-                    # contrario do que aconteceu: a palavra nao VOLTOU. Quem
-                    # sabe qual e qual e este lado; a tela escolhe a
-                    # palavra, nao recalcula nada.
-                    "estado": estado,
-                    "motivo": (f"voce ocultou {t['t']!r} e "
-                               f"{vivo*1000:.0f} ms dela continuam tocando; "
-                               f"termine com o botao de menos"
-                               if estado == "cortar" else
-                               f"voce restaurou {t['t']!r} e ela continua "
-                               f"fora; traga de volta com o botao de mais")})
+            if fora:
+                continue
+            # Quem desdisse a palavra: o arrasto da propria pessoa, ou a
+            # geometria? Depois de `_palavras`, o trecho [s,e] esta inteiro
+            # no conjunto que a decisao pediu, entao a UNICA maneira de
+            # sobrar do lado errado e um gesto de tempo posterior por cima.
+            # Se sobrar por outro caminho, e regressao - e e para isso que
+            # esta linha existe agora.
+            seu = self.restauros if estado == "cortar" else self.cortes
+            desdito = any(min(t["e"], y) - max(t["s"], x) > 0.02
+                          for x, y in seu)
+            out.append({
+                "ini": t["s"], "fim": t["e"], "vivo": round(vivo, 2),
+                "previa": round(para_previa(t["s"]), 2),
+                "mao": desdito, "palavra": t["t"],
+                # QUAL dos dois pedidos foi desobedecido. A frase abaixo
+                # ja dizia, mas o rotulo da lista "o que ouvir" era
+                # "NAO SAIU" nos dois casos, e no restauro isso diz o
+                # contrario do que aconteceu: a palavra nao VOLTOU. Quem
+                # sabe qual e qual e este lado; a tela escolhe a
+                # palavra, nao recalcula nada.
+                "estado": estado,
+                "motivo": (
+                    f"voce ocultou {t['t']!r} e depois devolveu "
+                    f"{vivo*1000:.0f} ms dela na onda"
+                    if desdito and estado == "cortar" else
+                    f"voce restaurou {t['t']!r} e depois tirou parte dela "
+                    f"na onda; sobram {vivo*1000:.0f} ms"
+                    if desdito else
+                    f"voce ocultou {t['t']!r} e {vivo*1000:.0f} ms dela "
+                    f"continuam tocando - isto nao deveria acontecer mais"
+                    if estado == "cortar" else
+                    f"voce restaurou {t['t']!r} e ela continua fora - isto "
+                    f"nao deveria acontecer mais")})
         return out
 
     def achados(self, iv):
@@ -1020,8 +1196,16 @@ class Sessao:
             "fade": self.C["audio"]["fade"],
             "blocos": tc.blocos(self.stream),
             "anot": self.anot,
-            "estado": self.estado(),
+            # inteiro: a pagina esta nascendo e nao tem peca nenhuma para
+            # reaproveitar. Marca o que foi mandado, senao a primeira acao
+            # repetiria os 330 KB.
+            "estado": self._doc_estado(),
         }
+
+    def _doc_estado(self):
+        est = self.estado()
+        self._pecas_chave = self._corte_chave
+        return est
 
 
 # ------------------------------------------------------------ trocar de video

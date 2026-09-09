@@ -992,7 +992,33 @@ def casa_resposta(q, resp, tol=0.05):
     return None
 
 
-def pendencias_sem_resposta(pend, resp, iv):
+def _mao_responde(q, iv, mao, tol=0.15):
+    """O que sobrou tocando desta pendencia sobrou porque uma PESSOA mandou?
+
+    Mesma pergunta, mesma forma e mesmo `tol` de `anotacoes_desobedecidas`,
+    e pela mesma razao: trecho que continua no video porque alguem o trouxe
+    de volta nao e alarme, e resposta.
+
+    Existe porque o editor da onda restaura ARRASTANDO, e arrasto e trecho
+    de TEMPO - nao escreve `why` em token nenhum, entao o `MAO_MANTEM` que
+    `pendencias` consulta nao o enxerga. Sem isto, responder a pendencia
+    pelo gesto mais direto que o editor oferece deixava a cobranca acesa
+    para sempre, que e o contrario do que a cobranca existe para fazer.
+
+    `vivo > tol` nao e detalhe de borda: sem ele a pendencia `cortada` - a
+    unica que nasce sobre trecho JA cortado, e cujo `vivo` e zero - passaria
+    trivialmente (0 >= -0,15) e sairia da lista sem ninguem ter respondido
+    nada."""
+    mao = _spans(mao)
+    if not mao:
+        return False
+    vivo = sum(max(0.0, min(q["y"], b) - max(q["x"], a)) for a, b in iv)
+    por_mao = sum(max(0.0, min(q["y"], b, y) - max(q["x"], a, x))
+                  for a, b in iv for x, y in mao)
+    return vivo > tol and por_mao >= vivo - tol
+
+
+def pendencias_sem_resposta(pend, resp, iv, mao=None):
     """A pergunta que fecha o laco: sobrou pendencia sem resposta escrita?
 
     Mora aqui, uma vez so, do mesmo jeito e pela mesma razao que
@@ -1006,8 +1032,12 @@ def pendencias_sem_resposta(pend, resp, iv):
         `cortada` (`texto nao explica o tempo`), que ja nasce sobre trecho
         cortado: ali o corte nao responde nada, e quem responde e o
         restauro. Ver `parado` abaixo;
-      - TRAZENDO de volta a mao um trecho marcado para sair (`MAO_MANTEM`)
-        - a pessoa olhou aquele token e disse fica;
+      - TRAZENDO de volta a mao um trecho marcado para sair - a pessoa
+        olhou aquele token e disse fica. Vale pelas duas camadas do editor,
+        e tem de valer: pelo `why` de `MAO_MANTEM`, quando ela clicou na
+        PALAVRA, e por `mao` (os trechos de `spans_da_mao`), quando ela
+        arrastou o TEMPO na onda. Ate 08/09/2026 so a primeira contava, e
+        entao o editor nao tinha a segunda;
       - ESCREVENDO no respostas.json - unico jeito de dizer "fica" ou
         "vale ouvido" sobre o que ninguem tocou, que e o caso em que a
         decisao nao deixa marca em lugar nenhum.
@@ -1050,7 +1080,8 @@ def pendencias_sem_resposta(pend, resp, iv):
             quer = "fica" if q.get("cortada") else "sai"
             if resp[k]["resposta"] == quer and parado and q.get("proprio"):
                 sem.append(dict(q, falta="PENDENCIA NAO OBEDECIDA"))
-        elif parado and not q.get("mao"):
+        elif (parado and not q.get("mao")
+                and not _mao_responde(q, iv, mao)):
             sem.append(dict(q, falta="PENDENCIA SEM RESPOSTA"))
     orfas = [r for k, r in enumerate(resp) if k not in casadas]
     return sem, orfas
@@ -3257,9 +3288,9 @@ def _plano(a, rotulo):
     # ouvia a resposta. Aqui ela e feita no caminho que TODO mundo passa
     # antes de gastar minutos: e o unico defeito deste programa que o
     # ouvido nao pega, porque o que sumiu nao faz barulho nenhum.
+    da_mao = spans_da_mao(stream, mont, C["corte"]["folga_palavra"])
     for x, y, vivo, motivo, mao in anotacoes_desobedecidas(
-            anot, iv, mao=spans_da_mao(stream, mont,
-                                       C["corte"]["folga_palavra"])):
+            anot, iv, mao=da_mao):
         if mao:
             print(f"[{rotulo}] a anotacao {x:.2f}-{y:.2f} foi reaberta "
                   f"no editor - {vivo:.2f}s de volta: {motivo[:50]}")
@@ -3273,7 +3304,7 @@ def _plano(a, rotulo):
     # mundo passa antes de gerar audio ou video.
     sem, _ = pendencias_sem_resposta(
         pendencias(stream, C, carrega_vocabulario(d)),
-        carrega_respostas(d), iv)
+        carrega_respostas(d), iv, da_mao)
     for q in sem[:6]:
         print(f"[{rotulo}] AVISO: {q['falta']} em {q['s']:.2f}s "
               f"- {q['rot']}: {q['desc'][:50]}")
@@ -3865,29 +3896,44 @@ def cmd_revisar(a):
           f"respostas em {d/'respostas.json'}")
 
 
+def somas_previa(iv):
+    """O tempo de PREVIA em que cada trecho de `iv` comeca.
+
+    E a tabela de conversao entre os dois relogios, e ela e uma so: o
+    `_mapa_previa` a usa nas duas direcoes e o editor a manda inteira para a
+    tela, que precisa dela uma vez por marca da regua da onda e nao pode
+    pedir um POST por marca. Uma segunda soma corrida feita no navegador "so
+    para desenhar a regua" seria a mesma conta dita duas vezes, e a que
+    diverge calada e sempre a que ninguem esta olhando."""
+    p, out = 0.0, []
+    for a, b in iv:
+        out.append(p)
+        p += b - a
+    return out
+
+
 def _mapa_previa(iv):
     """Tempo da PREVIA -> tempo da FONTE, e vice-versa.
 
     O Rafael ouve o .m4a e reclama em "00:14". Todo o resto do programa
     pensa em tempo de fonte. Traduzir isso a mao, um defeito de cada vez,
     foi o trabalho manual de duas rodadas de revisao inteiras."""
+    somas = somas_previa(iv)
+    total = somas[-1] + (iv[-1][1] - iv[-1][0]) if iv else 0.0
+
     def para_fonte(t):
-        p = 0.0
-        for a, b in iv:
+        for (a, b), p in zip(iv, somas):
             if t <= p + (b - a):
                 return a + (t - p)
-            p += b - a
         return iv[-1][1] if iv else 0.0
 
     def para_previa(t):
-        p = 0.0
-        for a, b in iv:
+        for (a, b), p in zip(iv, somas):
             if t < a:
                 return p                    # cai dentro de um corte
             if t <= b:
                 return p + (t - a)
-            p += b - a
-        return p
+        return total
     return para_fonte, para_previa
 
 
@@ -3933,15 +3979,15 @@ def achados_corte(stream, C, iv, anot, mont, pend, resp, d):
     #    o trecho (a resposta e o proprio corte, e por isso `iv` entra na
     #    conta) ou escrevendo no `respostas.json` - o unico jeito de dizer
     #    "fica", que nao deixa marca em lugar nenhum.
-    sem, orfas = pendencias_sem_resposta(pend, resp, iv)
+    da_mao = spans_da_mao(stream, mont, C["corte"]["folga_palavra"])
+    sem, orfas = pendencias_sem_resposta(pend, resp, iv, da_mao)
     for q in sem:
         diz(q["falta"], q["s"], q["y"], f"{q['rot']}: {q['desc'][:64]}")
 
     # 1. Anotacao desobedecida. E o pior de todos: o julgamento humano foi
     #    escrito, foi lido, e sumiu na geometria sem uma linha de aviso.
     for x, y, vivo, motivo, mao in anotacoes_desobedecidas(
-            anot, iv, mao=spans_da_mao(stream, mont,
-                                       C["corte"]["folga_palavra"])):
+            anot, iv, mao=da_mao):
         diz("ANOTACAO REABERTA A MAO" if mao
             else "ANOTACAO NAO OBEDECIDA", x, y,
             f"sobra {vivo:.2f}s de {y-x:.2f}s | {motivo[:50]}")

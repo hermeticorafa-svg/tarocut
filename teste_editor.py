@@ -12,6 +12,15 @@ Sem argumento, roda nos tres videos de calibracao. Ele mexe no
 `montagem.json` e no `correcoes.json` do video (todo gesto que muda algo
 grava os dois) e devolve os dois arquivos como estavam no fim, inclusive
 quando falha.
+
+Foi reescrito em 08/09/2026 junto com o editor. As promessas dos botoes de
+mais e menos sairam com eles; a garantia por tras de cada uma - **nunca
+sumir decisao em silencio** - continua valendo, e cada uma ganhou aqui o
+equivalente do modelo novo:
+
+    "mais desfaz menos, exato"  ->  "arrastar de volta desfaz exato"
+    "ocultar tira a palavra OU avisa"  ->  "ocultar tira a palavra", ponto
+    "o cursor de letra vira tempo"  ->  texto e onda dao a MESMA selecao
 """
 
 import json
@@ -28,6 +37,27 @@ def jload_lacunas(d):
     """As lacunas medidas pelo analyze, direto do disco - a fonte contra a
     qual se confere o casamento por tempo que o editor faz."""
     return tc.jload(d / "stream.json").get("lacunas", [])
+
+
+def vivo_de(iv, a, b):
+    return sum(max(0.0, min(b, y) - max(a, x)) for x, y in iv)
+
+
+def amostra_palavras(S, quantas=26):
+    """As palavras contra as quais a garantia se mede.
+
+    As MAIS CURTAS na frente, de proposito: sao elas que a geometria nunca
+    conseguiu tirar. `minimo` (0,28 s) mais as duas folgas de
+    `folga_palavra` (0,06) anulam o corte de toda palavra menor que 0,40 s,
+    e essas sao quase todas as palavras curtas do portugues falado - "de",
+    "que", "e", "um", "no", "ou", justamente as que aparecem numa gaguejada.
+    O resto da amostra e espalhado pelo video para nao medir so o caso
+    facil."""
+    ok = [i for i, t in enumerate(S.stream)
+          if t["k"] == "palavra" and not S.base[i][0] and t["e"] - t["s"] > 0.02]
+    curtas = sorted(ok, key=lambda i: S.stream[i]["e"] - S.stream[i]["s"])
+    passo = max(1, len(ok) // 12)
+    return sorted(set(curtas[:quantas // 2] + ok[::passo][:quantas // 2]))
 
 
 def roda(video):
@@ -58,67 +88,150 @@ def roda(video):
         print(f"\n== {video} | palavra de teste {t['t']!r} "
               f"({t['s']:.3f}-{t['e']:.3f})")
 
-        # 1. O MAIS DESFAZ O MENOS, EXATO. E a promessa do par de botoes, e
-        #    a que mais custou: sem ela, cinco menos e cinco mais deixavam
-        #    fala cortada de fora e traziam silencio no lugar.
-        for lado in ("esq", "dir"):
-            r = S.acao({"acao": "menos", "lado": lado, "sel": sel,
-                        "unidade": 0.1})
-            diz(r["mudou"] and json.dumps(S.intervalos()) != base,
-                f"menos {lado} mexeu no corte")
-            diz(r["gestos"][lado]["mais"] is not None,
-                f"mais {lado} acendeu sozinho depois do menos")
-            S.acao({"acao": "mais", "lado": lado, "sel": sel, "unidade": 0.1})
-            diz(json.dumps(S.intervalos()) == base,
-                f"mais {lado} desfez o menos, exato")
+        # 1. ARRASTAR DE VOLTA DESFAZ EXATO. Herdeira da promessa mais cara
+        #    do editor de botoes ("mais desfaz menos"), e agora ela e
+        #    aritmetica em vez de heuristica: o arrasto NOMEIA o trecho, e
+        #    `_corta`/`_restaura` mantem os dois conjuntos disjuntos com
+        #    `subtrai_spans`. Nao ha mais "qual pedaco este botao devolve".
+        a, b = t["s"], t["e"]
+        r = S.acao({"acao": "cortar_tempo", "ini": a, "fim": b, "sel": sel})
+        diz(r["mudou"] and json.dumps(S.intervalos()) != base,
+            "arrastar sobre o mantido tirou o trecho")
+        S.acao({"acao": "restaurar_tempo", "ini": a, "fim": b, "sel": sel})
+        diz(json.dumps(S.intervalos()) == base,
+            "arrastar de volta devolveu, exato")
 
-        for _ in range(5):
-            S.acao({"acao": "menos", "lado": "dir", "sel": sel,
-                    "unidade": 0.1})
-        tirou = (sum(b - a for a, b in json.loads(base))
-                 - sum(b - a for a, b in S.intervalos()))
-        diz(tirou > 0.35, f"cinco x 100 ms tiraram {tirou*1000:.0f} ms")
-        for _ in range(5):
-            S.acao({"acao": "mais", "lado": "dir", "sel": sel,
-                    "unidade": 0.1})
-        diz(json.dumps(S.intervalos()) == base, "cinco mais devolveram tudo")
+        meio = (a + b) / 2
+        for k in range(5):
+            x = a + (meio - a) * k / 5
+            S.acao({"acao": "cortar_tempo", "ini": x,
+                    "fim": a + (meio - a) * (k + 1) / 5, "sel": sel})
+        tirou = (sum(y - x for x, y in json.loads(base))
+                 - sum(y - x for x, y in S.intervalos()))
+        diz(abs(tirou - (meio - a)) < 0.005,
+            f"cinco arrastes seguidos tiraram {tirou*1000:.0f} ms "
+            f"de {(meio-a)*1000:.0f} ms pedidos")
+        S.acao({"acao": "restaurar_tempo", "ini": a, "fim": meio, "sel": sel})
+        diz(json.dumps(S.intervalos()) == base,
+            "um arrasto de volta desfez os cinco")
 
-        # 2. OCULTAR A PALAVRA TIRA A PALAVRA - OU DIZ QUE NAO TIROU.
-        #    `folga_palavra` recua a emenda 0,06s de cada palavra mantida
-        #    vizinha, entao uma palavra cercada de fala sobra ~0,12s de
-        #    borda por construcao, e uma palavra MAIS CURTA que isso sobra
-        #    inteira (o `de` de 100,19s do IMG_0248). Nao se conserta
-        #    baixando a folga - 0,06 e erro de fronteira medido. O que nao
-        #    pode e sumir calado: ou saiu, ou tem aviso na tela.
-        r = S.acao({"acao": "alterna", "sel": sel})
-        iv = S.intervalos()
-        vivo = sum(max(0.0, min(t["e"], b) - max(t["s"], a)) for a, b in iv)
-        frac = vivo / (t["e"] - t["s"])
-        avisou = any(a.get("palavra") == t["t"] for a in r["avisos"])
-        diz(frac < 0.5 or avisou,
-            f"{t['t']!r} sobra {vivo*1000:.0f} ms ({frac:.0%})"
-            + (" e a tela avisa" if avisou else ", e o meio saiu"))
+        # 2. OCULTAR TIRA A PALAVRA. PONTO.
+        #    Era "ou avisa que nao tirou", e o aviso estava certo e ninguem
+        #    lia. MEDIDO antes desta mudanca, ocultando cada palavra mantida
+        #    uma de cada vez: a palavra sumia de verdade em 7 de 306
+        #    (IMG_0246), 21 de 660 (IMG_0247) e 20 de 742 (IMG_0248), e
+        #    sobrevivia INTEIRA em 168, 343 e 391. Depois: 306/306, 660/660
+        #    e 742/742, zero excecoes.
+        #
+        #    A amostra comeca pelas mais curtas justamente porque eram elas
+        #    que nunca saiam - uma amostra "tipica" passaria sem ver nada.
+        sobrou = []
+        amostra = amostra_palavras(S)
+        for i in amostra:
+            tk = S.stream[i]
+            S.acao({"acao": "ocultar", "sel": {"i0": i, "i1": i + 1}})
+            v = vivo_de(S.intervalos(), tk["s"], tk["e"])
+            if v > 0.02:
+                sobrou.append((round(v, 3), tk["t"]))
+            S.acao({"acao": "restaurar", "sel": {"i0": i, "i1": i + 1}})
+        menor = min(S.stream[i]["e"] - S.stream[i]["s"] for i in amostra)
+        diz(not sobrou,
+            f"as {len(amostra)} palavras da amostra (a menor tem "
+            f"{menor*1000:.0f} ms) sumiram inteiras" +
+            (f" - sobraram {sobrou[:4]}" if sobrou else ""))
+        diz(json.dumps(S.intervalos()) == base,
+            "e restaurar cada uma devolveu o corte de partida")
+
+        # 2b. VOLTAR A PROPOSTA AUTOMATICA NAO DEIXA RASTRO EM NENHUMA DAS
+        #     DUAS CAMADAS. A decisao de palavra desce para o tempo, entao
+        #     desfaze-la tem de subir de volta: um trecho de tempo esquecido
+        #     ali manteria a palavra cortada depois de restaurada, que e a
+        #     promessa quebrada do outro lado.
+        S.acao({"acao": "alterna", "sel": sel})
         diz(mont.exists(), "montagem.json gravado sozinho, sem pedir")
         S.acao({"acao": "alterna", "sel": sel})
+        m = json.loads(mont.read_text(encoding="utf-8"))
+        diz(not m["tokens"] and not m["cortes"] and not m["restauros"],
+            "voltar a proposta nao deixa decisao nem trecho no arquivo")
         diz(json.dumps(S.intervalos()) == base, "alterna de novo devolveu")
-        diz(not json.loads(mont.read_text(encoding="utf-8"))["tokens"],
-            "voltar a proposta automatica nao deixa decisao no arquivo")
 
-        S.acao({"acao": "menos", "lado": "dir", "sel": sel, "unidade": 0.25})
+        S.acao({"acao": "cortar_tempo", "ini": a, "fim": meio, "sel": sel})
         S.acao({"acao": "alterna", "sel": sel})
         S.acao({"acao": "desfazer", "sel": sel})
         S.acao({"acao": "desfazer", "sel": sel})
         diz(json.dumps(S.intervalos()) == base, "dois desfazer voltaram")
 
-        # 3. O CURSOR ENTRE LETRAS VIRA TEMPO DENTRO DA PALAVRA.
-        n = len(t["t"])
-        a0, _, _, _ = S.selecao({"i": alvo, "k": 0, "n": n})
-        b0, _, _, _ = S.selecao({"i": alvo, "k": n, "n": n})
-        m0, _, _, _ = S.selecao({"i": alvo, "k": n // 2, "n": n})
-        diz(abs(a0 - t["s"]) < 1e-6 and abs(b0 - t["e"]) < 1e-6
-            and a0 < m0 < b0, "letra 0 e letra n caem nas bordas da palavra")
+        # 3. TEXTO E ONDA DAO A MESMA SELECAO. E o pedido central dele -
+        #    "as palavras e o tempo tem que ser intercambiaveis" - e o lugar
+        #    onde ele quebraria calado: a tela mandaria tempo, o servidor
+        #    responderia outra palavra, e a folha acenderia o lugar errado
+        #    sem nada indicar isso.
+        erradas = []
+        for i in amostra[:10]:
+            por_palavra = S.selecao({"i0": i, "i1": i + 1})
+            por_tempo = S.selecao({"ini": por_palavra[0], "fim": por_palavra[1]})
+            if por_tempo != por_palavra:
+                erradas.append((i, por_palavra, por_tempo))
+        diz(not erradas,
+            f"dez selecoes de texto e de onda coincidem ({len(erradas)} nao)")
+        #    E um clique de largura zero num vao pega a palavra seguinte, a
+        #    mesma escolha que clicar no tracinho da folha faz.
+        vao = next((i for i in range(1, len(S.stream))
+                    if S.stream[i - 1]["e"] < S.stream[i]["s"] - 0.2), None)
+        if vao is not None:
+            meiovao = (S.stream[vao - 1]["e"] + S.stream[vao]["s"]) / 2
+            _, _, j0, j1 = S.selecao({"ini": meiovao, "fim": meiovao})
+            diz(j0 == vao and j1 == vao + 1,
+                "clique no meio de um vao pega a palavra seguinte")
 
-        # 4. REABRIR UMA ANOTACAO NAO E BUG - E TEM DE APARECER ASSIM.
+        # 4. OCULTAR NA ONDA RISCA A PALAVRA NO TEXTO. A outra metade do
+        #    pedido: "se eu ocultar a faixa de audio, o texto some". Sai por
+        #    construcao - o riscado vem dos trechos MANTIDOS -, e e essa
+        #    construcao que esta linha protege.
+        S.acao({"acao": "cortar_tempo", "ini": t["s"], "fim": t["e"],
+                "sel": sel})
+        pc = S.estado()["pecas"]["tokens"]
+        diz(not pc[alvo]["vivo"],
+            f"tirar {t['t']!r} na onda riscou a palavra inteira no texto")
+        S.acao({"acao": "desfazer", "sel": sel})
+
+        # 5. RESTAURAR VALE PARA QUALQUER TOKEN, INTEIRO.
+        #    A anotacao entra no corte como TRECHO DE TEMPO, e enquanto o
+        #    `_respeita_palavras` so defendesse `k == "palavra"`, restaurar
+        #    uma `hesitacao` era um clique que nao fazia nada. Aconteceu no
+        #    "as de espadas": cinco tokens seguidos reabertos dentro da mesma
+        #    anotacao, quatro palavras voltaram inteiras e a quinta -
+        #    `hesitacao` de 6,06 s - sobrou 0,06 s, que era a folga vazando
+        #    da palavra vizinha. Meio pedido obedecido e mais dificil de
+        #    notar do que nenhum.
+        iv0 = S.intervalos()
+        for tipo in ("palavra", "hesitacao", "silencio"):
+            i = next((k for k, tk in enumerate(S.stream)
+                      if tk["k"] == tipo and tk["cut"]
+                      and tk["e"] - tk["s"] > 0.1
+                      and vivo_de(iv0, tk["s"], tk["e"])
+                      < 0.5 * (tk["e"] - tk["s"])), None)
+            if i is None:
+                print(f"  --    sem {tipo} cortado para restaurar, pulado")
+                continue
+            tk = S.stream[i]
+            larg = tk["e"] - tk["s"]
+            r = S.acao({"acao": "restaurar", "sel": {"i0": i, "i1": i + 1}})
+            v = vivo_de(S.intervalos(), tk["s"], tk["e"])
+            diz(v > larg - 0.02,
+                f"restaurar o {tipo} {tk['t'][:16]!r} devolveu "
+                f"{v:.2f}s de {larg:.2f}s")
+            #  E o aviso de "voce mandou e nao voltou" tem de sumir junto:
+            #  continuar aceso depois de voltar e a mesma mentira do outro
+            #  lado.
+            diz(not [x for x in r["avisos"]
+                     if x.get("palavra") and abs(x["ini"] - tk["s"]) < 0.01],
+                f"e o aviso sobre o {tipo} sumiu junto")
+            diz(all("estado" in x for x in r["avisos"] if x.get("palavra")),
+                "todo aviso de palavra diz QUAL pedido foi desobedecido")
+            S.acao({"acao": "desfazer", "sel": sel})
+
+        # 6. REABRIR UMA ANOTACAO NAO E BUG - E TEM DE APARECER ASSIM.
         #    `ANOTACAO NAO OBEDECIDA` e o alarme mais serio deste programa
         #    (o `/revisar` so termina com zero delas). Se ele disparasse em
         #    todo ajuste feito depois do passe de julgamento, viraria papel
@@ -129,101 +242,50 @@ def roda(video):
         if oculto is None:
             print("  --    sem palavra anotada para reabrir, pulado")
         else:
-            r = S.acao({"acao": "alterna", "sel": {"i0": oculto,
-                                                   "i1": oculto + 1}})
-            av = [a for a in r["avisos"] if not a.get("palavra")]
-            diz(bool(av) and all(a["mao"] for a in av),
+            r = S.acao({"acao": "restaurar",
+                        "sel": {"i0": oculto, "i1": oculto + 1}})
+            av = [x for x in r["avisos"] if not x.get("palavra")]
+            diz(bool(av) and all(x["mao"] for x in av),
                 f"reabrir {S.stream[oculto]['t']!r} sai como decisao sua, "
                 f"nao como anotacao perdida")
-            S.acao({"acao": "alterna", "sel": {"i0": oculto,
-                                               "i1": oculto + 1}})
+            S.acao({"acao": "desfazer", "sel": sel})
 
-        # 4b. REABRIR VALE PARA QUALQUER TOKEN, NAO SO PARA PALAVRA.
-        #     A anotacao entra no corte como TRECHO DE TEMPO, e quem escava
-        #     token mantido de dentro de um trecho de tempo e o
-        #     `_respeita_palavras`. Enquanto a lista dele fosse so
-        #     `k == "palavra"`, reabrir uma `hesitacao` era um clique que
-        #     nao fazia nada: o token voltava a `cut=False`, a tela pintava
-        #     ele de volta, e o video continuava sem ele.
-        #
-        #     Aconteceu no "as de espadas": cinco tokens seguidos reabertos
-        #     dentro da mesma anotacao, quatro palavras voltaram inteiras e
-        #     a quinta - `hesitacao` de 6,06s - sobrou 0,06s, que era a
-        #     folga vazando da palavra vizinha. Meio pedido obedecido e mais
-        #     dificil de notar do que nenhum.
-        #
-        #     `hesitacao`, e nao `silencio`, porque e o caso que existe nos
-        #     tres videos e o que carrega fala (o `resolve_suspeitos` faz um
-        #     bloco so de varios segundos de audio); a regra no programa nao
-        #     olha `k` nenhum, olha o `why` de `MAO_MANTEM`.
-        mudo = next((i for i, t in enumerate(S.stream)
-                     if t["k"] == "hesitacao" and t["cut"]
-                     and str(t.get("why", "")).startswith("anotado")
-                     and sum(max(0.0, min(t["e"], y) - max(t["s"], x))
-                             for x, y in S.intervalos())
-                     < 0.5 * (t["e"] - t["s"])), None)
-        if mudo is None:
-            print("  --    sem hesitacao anotada para reabrir, pulado")
-        else:
-            t = S.stream[mudo]
-            larg = t["e"] - t["s"]
-            r = S.acao({"acao": "alterna", "sel": {"i0": mudo,
-                                                   "i1": mudo + 1}})
-            vivo = sum(max(0.0, min(t["e"], y) - max(t["s"], x))
-                       for x, y in S.intervalos())
-            diz(vivo > 0.99 * larg,
-                f"reabrir a hesitacao {t['t'][:18]!r} devolveu "
-                f"{vivo:.2f}s de {larg:.2f}s")
-            #  E o aviso tem de sumir junto: ele existe para dizer "voce
-            #  mandou e nao saiu", e continuar aceso depois de sair seria a
-            #  mesma mentira do outro lado.
-            diz(not [a for a in r["avisos"]
-                     if a.get("palavra") and abs(a["ini"] - t["s"]) < 0.01],
-                "e o aviso de que ela continuava fora sumiu")
-            #  O rotulo da lista "o que ouvir" escolhe entre NAO SAIU e NAO
-            #  VOLTOU por este campo. Sem ele a tela cai no primeiro dos
-            #  dois e diz o contrario do que aconteceu num restauro.
-            diz(all("estado" in a for a in r["avisos"] if a.get("palavra")),
-                "todo aviso de palavra diz QUAL pedido foi desobedecido")
-            S.acao({"acao": "alterna", "sel": {"i0": mudo, "i1": mudo + 1}})
-
-        # 5. VOZ SEM TEXTO CHEGA A TELA MARCADA COMO VOZ.
-        #    Ate 03/09/2026 um `hesitacao` sem texto e uma pausa eram o
-        #    mesmo tracinho cinza, com o mesmo title ("sem som aqui") - no
-        #    IMG_0247, 26 de pausa e 34 de voz, indistinguiveis. Se esta
-        #    linha cair, "parte do audio que nao vai para a transcricao"
-        #    volta a ser invisivel, que e a queixa que originou tudo isto.
+        # 7. VOZ SEM TEXTO CHEGA A TELA MARCADA COMO VOZ.
+        #    Ate 03/09/2026 um `hesitacao` sem texto e uma pausa eram o mesmo
+        #    tracinho cinza, com o mesmo title ("sem som aqui") - no IMG_0247,
+        #    26 de pausa e 34 de voz, indistinguiveis. Se esta linha cair,
+        #    "parte do audio que nao vai para a transcricao" volta a ser
+        #    invisivel, que e a queixa que originou tudo isto.
         pc = S.estado()["pecas"]["tokens"]
-        mudos = [i for i, t in enumerate(S.stream)
-                 if t["k"] == "hesitacao" and t["t"] == "hesitação"]
+        mudos = [i for i, tk in enumerate(S.stream)
+                 if tk["k"] == "hesitacao" and tk["t"] == "hesitação"]
         diz(bool(mudos) and all(pc[i]["voz"] and not pc[i]["txt"]
                                 for i in mudos),
             f"as {len(mudos)} hesitacoes sem texto saem marcadas como voz")
         #    Uma PAUSA tambem pode ser voz: quando a lacuna era `misto` e a
-        #    leitura foi recusada, o analyze trata a recusa como silencio e
-        #    o token sai rotulado pausa (e quando ela tem entre
-        #    `pausa_intocavel` e `isolar_min` de duracao, nem chega a ser
-        #    lida). Isso so vale se o casamento por tempo pegar a lacuna
-        #    CERTA - uma tolerancia frouxa marcaria como voz uma pausa
-        #    vizinha, e ai a marca passaria a mentir em vez de informar.
+        #    leitura foi recusada, o analyze trata a recusa como silencio e o
+        #    token sai rotulado pausa. Isso so vale se o casamento por tempo
+        #    pegar a lacuna CERTA - uma tolerancia frouxa marcaria como voz
+        #    uma pausa vizinha, e ai a marca passaria a mentir em vez de
+        #    informar.
         lacs = {(round(l["s"], 2), round(l["e"], 2)): l
                 for l in jload_lacunas(d)}
-        erradas = [i for i, t in enumerate(S.stream)
-                   if t["k"] == "silencio" and pc[i]["voz"]
-                   and lacs.get((round(t["s"], 2), round(t["e"], 2)),
+        erradas = [i for i, tk in enumerate(S.stream)
+                   if tk["k"] == "silencio" and pc[i]["voz"]
+                   and lacs.get((round(tk["s"], 2), round(tk["e"], 2)),
                                 {}).get("tipo") not in ("fala", "misto")]
-        pausas_voz = sum(1 for i, t in enumerate(S.stream)
-                         if t["k"] == "silencio" and pc[i]["voz"])
+        pausas_voz = sum(1 for i, tk in enumerate(S.stream)
+                         if tk["k"] == "silencio" and pc[i]["voz"])
         diz(not erradas,
             f"as {pausas_voz} pausas marcadas com voz casam com a lacuna "
             f"que o analyze mediu ({len(erradas)} erradas)")
 
-        # 6. ESCREVER O QUE SE OUVE NUM VAO. E a outra metade da queixa:
-        #    ver a fala, ouvir a fala e nao ter onde escrever. O que quebra
-        #    calado aqui e o texto nao sobreviver ao disco (o
-        #    `confere_correcoes` recusa e o editor descarta em silencio) ou
-        #    a escrita MEXER NO CORTE - `correcoes.json` e sobre o que a
-        #    palavra DIZ, nunca sobre se ela sai do video.
+        # 8. ESCREVER O QUE SE OUVE NUM VAO. E a outra metade da queixa: ver
+        #    a fala, ouvir a fala e nao ter onde escrever. O que quebra calado
+        #    aqui e o texto nao sobreviver ao disco (o `confere_correcoes`
+        #    recusa e o editor descarta em silencio) ou a escrita MEXER NO
+        #    CORTE - `correcoes.json` e sobre o que a palavra DIZ, nunca sobre
+        #    se ela sai do video.
         if mudos:
             i = mudos[0]
             antes = json.dumps(S.intervalos())
@@ -245,20 +307,20 @@ def roda(video):
             diz(S.stream[i]["t"] == "hesitação",
                 "desfazer devolveu o rotulo original")
 
-        # 7. PAUSA MUDA NAO ACEITA TEXTO. O contrario do item 6: onde nao
-        #    ha voz nao ha o que transcrever, e liberar a escrita ali daria
-        #    um jeito novo de por palavra onde nao houve palavra.
-        muda = next((i for i, t in enumerate(S.stream)
-                     if t["k"] == "silencio" and not S._voz[i]), None)
+        # 9. PAUSA MUDA NAO ACEITA TEXTO. O contrario do item 8: onde nao ha
+        #    voz nao ha o que transcrever, e liberar a escrita ali daria um
+        #    jeito novo de por palavra onde nao houve palavra.
+        muda = next((i for i, tk in enumerate(S.stream)
+                     if tk["k"] == "silencio" and not S._voz[i]), None)
         if muda is not None:
             r = S.acao({"acao": "corrigir", "i": muda, "texto": "nao devia"})
             diz(not r["mudou"] and S.stream[muda]["t"] != "nao devia",
                 "pausa sem voz recusa texto")
 
-        # 8. O PAINEL DIZ O MESMO QUE O `conferir`. Duas implementacoes da
-        #    mesma pergunta divergem, e a que diverge calada e sempre a que
-        #    ninguem esta olhando - foi por isso que os achados sairam do
-        #    `cmd_conferir` para uma funcao so.
+        # 10. O PAINEL DIZ O MESMO QUE O `conferir`. Duas implementacoes da
+        #     mesma pergunta divergem, e a que diverge calada e sempre a que
+        #     ninguem esta olhando - foi por isso que os achados sairam do
+        #     `cmd_conferir` para uma funcao so.
         iv = S.intervalos()
         pend = tc.pendencias(S.stream, S.C, tc.carrega_vocabulario(d))
         todos, _ = tc.achados_corte(S.stream, S.C, iv, S.anot, S.montagem(),
@@ -270,60 +332,66 @@ def roda(video):
             f"o painel mostra os {len(painel)} achados do conferir "
             f"({len(cobertos)} ja estao nos avisos)")
 
-        # 9. QUEM MANDOU CORTAR ESTA PALAVRA. O riscado do julgamento
-        #    humano tem de cobrir exatamente os tokens que a anotacao
-        #    corta - se as duas contas divergirem, a folha passa a pintar
-        #    de azul uma palavra que a regra automatica tirou, ou (pior)
-        #    de cinza uma que uma pessoa mandou sair.
+        # 11. QUEM MANDOU CORTAR ESTA PALAVRA. O riscado do julgamento humano
+        #     tem de cobrir exatamente os tokens que a anotacao corta - se as
+        #     duas contas divergirem, a folha (e agora tambem a faixa de
+        #     palavras da onda) passa a pintar de azul uma palavra que a regra
+        #     automatica tirou, ou (pior) de cinza uma que uma pessoa mandou
+        #     sair.
         pc = S.estado()["pecas"]["tokens"]
         pela_tela = {i for i, p in enumerate(pc) if p["anot"]}
-        pelo_corte = {i for i, t in enumerate(S.stream)
-                      for a in S.anot
-                      if not (t["e"] <= a["ini"] or t["s"] >= a["fim"])}
+        pelo_corte = {i for i, tk in enumerate(S.stream)
+                      for x in S.anot
+                      if not (tk["e"] <= x["ini"] or tk["s"] >= x["fim"])}
         diz(pela_tela == pelo_corte,
             f"{len(pela_tela)} tokens pintados como anotados, os mesmos "
             f"que a anotacao corta")
         if S.anot:
             motivos = {p["anot"] for p in pc if p["anot"]}
-            diz(motivos <= {a["motivo"] for a in S.anot},
+            diz(motivos <= {x["motivo"] for x in S.anot},
                 "cada palavra anotada carrega o motivo que a pessoa escreveu")
 
-        # 10. O RELOGIO DA PREVIA. Ele anota ouvindo o .m4a e digita
-        #     "1:29"; a folha e a fonte. A traducao e a mesma do
-        #     `conferir --em`, e o teste e o par: ida e volta caem no
-        #     mesmo lugar. Se isto divergir, o editor leva ele para o
-        #     lugar errado sem dizer nada - a familia de defeito que este
-        #     programa mais teve.
+        # 12. O RELOGIO DA PREVIA, NOS DOIS SENTIDOS. Ele anota ouvindo o
+        #     .m4a e digita "1:29"; a folha e a fonte. Se isto divergir, o
+        #     editor leva ele para o lugar errado sem dizer nada.
         iv0 = S.intervalos()
         para_fonte, para_previa = tc._mapa_previa(iv0)
         mantido0 = sum(b - a for a, b in iv0)
         erradas = []
         for frac in (0.1, 0.35, 0.6, 0.9):
-            t = mantido0 * frac
-            r = S.em_previa(t)
-            if abs(para_previa(r["fonte"]) - t) > 0.01:
-                erradas.append(t)
+            x = mantido0 * frac
+            r = S.em_previa(x)
+            if abs(para_previa(r["fonte"]) - x) > 0.01:
+                erradas.append(x)
             tk = S.stream[r["i"]]
             if not (tk["e"] > r["fonte"] - 1e-6):
-                erradas.append(t)
+                erradas.append(x)
         diz(not erradas,
             f"quatro tempos do .m4a viraram fonte e voltaram iguais "
             f"({len(erradas)} erradas)")
+        #     A regua da onda le a MESMA tabela, mandada pronta em `ivp`. Uma
+        #     segunda soma corrida feita no navegador "so para desenhar" seria
+        #     a mesma conta dita duas vezes, e a que diverge calada e sempre a
+        #     que ninguem esta olhando.
+        ivp = S.estado()["ivp"]
+        diz(len(ivp) == len(iv0)
+            and all(abs(p - para_previa(a)) < 0.002
+                    for p, (a, _) in zip(ivp, iv0)),
+            f"a tabela dos dois relogios que vai para a tela ({len(ivp)} "
+            f"entradas) e a mesma do `_mapa_previa`")
         diz(S._m4a.name == f"{video}_previa.m4a"
             and S._m4a.parent == S.src.parent,
             f"o editor procura a previa onde o `audio` grava ({S._m4a.name})")
 
-        # 11. .m4a QUE NAO E MAIS ESTE CORTE. Mesmo numero da fase 0 do
+        # 13. .m4a QUE NAO E MAIS ESTE CORTE. Mesmo numero da fase 0 do
         #     `/anotar` (0,15 s): abaixo disso e o padding do AAC, acima e
         #     edicao. Sem este aviso, o relogio da tela continuaria
         #     respondendo com a maior seriedade sobre um arquivo que nao
         #     existe mais - errado, e em silencio.
-        #     Aponta para um arquivo que EXISTE (o audio.wav ao lado) e
-        #     semeia o cache com a duracao: assim se mede a regra sem
-        #     gastar um ffprobe, e sem depender de haver .m4a no disco -
-        #     nenhum dos tres videos de calibracao tem um. O caminho do
-        #     ffprobe esta medido a mao nos dois .m4a que existem ("7 de
-        #     espadas" +0,02 s, "as de espadas" +0,05 s).
+        #     Aponta para um arquivo que EXISTE (o audio.wav ao lado) e semeia
+        #     o cache com a duracao: assim se mede a regra sem gastar um
+        #     ffprobe, e sem depender de haver .m4a no disco - nenhum dos tres
+        #     videos de calibracao tem um.
         S._m4a = S.wav
         S._m4a_chave = (S.wav.stat().st_mtime_ns, S.wav.stat().st_size)
         S._m4a_dur = mantido0 + 0.07           # o padding medido do AAC
@@ -333,10 +401,48 @@ def roda(video):
         diz(certo["tem"] and not certo["velho"] and caduco["velho"],
             "0,07 s de padding passa, 0,40 s de diferenca vira aviso")
 
-        # 12. O QUE A TELA MOSTROU E O QUE O RENDER VAI VER. Se esta linha
-        #    cair, o editor virou uma segunda opiniao sobre o corte - que e
-        #    exatamente o que ele nao pode ser.
-        S.acao({"acao": "menos", "lado": "dir", "sel": sel, "unidade": 0.25})
+        # 14. RESTAURAR ARRASTANDO RESPONDE A PENDENCIA. `pendencias` marca
+        #     "ja respondida a mao" pelo `why` de `MAO_MANTEM`, que so a
+        #     camada de PALAVRA escreve. Com a onda, "trouxe de volta
+        #     arrastando" e a mesma decisao humana, dita em tempo - e sem
+        #     isto a pendencia ficaria acesa para sempre depois de respondida
+        #     pelo gesto mais direto que o editor oferece.
+        S.acao({"acao": "desfazer", "sel": sel})
+        iv = S.intervalos()
+        pend = tc.pendencias(S.stream, S.C, tc.carrega_vocabulario(d))
+        resp = tc.carrega_respostas(d)
+        sem, _ = tc.pendencias_sem_resposta(pend, resp, iv)
+        alvoq = next((q for q in sem
+                      if q["falta"] == "PENDENCIA SEM RESPOSTA"
+                      and q["y"] - q["x"] > 0.1), None)
+        if alvoq is None:
+            print("  --    sem pendencia em aberto para responder, pulado")
+        else:
+            S.acao({"acao": "restaurar_tempo", "ini": alvoq["x"],
+                    "fim": alvoq["y"], "sel": sel})
+            iv2 = S.intervalos()
+            mao = tc.spans_da_mao(S.stream, S.montagem(),
+                                  S.C["corte"]["folga_palavra"])
+            sem2, _ = tc.pendencias_sem_resposta(
+                tc.pendencias(S.stream, S.C, tc.carrega_vocabulario(d)),
+                resp, iv2, mao)
+            diz(not any(abs(q["s"] - alvoq["s"]) < 0.01 for q in sem2),
+                f"restaurar {alvoq['x']:.2f}-{alvoq['y']:.2f} arrastando "
+                f"responde a pendencia {alvoq['rot']!r}")
+            #  E nao responde as OUTRAS: uma cobranca que se cala sozinha
+            #  por causa de um gesto noutro lugar seria pior que nao existir.
+            sobra = {round(q["s"], 2) for q in sem2}
+            deviam = {round(q["s"], 2) for q in sem
+                      if abs(q["s"] - alvoq["s"]) >= 0.01}
+            diz(deviam <= sobra,
+                f"as outras {len(deviam)} pendencias continuam cobradas")
+            S.acao({"acao": "desfazer", "sel": sel})
+
+        # 15. O QUE A TELA MOSTROU E O QUE O RENDER VAI VER. Se esta linha
+        #     cair, o editor virou uma segunda opiniao sobre o corte - que e
+        #     exatamente o que ele nao pode ser.
+        S.acao({"acao": "ocultar", "sel": sel})
+        S.acao({"acao": "cortar_tempo", "ini": a - 0.25, "fim": a, "sel": sel})
         da_tela = S.intervalos()
         C, _, stream, dur, db, hop, anot, m, _ = tc._base(video, "teste")
         diz(json.dumps(da_tela) == json.dumps(
