@@ -50,7 +50,9 @@ import webbrowser
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.error import URLError
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 import tarocut as tc
 
@@ -1384,9 +1386,52 @@ class Handler(BaseHTTPRequestHandler):
             self._envia({"erro": repr(e)}, codigo=500)
 
 
+class ServidorEditor(ThreadingHTTPServer):
+    """So existe para desligar `allow_reuse_address` (o `1` que o
+    HTTPServer liga por padrao). Com ele ligado, o Windows deixa DOIS
+    processos ficarem "LISTENING" na mesma porta ao mesmo tempo - o
+    `bind()` do segundo nao da erro nenhum, so nunca recebe requisicao. E
+    como o gui.py sobe o editor escondido (sem console pra um Ctrl+C
+    fechar), esses zumbis se acumulam: cada "3. Editor" clicado abria mais
+    um, e o navegador sempre caia no PRIMEIRO editor aberto na sessao do
+    Windows, preso no video dele para sempre - foi assim que "abrir outro
+    video" ficou so mostrando "2 de espadas". Desligado, o segundo bind
+    falha na hora com OSError, e `serve()` sabe o que fazer com isso."""
+    allow_reuse_address = False
+
+
+def _troca_no_editor_aberto(video, porta, abrir):
+    """A porta ja esta ocupada - quase sempre por um editor deste programa
+    aberto de uma sessao anterior, que ninguem fechou porque nao ha console
+    nem botao pra isso. Em vez de tentar um segundo servidor (que so
+    duplicaria o zumbi), manda o mesmo POST /abrir que o botao "Abrir" do
+    proprio editor manda, no processo que ja esta escutando."""
+    url = f"http://127.0.0.1:{porta}/"
+    corpo = json.dumps({"video": video}).encode("utf-8")
+    req = Request(url + "abrir", data=corpo, method="POST",
+                  headers={"Content-Type": "application/json"})
+    try:
+        with urlopen(req, timeout=5) as r:
+            resp = json.loads(r.read())
+    except (URLError, OSError, ValueError) as e:
+        sys.exit(f"[editor] a porta {porta} esta ocupada e nao consegui "
+                 f"trocar de video nela (nao e um editor deste programa, "
+                 f"ou nao respondeu): {e}")
+    if not resp.get("ok"):
+        sys.exit(f"[editor] ja tem um editor aberto na porta {porta}, mas "
+                 f"ele recusou abrir {video!r}: {resp.get('erro')}")
+    print(f"[editor] ja tinha um editor aberto na porta {porta}; troquei "
+          f"para {video} nele em vez de abrir outro.")
+    if abrir:
+        webbrowser.open(url)
+
+
 def serve(video, porta=8731, abrir=True):
     sessao = Sessao(video)
-    srv = ThreadingHTTPServer(("127.0.0.1", porta), Handler)
+    try:
+        srv = ServidorEditor(("127.0.0.1", porta), Handler)
+    except OSError:
+        return _troca_no_editor_aberto(sessao.nome, porta, abrir)
     srv.sessao, srv.tarefa = sessao, Tarefa()
     url = f"http://127.0.0.1:{porta}/"
     iv = sessao.intervalos()
