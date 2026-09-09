@@ -2853,6 +2853,35 @@ def grafo(iv, C, escala=None, fps=None, hw=False, w_fonte=None, h_fonte=None):
 
 
 _ASPECTO_CARTA = None
+_ASPECTO_IMG = {}
+
+
+def aspecto_imagem(path):
+    """Largura/altura de UMA imagem do overlay - carta ou midia -, medida
+    no proprio arquivo e cacheada por CAMINHO, nao num numero so.
+
+    `aspecto_carta()` basta para carta porque as 78 sao identicas (medido:
+    0,5609 sem excecao, ver la). Midia nao tem essa garantia - cada arquivo
+    de `midias/` pode ter a proporcao que quiser -, entao o cache tem de
+    ser por Path. ffprobe, nao cv2, mesma razao de `aspecto_carta`: o
+    `imread` do OpenCV nao abre caminho com acento no Windows.
+
+    Existe porque `faixa_livre` tratava toda imagem da pilha como se fosse
+    uma carta (aspecto 0,56 fixo) - ver o comentario la para a medicao que
+    achou isso errado."""
+    key = str(path)
+    if key not in _ASPECTO_IMG:
+        aspecto = 0.5609
+        try:
+            r = run([FFPROBE, "-v", "error", "-select_streams", "v",
+                     "-show_entries", "stream=width,height", "-of", "json",
+                     str(path)])
+            st = json.loads(r.stdout)["streams"][0]
+            aspecto = st["width"] / st["height"]
+        except Exception:
+            pass
+        _ASPECTO_IMG[key] = aspecto
+    return _ASPECTO_IMG[key]
 
 
 def aspecto_carta():
@@ -2887,23 +2916,54 @@ def aspecto_carta():
     return _ASPECTO_CARTA
 
 
-def faixa_livre(C, w, h):
-    """(inicio, fim) da faixa de largura que as duas cartas NAO cobrem, em
-    fracao do quadro. E o espaco que sobra para a Mariana no layout 3, e e
-    contra ele que `_janela_layout3` decide o reenquadramento.
+def faixa_livre(C, w, h, camadas=None):
+    """(inicio, fim) da faixa de largura que a pilha NAO cobre, em fracao
+    do quadro. E o espaco que sobra para a Mariana no layout 3, e e contra
+    ele que `_janela_layout3` decide o reenquadramento.
 
-    MEDIDO num quadro 16:9 com os numeros de hoje (`carta_altura` 0,85 e
-    `carta_margem` 0,025): cada carta cobre 0,268 da largura e sobram 0,414
-    no meio. Mexer em `carta_altura` aperta esta faixa e o enquadramento
-    responde sozinho - e por isso que a conta esta aqui e nao num numero
-    escrito a mao."""
-    cc = C["cartas"]
-    larg = cc["carta_altura"] * h * aspecto_carta() / max(1, w)
-    a = min(0.49, cc["carta_margem"] + larg)
-    return a, 1 - a
+    Sem `camadas` (o modo automatico `cartas`, so carta, ver `grafo_cartas`):
+    a conta de sempre, UMA carta de cada lado. MEDIDO num quadro 16:9 com
+    os numeros de hoje (`carta_altura` 0,85 e `carta_margem` 0,025): a
+    carta cobre 0,268 da largura e sobram 0,414 no meio. Mexer em
+    `carta_altura` aperta esta faixa e o enquadramento responde sozinho.
+
+    Com `camadas` (o roteiro escrito a mao, que pode ter midia avulsa ao
+    lado da carta - `parse_roteiro`): tratar toda imagem da pilha como se
+    tivesse o aspecto da carta era ERRADO, e so nao doia enquanto so havia
+    carta. MEDIDO no "3 de espadas" com a midia `cura-bh.jpg` (aspecto
+    0,71, mais larga que a carta a mesma altura): a conta antiga dava
+    0,29-0,71 (a faixa da carta), a ocupacao real era 0,37-0,63, e
+    `_janela_layout3` saia com `l`=0,96 - praticamente o quadro inteiro,
+    sem reenquadrar nada, porque achava que sobrava espaco que a midia ja
+    tinha tomado. Com a largura certa, `l`=0,77: a Mariana volta a ficar
+    entre as duas imagens.
+
+    A ocupacao de cada lado e o MAIOR ocupante que aquele lado chega a ter
+    - a pilha empilha para o centro (`prof * deslocamento`) e cada camada
+    tem a largura da PROPRIA imagem, medida no arquivo dela
+    (`aspecto_imagem`), nao um numero fixo. E por isso que a faixa pode sair
+    ASSIMETRICA agora (carta de um lado, midia mais larga do outro) - o `a`
+    e o `b` vem de contas independentes, cada um do seu lado."""
+    cc, ce = C["cartas"], C["cartas"]["enumeracao"]
+
+    def ocupa(lado):
+        if camadas is None:
+            larg = cc["carta_altura"] * h * aspecto_carta() / max(1, w)
+            return cc["carta_margem"] + larg
+        do_lado = [c for c in camadas if c.get("lado") == lado]
+        if not do_lado:
+            return cc["carta_margem"]
+        return max(
+            cc["carta_margem"] + c.get("prof", 0) * ce["deslocamento"]
+            + cc["carta_altura"] * h * aspecto_imagem(_imagem_camada(c)) / max(1, w)
+            for c in do_lado)
+
+    a = min(0.49, ocupa("esquerda"))
+    b = 1 - min(0.49, ocupa("direita"))
+    return a, b
 
 
-def _janela_layout3(resumo, margem, livre=(0.293, 0.707)):
+def _janela_layout3(resumo, margem, livre=(0.293, 0.707), margem_lateral=0.0):
     """A janela de crop (fracao 0-1 do quadro) que poe a Mariana no meio,
     entre as duas cartas - o layout 3.
 
@@ -2929,6 +2989,19 @@ def _janela_layout3(resumo, margem, livre=(0.293, 0.707)):
     janela montada em volta disso corta a testa. A folga se mede do
     `topo_min`, o ponto mais alto que a cabeca alcanca.
 
+    "Rosto encostando na borda da carta e feio" ficou so no papel ate
+    09/09/2026: a conta pegava o MAIOR `l` que ainda cabia o vaivem dentro
+    de `livre`, o que deixa `p05`/`p95` tocando `a`/`b` em cheio sempre que
+    essa e a desigualdade que manda - zero folga, so ausencia de corte.
+    MEDIDO no "3 de espadas" depois do conserto de `faixa_livre` (ver la):
+    com a largura certa da midia a Mariana passou a ser reenquadrada, mas
+    o `p95` (0,7182) ainda tocava `b` (0,6338) na ponta - a mesma queixa,
+    so que 8 pontos percentuais mais apertada. `margem_lateral` encolhe
+    `livre` pelos dois lados ANTES de resolver as tres desigualdades, e
+    dai em diante e o `a`/`b` de sempre - reaproveita a mesma conta, nao
+    inventa uma quarta. Metade da faixa livre no maximo, para uma faixa
+    curta nunca virar `a > b`.
+
     A janela sai com a MESMA fracao nos dois eixos, e e isso que preserva o
     16:9 quando `_reenquadra` a devolve ao tamanho do quadro.
 
@@ -2943,6 +3016,11 @@ def _janela_layout3(resumo, margem, livre=(0.293, 0.707)):
     alt = resumo.get("alt_med", 0.18)
     topo = resumo.get("topo_min", cy0 - alt / 2)
     a, b = livre
+    # a folga entra AQUI, encolhendo a faixa livre antes de qualquer conta -
+    # dali para baixo e o `a`/`b` de sempre, e as tres desigualdades passam
+    # a resolver "cabe com X de sobra" em vez de "cabe raspando".
+    fl = max(0.0, min(margem_lateral, (b - a) / 2 - 1e-6))
+    a, b = a + fl, b - fl
 
     # o maior `l` que ainda permite um `x` valido (as tres desigualdades:
     # p95 nao passa de `b`, p05 nao fica antes de `a`, a janela cabe no
@@ -2979,7 +3057,8 @@ def rosto_atras_da_carta(doc, janela, livre):
     return fora / len(sv)
 
 
-def _reenquadra(L, entrada, janelas, resumo, w, h, margem, livre):
+def _reenquadra(L, entrada, janelas, resumo, w, h, margem, livre,
+                margem_lateral=0.0):
     """Poe a Mariana no CENTRO durante `janelas` (o layout 3) e devolve o
     rotulo de saida. Sem janela nenhuma, nao acrescenta filtro algum.
 
@@ -3014,7 +3093,7 @@ def _reenquadra(L, entrada, janelas, resumo, w, h, margem, livre):
     e a razao de ela ser escrita daquele jeito la."""
     if not janelas:
         return entrada
-    x, y, lw, lh = _janela_layout3(resumo, margem, livre)
+    x, y, lw, lh = _janela_layout3(resumo, margem, livre, margem_lateral)
     # A janela pode SER o quadro inteiro - acontece quando a cabeca so cabe
     # assim (MEDIDO no IMG_0246: l = 1,00). Ai nao ha reenquadramento
     # nenhum a fazer, e montar split+crop+scale para copiar o quadro
@@ -3118,7 +3197,7 @@ def grafo_cartas(iv, C, cartas, resumo_rosto, w_fonte, h_fonte,
 
     base = _reenquadra(L, ult_base, [(s["ini"], s["fim"]) for s in secs],
                        resumo_rosto, w_trab, h_trab, cc["crop_margem"],
-                       faixa_livre(C, w_trab, h_trab))
+                       faixa_livre(C, w_trab, h_trab), cc["crop_margem_lateral"])
 
     altura_px = max(2, int(h_trab * cc["carta_altura"]))
     margem_px = int(w_trab * cc["carta_margem"])
@@ -3292,7 +3371,8 @@ def grafo_cartas_pilhas(iv, C, camadas, janelas_sessao, resumo_rosto,
 
     base = _reenquadra(L, ult_base, janelas_sessao, resumo_rosto,
                        w_trab, h_trab, cc["crop_margem"],
-                       faixa_livre(C, w_trab, h_trab))
+                       faixa_livre(C, w_trab, h_trab, camadas),
+                       cc["crop_margem_lateral"])
 
     # Mesmo tamanho da carta principal (layout 1) - ver nota no
     # docstring. `ce["carta_altura"]` nao existe mais de proposito: duas
@@ -5971,8 +6051,9 @@ def _monta_cartas(C, eventos, d, meta, force, rotulo):
             rosto.rastreia(Path(meta["src"]), d)
         doc = jload(rjson)
         resumo = doc["resumo"]
-        livre = faixa_livre(C, meta["w"], meta["h"])
-        jan = _janela_layout3(resumo, C["cartas"]["crop_margem"], livre)
+        livre = faixa_livre(C, meta["w"], meta["h"], camadas)
+        jan = _janela_layout3(resumo, C["cartas"]["crop_margem"], livre,
+                              C["cartas"]["crop_margem_lateral"])
         fora = rosto_atras_da_carta(doc, jan, livre)
         # A unica parte disto que nao se justifica sozinha na previa: quem
         # olha ve UM enquadramento e nao sabe se era o melhor possivel.

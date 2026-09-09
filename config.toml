@@ -393,8 +393,21 @@ carta_altura    = 0.85
 # margem da carta ate a borda do quadro, fracao da LARGURA do quadro
 carta_margem    = 0.025
 # folga em volta do vaivem medido do rosto (rosto.json/resumo) ao montar
-# a janela de crop do layout 3 (Mariana centralizada) - fracao do quadro
+# a janela de crop do layout 3 (Mariana centralizada) - fracao do quadro.
+# So entra na conta VERTICAL (cabe a cabeca inteira) - ver a nota abaixo
+# para a folga do outro eixo.
 crop_margem     = 0.08
+# a MESMA ideia, no eixo horizontal: quanto o vaivem do rosto (p05-p95)
+# fica longe da carta/midia mais proxima, fracao do quadro. Ate 09/09/2026
+# nao existia - a conta pegava o MAIOR enquadramento que ainda coubesse o
+# rosto, o que deixa a Mariana ENCOSTADA na borda sempre que essa e a
+# desigualdade que manda (ver `_janela_layout3`). MEDIDO no "3 de espadas"
+# (midia `cura-bh.jpg` a direita): sem esta folga o p95 do rosto tocava a
+# borda livre em cheio, zoom 1,30x. Gosto declarado, nao medicao - nao ha
+# video editado a mao com midia ao lado para calibrar contra (mesma razao
+# do resto desta secao, ver abaixo): 0,05 da uma folga visivel (1,48x)
+# sem apertar o zoom demais. Veja na previa antes de mexer.
+crop_margem_lateral = 0.05
 
 # --- roteiro escrito a mao (o "modo cartas" do editor) -----------------
 # Os quatro numeros abaixo NAO sao medicao, e nao ha video editado a mao
