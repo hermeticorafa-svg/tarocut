@@ -5790,7 +5790,8 @@ def cmd_cartas(a):
                   d / "cartas_previa.mp4", "cartas")
 
 
-def _corta_final(d, C, meta, g_hw, g_sw, entradas, saida, rotulo, emendas):
+def _corta_final(d, C, meta, g_hw, g_sw, entradas, mantido, saida, rotulo,
+                 emendas):
     """O arquivo de qualidade final: corte pelo grafo, depois loudnorm de
     duas passadas. Devolve o Path do que ficou pronto.
 
@@ -5812,10 +5813,41 @@ def _corta_final(d, C, meta, g_hw, g_sw, entradas, saida, rotulo, emendas):
     corte = d / "_corte.mov"
     hevc = "hevc" in meta.get("vcodec", "")
     enc = ["-c:v", "hevc_qsv" if hevc else "h264_qsv",
-           "-global_quality", str(cr["qualidade"])]
+           "-global_quality", str(cr["qualidade"]),
+           "-pix_fmt", "p010le" if hevc else "nv12"]
     if not cr["gpu"]:
         enc = ["-c:v", "libx265" if hevc else "libx264",
-               "-crf", str(cr["qualidade"]), "-preset", "medium"]
+               "-crf", str(cr["qualidade"]), "-preset", "medium",
+               "-pix_fmt", "yuv420p10le" if hevc else "yuv420p"]
+    # O formato do encoder e PINADO, nunca negociado. A carta entra no
+    # grafo como `yuva420p` - ela precisa do alfa para o fade -, e o que
+    # sai do `overlay` chega ao encoder ainda carregando esse alfa. Cada
+    # encoder reage de um jeito, e os dois errados:
+    #
+    #   libx265 RECUSA ("Loaded libx265 does not support alpha layer
+    #   encoding") e o `exportar` de qualidade morre sem escrever um
+    #   quadro - por isso a queda para software nao salvava nada aqui.
+    #
+    #   hevc_qsv ACEITA, porque a lista dele tem `bgra` e `vuyx`, e
+    #   escolhe 4:4:4. MEDIDO no "2 de espadas": o arquivo saiu
+    #   `HEVC Rext / yuv444p / gbr`. O ffmpeg reabre esse arquivo sem
+    #   reclamar e o mpv toca; o Reprodutor do Windows mostra um mosaico
+    #   colorido, porque Rext 4:4:4 nao e perfil que decodificador de
+    #   consumo saiba ler. Os quadros estavam certos - o perfil e que era
+    #   impossivel, e nada no caminho perguntava qual perfil ia sair.
+    #
+    # `-color_range tv` vem do mesmo lugar: a carta e um JPEG
+    # `yuvj420p`, de faixa cheia, e o grafo adotava a faixa dela. MEDIDO
+    # no mesmo quadro, o luma medio sai 679 (min 0, max 1023) sem esta
+    # linha contra 644 com ela - o mesmo video com carta saia mais
+    # contrastado que sem carta.
+    #
+    # O `render` nao sofria de nenhum dos dois: sem carta no grafo ele ja
+    # saia `Main 10 / yuv420p10le / tv` sozinho. MEDIDO: framemd5
+    # identico nos 180 quadros com e sem o pino. Pinar so no caminho das
+    # cartas seria a segunda receita de codificacao que esta funcao
+    # existe para nao ter.
+    enc += ["-color_range", "tv"]
     cor = ["-color_primaries", "bt2020", "-color_trc", "arib-std-b67",
            "-colorspace", "bt2020nc", "-tag:v", "hvc1"] if hevc else []
 
@@ -5823,8 +5855,22 @@ def _corta_final(d, C, meta, g_hw, g_sw, entradas, saida, rotulo, emendas):
         # "-/filter_complex arquivo" le o grafo de um arquivo. Necessario:
         # sao centenas de emendas, nao cabem na linha de comando. (O antigo
         # -filter_complex_script saiu no ffmpeg 9.)
+        # O `-t` nao e cinto de seguranca: e o unico fim que este grafo
+        # tem. Carta e midia entram como `-loop 1 -i carta.png`, que e
+        # entrada INFINITA, e o `overlay` do ffmpeg 9 nao acaba quando o
+        # video principal acaba - ele repete o ultimo quadro e segue no
+        # ritmo da imagem (25 fps) para sempre. MEDIDO no "2 de espadas":
+        # o corte de 00:02:14 saiu com 170.948 quadros e 01:53:30 de video
+        # (o audio, que vem do concat, tinha os 134,65 s certos), depois de
+        # 1h02 de ffmpeg e sem nada reclamar. O `_previa_lores` sempre teve
+        # este mesmo `-t` - por isso a previa das cartas nunca sofreu disso
+        # e so o arquivo de qualidade sofria, que e o unico que ninguem
+        # roda duas vezes. Sem carta a entrada ja e finita e o `-t` nao
+        # muda um byte; poe-lo so no caminho das cartas seria a segunda
+        # receita de codificacao que esta funcao existe para nao ter.
         return ([FFMPEG, "-y", "-v", "error", "-stats"] + dec + entradas
-                + ["-/filter_complex", str(g), "-map", "[vo]", "-map", "[ao]"]
+                + ["-/filter_complex", str(g), "-map", "[vo]", "-map", "[ao]",
+                   "-t", f"{mantido:.3f}"]
                 + enc + cor
                 + ["-c:a", "aac", "-b:a", "192k", "-ar", "48000", str(corte)])
 
@@ -5895,7 +5941,7 @@ def cmd_render(a):
     saida = Path(a.out) if a.out else d / f"{Path(a.video).stem}_cortado.mov"
     # `meta["src"]`, nao `a.video`: ver a mesma nota no `cmd_audio`.
     _corta_final(d, C, meta, gscript_hw, gscript_sw, ["-i", str(meta["src"])],
-                 saida, "render", len(iv))
+                 mantido, saida, "render", len(iv))
     mb = saida.stat().st_size / 1e6
     print(f"[render] pronto: {saida}  ({hhmmss(mantido)}, {mb:.0f} MB)")
 
@@ -6048,8 +6094,8 @@ def cmd_exportar(a):
         _previa_lores(d, C, a, meta, g_hw, g_sw, entradas, mantido, saida,
                       "exportar")
     else:
-        _corta_final(d, C, meta, g_hw, g_sw, entradas, saida, "exportar",
-                     len(iv))
+        _corta_final(d, C, meta, g_hw, g_sw, entradas, mantido, saida,
+                     "exportar", len(iv))
         print(f"[exportar] pronto: {saida}  ({hhmmss(mantido)}, "
               f"{saida.stat().st_size/1e6:.0f} MB)")
 

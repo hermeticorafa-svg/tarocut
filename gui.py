@@ -53,11 +53,11 @@ def alinhado(p):
 
 
 def estado(video):
-    """Devolve (etapa, duracao, corte, marcas) lendo work/<video>/."""
+    """Devolve (etapa, duracao, corte, marcas, pronto) lendo work/<video>/."""
     d = WORK / Path(video).stem
     etapa, dur, corte, marcas = "-", "", "", ""
     if not d.is_dir():
-        return etapa, dur, corte, marcas
+        return etapa, dur, corte, marcas, False
 
     meta = d / "meta.json"
     if meta.exists():
@@ -96,7 +96,18 @@ def estado(video):
             corte = f"{100 * (1 - J['dur_final'] / J['dur_original']):.0f}%"
         except Exception:
             pass
-    return etapa, dur, corte, marcas.strip()
+    # o checkbox "pronto para exportacao" do modo cartas do editor. Mesmo
+    # arquivo, mesma chave dos dois lados - nao ha logica de edicao aqui,
+    # so leitura do que o editor ja gravou.
+    pronto = False
+    rot = d / "cartas-roteiro.json"
+    if rot.exists():
+        try:
+            pronto = bool(json.loads(rot.read_text(encoding="utf-8"))
+                          .get("pronto"))
+        except Exception:
+            pass
+    return etapa, dur, corte, marcas.strip(), pronto
 
 
 def videos_de(pasta):
@@ -274,6 +285,9 @@ class App(tk.Tk):
                           stretch=False)
         self.lista.column("marcas", width=larg("✎ ★ ♪ ▶"), anchor="w",
                           stretch=False)
+        # mesmo verde claro que o editor pinta no checkbox do modo cartas -
+        # o mesmo alerta visual dos dois lados.
+        self.lista.tag_configure("pronto", background="#d9f2d4")
         self.lista.grid(row=0, column=0, sticky="nsew")
         sb = ttk.Scrollbar(quadro, orient="vertical", command=self.lista.yview)
         sb.grid(row=0, column=1, sticky="ns")
@@ -379,9 +393,10 @@ class App(tk.Tk):
         sel = self.selecionado()
         self.lista.delete(*self.lista.get_children())
         for v in videos_de(self.pasta.get()):
-            etapa, dur, corte, marcas = estado(v)
+            etapa, dur, corte, marcas, pronto = estado(v)
             self.lista.insert("", "end", iid=str(v), text=v.name,
-                              values=(dur, etapa, corte, marcas))
+                              values=(dur, etapa, corte, marcas),
+                              tags=("pronto",) if pronto else ())
         if sel and self.lista.exists(str(sel)):
             self.lista.selection_set(str(sel))
             self.lista.see(str(sel))

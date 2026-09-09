@@ -4,7 +4,8 @@
       "Bash(git add *)",
       "Bash(git config *)",
       "Bash(git commit -m 'Commit inicial: versão funcional do tarocut *)",
-      "Bash(git commit -m 'Editor na onda: redesenho do navegador com o corte de verdade em tempo real *)"
+      "Bash(git commit -m 'Editor na onda: redesenho do navegador com o corte de verdade em tempo real *)",
+      "Bash(git commit *)"
     ]
   }
 }

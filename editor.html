@@ -347,6 +347,10 @@ body.cartas #cartas{display:grid}
 #exportarCartas button:hover:not(:disabled){background:var(--tinta);color:var(--papel)}
 #exportarCartas label{display:inline-flex;gap:5px;align-items:center;
                       cursor:pointer;color:#7d786f}
+/* Mesmo verde claro que a gui.py pinta na linha do video quando este
+   checkbox esta marcado - o alerta visual e o mesmo dos dois lados. */
+#prontoRot{padding:2px 7px;border-radius:4px;margin-left:4px}
+#prontoRot.on{background:#d9f2d4;color:#2f6b28}
 #logCartas{
   margin-top:6px;max-height:140px;overflow:auto;white-space:pre-wrap;
   font:11px/1.45 ui-monospace,Consolas,monospace;color:#57534b;
@@ -402,7 +406,8 @@ body.cartas #cartas{display:grid}
     <div id="ajuda">
       uma carta por linha: <code>[1:29] Rainha de Copas; direita; 12s</code><br>
       o lado e o tempo são opcionais · sem tempo a carta fica até o fim ·
-      clique num tempo da esquerda para trazê-lo para cá
+      clique num tempo da esquerda para trazê-lo para cá ·
+      botão direito num tempo gera um frame
     </div>
 
     <div id="codigoCaixa">
@@ -419,6 +424,8 @@ body.cartas #cartas{display:grid}
         <button id="btPrevia">prévia lo-res</button>
         <button id="btFinal">vídeo final</button>
         <label><input type="checkbox" id="comLegenda" checked> .srt junto</label>
+        <label id="prontoRot"><input type="checkbox" id="pronto">
+          pronto para exportação</label>
         <b id="logCartasTit"></b>
         <div id="logCartas"></div>
       </div>
@@ -1824,6 +1831,17 @@ function menuDaPalavra(x, y, i) {
   ]);
 }
 
+// So um item: um frame do video FONTE naquele instante, so pra ter uma
+// ideia visual sem esperar render nenhum. `window.open` chamado direto do
+// clique do botao (sem await no meio) nao esbarra em bloqueador de
+// pop-up - e por isso que a acao do menu e so isto, e nao um fetch que
+// abre a aba depois de a resposta chegar.
+function menuDoFrame(x, y, fonte) {
+  abreMenu(x, y, [
+    ["gerar frame", () => window.open("/frame?t=" + fonte, "_blank")],
+  ]);
+}
+
 document.addEventListener("contextmenu", async (ev) => {
   ev.preventDefault();
   if (!S.est) return;
@@ -1831,6 +1849,18 @@ document.addEventListener("contextmenu", async (ev) => {
   // um "corrigir" e o gesto seguinte disparados juntos deixam o "vez"
   // descartar sempre a resposta do "corrigir".
   if (edicaoAtual) await edicaoAtual.acabar(true);
+  // O painel da ESQUERDA do modo cartas (`#cenas`): cada linha mostra o
+  // tempo de FONTE em `c.s` (o `.cenaT` so escreve `mmss(c.ini)`, o tempo
+  // de SAIDA - `c.s` e quem entra aqui, porque e um instante de verdade no
+  // arquivo original, o que `gera_frame` sabe buscar sem traduzir nada).
+  const cenaT = ev.target.closest && ev.target.closest(".cenaT");
+  if (cenaT) {
+    const el = cenaT.closest(".cena");
+    const c = el && K.est &&
+      K.est.legendas.find((x) => x.n === Number(el.dataset.n));
+    if (c) menuDoFrame(ev.clientX, ev.clientY, c.s);
+    return;
+  }
   if (ev.target === cv) {
     const [x, y] = posMouse(ev);
     if (ondeY(y) === "palavra") {
@@ -2087,7 +2117,7 @@ function pintaCenas(forca) {
     t.title = c.mao && c.orig && c.orig !== c.auto
       ? "o texto automático mudou desde a sua edição: " + c.orig
       : "clique para levar este tempo para o roteiro  ·  fonte " +
-        c.s.toFixed(2) + "s";
+        c.s.toFixed(2) + "s  ·  botão direito gera um frame";
     t.onclick = () => insereTempo(c.ini);
     el.appendChild(t);
 
@@ -2289,6 +2319,8 @@ function pintaCartas(forca) {
   if (document.activeElement !== pn && pn.value !== K.est.principal)
     pn.value = K.est.principal;
   $("comLegenda").checked = !K.est.semLegenda;
+  $("pronto").checked = !!K.est.pronto;
+  $("prontoRot").classList.toggle("on", !!K.est.pronto);
   pintaCenas(forca);
   pintaRoteiro();
 }
@@ -2386,6 +2418,7 @@ async function salvaRoteiro() {
     roteiro: $("codigo").value,
     principal: $("temPrincipal").checked ? $("principalNome").value.trim() : "",
     semLegenda: !$("comLegenda").checked,
+    pronto: $("pronto").checked,
   });
   if (!est) { marcaSalvo("não consegui salvar"); return; }
   K.est = est;
@@ -2557,6 +2590,10 @@ $("temPrincipal").addEventListener("change", () => {
 });
 $("principalNome").addEventListener("change", salvaRoteiro);
 $("comLegenda").addEventListener("change", salvaRoteiro);
+$("pronto").addEventListener("change", () => {
+  $("prontoRot").classList.toggle("on", $("pronto").checked);
+  salvaRoteiro();
+});
 $("btCartas").onclick = alternaCartas;
 $("btPlayGeral").onclick = tocaTudo;
 $("btPrevia").onclick = () => roda("exportar-previa");

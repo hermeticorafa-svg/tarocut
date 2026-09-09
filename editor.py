@@ -52,7 +52,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
 import tarocut as tc
@@ -185,6 +185,10 @@ class Sessao:
         self.principal = rot.get("principal") or ""
         self.roteiro = rot.get("roteiro") or ""
         self.sem_legenda = bool(rot.get("sem_legenda"))
+        # marcado a mao no modo cartas; a gui.py le o mesmo arquivo e pinta
+        # a linha do video de verde claro. Nao decide nada aqui dentro -
+        # e so organizacao de quem tem 34 videos para editar.
+        self.pronto = bool(rot.get("pronto"))
         # o corte contra o qual o roteiro foi escrito da ultima vez. Ver
         # `tc.roteiro_caducou`: o relogio do roteiro e o da SAIDA, e um
         # corte novo escorrega todos os tempos de uma vez.
@@ -514,6 +518,50 @@ class Sessao:
             i = next((k for k, tk in enumerate(self.stream) if tk["e"] > x),
                      max(0, len(self.stream) - 1))
             return {"fonte": round(x, 3), "i": i}
+
+    # ------------------------------------------------------------ um frame so
+
+    def gera_frame(self, t):
+        """Um quadro so do video FONTE no instante `t`, so para dar uma
+        ideia visual - nao participa do corte, nao le nem escreve
+        montagem nenhuma, nao fica no disco.
+
+        `-ss` ANTES do `-i` busca o keyframe anterior e decodifica so ate
+        o instante pedido (e "seek exato" e o padrao do ffmpeg ha anos,
+        nao e preciso pedir). Sem hwaccel de proposito: o gargalo do
+        `[render].gpu` e decodificar TODOS os quadros de um trecho longo
+        em software, e aqui e um quadro so, perto de onde a busca ja
+        chegou - GPU nao muda nada que valha a complicacao.
+
+        `-strict unofficial`: MEDIDO no IMG_0246 perto do fim (267s de
+        267,6) - o encoder mjpeg recusa codificar com "Non full-range YUV
+        is non-standard" e o frame sai vazio, calado (`-v error` engole o
+        aviso, so o erro do encoder aparece). O decode HEVC deste projeto
+        e limited-range (source Dolby Vision, ver meta.json); o mjpeg da
+        pra codificar assim, so nao por padrao.
+
+        O teto de `self.dur - 0.15` e outra medicao no mesmo lugar: pedir
+        o instante exato do fim falha porque nao ha quadro NENHUM depois
+        dele para decodificar - `dur` e o fim do arquivo, nao o tempo do
+        ultimo quadro. MEDIDO no IMG_0246 (267,613s, ~60 fps): 267,55
+        ainda acha quadro, 267,6 nao acha nenhum; 0,15 da folga de sobra
+        sem mudar o que se ve (e so o ULTIMO clique perto do fim que cai
+        nesta margem, e a imagem de dois quadros antes e a mesma cena)."""
+        teto = max(0.0, self.dur - 0.15)
+        t = max(0.0, min(teto, float(t)))
+        try:
+            r = subprocess.run(
+                [tc.FFMPEG, "-y", "-v", "error", "-ss", f"{t:.3f}",
+                 "-i", str(self.video), "-frames:v", "1", "-q:v", "2",
+                 "-strict", "unofficial",
+                 "-f", "image2pipe", "-vcodec", "mjpeg", "-"],
+                capture_output=True, timeout=20)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"ffmpeg nao respondeu em 20s buscando {t:.2f}s")
+        if r.returncode != 0 or not r.stdout:
+            erro = (r.stderr or b"").decode("utf-8", "replace").strip()
+            raise RuntimeError(erro[:300] or "ffmpeg nao gerou frame nenhum")
+        return r.stdout
 
     # ------------------------------------------------------------- calculo
 
@@ -1282,6 +1330,7 @@ class Sessao:
                 "principal": self.principal,
                 "roteiro": self.roteiro,
                 "semLegenda": self.sem_legenda,
+                "pronto": self.pronto,
                 "cartas": self.cartas_nomes,
                 "midias": self.midias_nomes,
                 "eventos": eventos,
@@ -1300,6 +1349,7 @@ class Sessao:
         tc.jdump({"versao": 1, "video": self.src.name,
                   "principal": self.principal, "roteiro": self.roteiro,
                   "sem_legenda": self.sem_legenda,
+                  "pronto": self.pronto,
                   # o corte de AGORA, gravado so quando ele salva de dentro
                   # do modo cartas - que e onde ele ve, linha por linha, o
                   # que se ouve em cada tempo. Ver `cartas_estado`.
@@ -1316,6 +1366,8 @@ class Sessao:
                 self.roteiro = str(b.get("roteiro") or "")
             if "semLegenda" in b:
                 self.sem_legenda = bool(b.get("semLegenda"))
+            if "pronto" in b:
+                self.pronto = bool(b.get("pronto"))
             self.roteiro_mantido = sum(x - a for a, x in self.intervalos())
             self._grava_roteiro(self.roteiro_mantido)
             # o roteiro fala no relogio da SAIDA, e a saida vem do corte:
@@ -1508,6 +1560,19 @@ class Handler(BaseHTTPRequestHandler):
                                     "rotulo": T.rotulo})
             if rota == "/audio.wav":
                 return self._envia(S.wav.read_bytes(), "audio/wav")
+            if rota == "/frame":
+                # GET simples (nao POST) de proposito: e o que deixa a tela
+                # abrir isto com `window.open(url)` puro, sem fetch nem
+                # blob no meio - o navegador que baixa a imagem, na aba
+                # nova que o clique ja pediu.
+                try:
+                    t = float(parse_qs(urlparse(self.path).query)["t"][0])
+                except (KeyError, IndexError, ValueError):
+                    return self._envia({"erro": "tempo invalido"}, codigo=400)
+                try:
+                    return self._envia(S.gera_frame(t), "image/jpeg")
+                except RuntimeError as e:
+                    return self._envia({"erro": str(e)}, codigo=500)
             if rota == "/videos":
                 return self._envia({"videos": videos_disponiveis(S.nome)})
             if rota == "/cartas":

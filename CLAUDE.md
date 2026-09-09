@@ -51,9 +51,11 @@ Estado por vídeo em `work/<video>/`: `meta.json`, `audio.wav`, `words.json`,
 `conferir.txt`, `entendimento.md` (o que o passe de julgamento entendeu da
 aula), `ouvido.md` (o que ele anotou ouvindo o `.m4a`, colado literal, uma
 seção por rodada), `anotacoes.json`, `respostas.json`, `montagem.json`,
-`correcoes.json`, `cartas-roteiro.json` (a carta principal e o roteiro
-escrito à mão) e `legendas.json` (o texto de cada cartão que uma pessoa
-reescreveu).
+`correcoes.json`, `cartas-roteiro.json` (a carta principal, o roteiro
+escrito à mão e o checkbox "pronto para exportação" do modo cartas — a
+`gui.py` lê a mesma chave `pronto` e pinta a linha do vídeo de verde claro;
+é organização, não decide corte nenhum) e `legendas.json` (o texto de cada
+cartão que uma pessoa reescreveu).
 
 As três camadas de decisão humana empilham nesta ordem, que é a ordem em
 que foram tomadas: `transcript.md` (apagar texto) → `anotacoes.json` (o
