@@ -233,7 +233,23 @@ body.cartas #cartas{display:grid}
 #btCartas.on{background:var(--tinta);color:var(--papel);border-color:var(--tinta)}
 
 /* ---- a metade esquerda: a legenda ---- */
-#cenas{overflow-y:auto;padding:12px 12px 30vh;border-right:1px solid var(--linha)}
+/* `#cenasPainel` existe so para isolar a barra do play geral do scroll: sem
+   ele, "sempre visivel" e "a lista rola" nao cabem no mesmo elemento. */
+#cenasPainel{display:flex;flex-direction:column;overflow:hidden;
+             border-right:1px solid var(--linha)}
+#cenasBarra{
+  display:flex;align-items:center;gap:10px;padding:10px 14px;flex:0 0 auto;
+  border-bottom:1px solid var(--linha);background:var(--papel);
+}
+#btPlayGeral{
+  width:30px;height:30px;border:1px solid var(--linha);border-radius:5px;
+  background:var(--painel);color:var(--tinta);cursor:pointer;
+  font:14px/1 system-ui,sans-serif;
+}
+#btPlayGeral:hover{background:#fff}
+#btPlayGeral.on{background:var(--tinta);color:var(--papel);border-color:var(--tinta)}
+#cenasBarraTxt{font:11px/1.5 system-ui,"Segoe UI",sans-serif;color:#7d786f}
+#cenas{overflow-y:auto;padding:12px 12px 30vh}
 #cenasTopo{
   font:11px/1.5 system-ui,"Segoe UI",sans-serif;color:#7d786f;
   padding:0 6px 8px;border-bottom:1px solid var(--linha);margin-bottom:8px;
@@ -364,7 +380,13 @@ body.cartas #cartas{display:grid}
      entra por cima. Ver o comentario do CSS sobre por que as duas metades
      falam o mesmo relogio. -->
 <div id="cartas">
-  <div id="cenas"></div>
+  <div id="cenasPainel">
+    <div id="cenasBarra">
+      <button id="btPlayGeral" title="tocar o áudio inteiro, do começo ao fim">▶</button>
+      <span id="cenasBarraTxt">tocar tudo</span>
+    </div>
+    <div id="cenas"></div>
+  </div>
 
   <div id="roteiro">
     <div id="roteiroTopo">
@@ -1435,6 +1457,8 @@ function para() {
   A.fontes = []; A.mapa = null;
   if (A.rot) cancelAnimationFrame(A.rot), A.rot = 0;
   paraCena();
+  K.geral = false;
+  atualizaBotaoGeral();
   for (const el of S.els) if (el) el.classList.remove("toca");
   S.toque = null;
   desenha();
@@ -1584,10 +1608,10 @@ function tocaOriginal() {
 
 function espaco() {
   if (A.ctx && A.ctx.state === "running" && A.mapa) {
-    A.ctx.suspend(); atualizaBotaoCena(); return;
+    A.ctx.suspend(); atualizaBotaoCena(); atualizaBotaoGeral(); return;
   }
   if (A.ctx && A.ctx.state === "suspended" && A.mapa) {
-    A.ctx.resume(); atualizaBotaoCena(); return;
+    A.ctx.resume(); atualizaBotaoCena(); atualizaBotaoGeral(); return;
   }
   tocaSelecao(true);
 }
@@ -1954,6 +1978,7 @@ const K = {
   timer: null,    // o debounce do salvamento
   charW: 0, lineH: 0,
   acesa: -1,
+  geral: false,   // tocando pelo botao de cima (o audio inteiro), nao uma cena so
 };
 
 function emCartas() { return document.body.classList.contains("cartas"); }
@@ -2071,10 +2096,13 @@ function pintaCenas(forca) {
       // Clicar de novo no botao da MESMA frase que esta soando pausa e
       // retoma no lugar - o mesmo gesto do espaco, so que mirado numa
       // linha. Clicar noutra frase comeca ela do zero (`toca` para a
-      // que estava antes, como sempre fez).
-      if (K.acesa === c.n && A.ctx && A.mapa) {
-        if (A.ctx.state === "running") { A.ctx.suspend(); atualizaBotaoCena(); return; }
-        if (A.ctx.state === "suspended") { A.ctx.resume(); atualizaBotaoCena(); return; }
+      // que estava antes, como sempre fez). `!K.geral` separa isso do
+      // botao de tocar tudo: se o que esta soando e o video inteiro so
+      // por coincidencia passando por esta cena, clicar aqui tem de
+      // comecar so ELA, nao pausar o video inteiro por engano.
+      if (K.acesa === c.n && !K.geral && A.ctx && A.mapa) {
+        if (A.ctx.state === "running") { A.ctx.suspend(); atualizaBotaoCena(); atualizaBotaoGeral(); return; }
+        if (A.ctx.state === "suspended") { A.ctx.resume(); atualizaBotaoCena(); atualizaBotaoGeral(); return; }
       }
       toca(recorta(c.s, c.e));
     };
@@ -2141,6 +2169,7 @@ function acendeCena(t) {
       }
     }
     atualizaBotaoCena();
+    atualizaBotaoGeral();
   }
   acendePalavraCena(t, achou);
 }
@@ -2177,6 +2206,31 @@ function atualizaBotaoCena() {
   const ativo = !!(A.ctx && A.ctx.state === "running" && A.mapa);
   btn.textContent = ativo ? "⏸" : "▶";
   btn.title = ativo ? "pausar" : "ouvir este trecho";
+}
+
+/* O play/pause da BARRA, sempre visivel no topo do painel esquerdo - para
+   nao precisar dar play cena por cena. Toca `S.est.iv`, o MESMO corte que o
+   espaco toca quando nao ha selecao: o audio inteiro, ja com o corte
+   aplicado. `K.geral` separa isto de um play de cena so: sem ele, clicar
+   aqui enquanto uma cena a mais tocava sozinha pausaria so aquela cena, e
+   o botao de cima ficaria mudo sobre o que esta tocando de verdade. */
+function tocaTudo() {
+  if (K.geral && A.ctx && A.mapa) {
+    if (A.ctx.state === "running") { A.ctx.suspend(); atualizaBotaoGeral(); atualizaBotaoCena(); return; }
+    if (A.ctx.state === "suspended") { A.ctx.resume(); atualizaBotaoGeral(); atualizaBotaoCena(); return; }
+  }
+  toca(S.est.iv);      // `toca` chama `para()` primeiro, que zera K.geral
+  K.geral = true;       // por isso o `true` vem DEPOIS de `toca`, nao antes
+  atualizaBotaoGeral();
+}
+
+function atualizaBotaoGeral() {
+  const btn = $("btPlayGeral");
+  if (!btn) return;
+  const ativo = K.geral && !!(A.ctx && A.ctx.state === "running" && A.mapa);
+  btn.textContent = ativo ? "⏸" : "▶";
+  btn.classList.toggle("on", ativo);
+  btn.title = ativo ? "pausar" : "tocar o áudio inteiro, do começo ao fim";
 }
 
 /* Chamada por `para()` (o stop de verdade, nao a pausa): apaga o verde da
@@ -2479,6 +2533,7 @@ $("temPrincipal").addEventListener("change", () => {
 $("principalNome").addEventListener("change", salvaRoteiro);
 $("comLegenda").addEventListener("change", salvaRoteiro);
 $("btCartas").onclick = alternaCartas;
+$("btPlayGeral").onclick = tocaTudo;
 $("btPrevia").onclick = () => roda("exportar-previa");
 $("btFinal").onclick = () => roda("exportar");
 
