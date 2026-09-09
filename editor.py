@@ -46,11 +46,12 @@ import json
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
@@ -177,6 +178,9 @@ class Sessao:
         # uma segunda lista em JS seria pior - o dia em que uma carta
         # entrasse na pasta, a tela ofereceria carta que o export recusa.
         self.cartas_nomes = tc.catalogo_cartas()
+        # midia avulsa (foto, grafico - nao carta do baralho): MESMA
+        # garantia, mesma razao - ver tc.catalogo_midias().
+        self.midias_nomes = tc.catalogo_midias()
         rot = tc.carrega_roteiro(self.d) or {}
         self.principal = rot.get("principal") or ""
         self.roteiro = rot.get("roteiro") or ""
@@ -1229,9 +1233,17 @@ class Sessao:
         """Os cartoes de legenda deste corte, com o que foi escrito a mao
         por cima. Sai de `tc.monta_legendas` - o MESMO lugar de onde sai o
         .srt do `exportar` -, senao a tela mostraria uma legenda e o
-        arquivo levaria outra."""
+        arquivo levaria outra.
+
+        `amplia_audio_legendas` so entra AQUI, depois do .srt ja estar
+        decidido: ela acrescenta `audio_s`/`audio_e` (o trecho que o BOTAO
+        DE TOCAR de cada cartao usa, maior que o [s,e] do texto) sem tocar
+        em `s`/`e`/`txt` - o exportar nunca chama essa funcao, e nao
+        precisa: ela existe para o modo cartas tocar o MESMO audio que o
+        modo onda toca, nunca para decidir legenda."""
         cenas = tc.monta_legendas(self.stream, iv, self.C)
         orfas = tc.aplica_legendas(cenas, list(self.legendas.values()))
+        tc.amplia_audio_legendas(cenas, self.dur)
         return cenas, orfas
 
     def cartas_estado(self):
@@ -1247,14 +1259,18 @@ class Sessao:
         tirado do proprio cartao de legenda. E ele, e nao o aviso de
         caducidade, a defesa de verdade contra o corte que mudou depois do
         roteiro: um `[1:29]` que escorregou passa a mostrar outra frase, na
-        linha, na hora."""
+        linha, na hora.
+
+        `midias` (self.midias_nomes) e a mesma garantia da carta, so que
+        para foto/grafico avulso (ver tc.catalogo_midias()) - o roteiro
+        aceita as duas coisas na mesma sintaxe (ver tc.parse_roteiro)."""
         with self.lock:
             iv = self.intervalos()
             mantido = sum(b - a for a, b in iv)
             cenas, orfas = self._cenas(iv)
             eventos, erros, notas = tc.parse_roteiro(
                 self.roteiro, self.principal, mantido, self.C,
-                self.cartas_nomes)
+                self.cartas_nomes, self.midias_nomes)
             for ev in eventos:
                 c = next((x for x in cenas
                           if x["ini"] <= ev["ini"] <= x["fim"]), None)
@@ -1267,6 +1283,7 @@ class Sessao:
                 "roteiro": self.roteiro,
                 "semLegenda": self.sem_legenda,
                 "cartas": self.cartas_nomes,
+                "midias": self.midias_nomes,
                 "eventos": eventos,
                 "erros": erros,
                 "notas": notas,
@@ -1591,12 +1608,34 @@ class ServidorEditor(ThreadingHTTPServer):
     allow_reuse_address = False
 
 
+def _erro_do_corpo(e):
+    """O que o outro editor DISSE ao recusar. O `HTTPError` traz o corpo
+    junto, e ate 09/09/2026 ninguem o lia: o que chegava a tela era
+    "HTTP Error 500: Internal Server Error", que nao diz de que video nem
+    por que. Ler o corpo e a diferenca entre "o editor de ontem nao conhece
+    este /abrir" e um misterio."""
+    try:
+        d = json.loads(e.read())
+        return str(d.get("erro") or d)[:200]
+    except Exception:
+        return e.reason if isinstance(e.reason, str) else repr(e)
+
+
 def _troca_no_editor_aberto(video, porta, abrir):
     """A porta ja esta ocupada - quase sempre por um editor deste programa
     aberto de uma sessao anterior, que ninguem fechou porque nao ha console
     nem botao pra isso. Em vez de tentar um segundo servidor (que so
     duplicaria o zumbi), manda o mesmo POST /abrir que o botao "Abrir" do
-    proprio editor manda, no processo que ja esta escutando."""
+    proprio editor manda, no processo que ja esta escutando.
+
+    Devolve None quando trocou, e a RAZAO em texto quando nao deu - quem
+    chama derruba o dono da porta e sobe um editor novo. Nao sai mais do
+    programa, e essa e a mudanca: o editor de uma VERSAO ANTERIOR e
+    justamente o caso em que a troca nunca vai funcionar (o `/abrir` dele e
+    outro), e ate 09/09/2026 esse era o fim da linha - o botao "3. Editor"
+    imprimia "HTTP Error 500" e nao abria nada, sem dizer o que fazer.
+    Derrubar nao custa trabalho nenhum: cada gesto do editor ja foi ao
+    disco no instante em que aconteceu (ver `grava`)."""
     url = f"http://127.0.0.1:{porta}/"
     corpo = json.dumps({"video": video}).encode("utf-8")
     req = Request(url + "abrir", data=corpo, method="POST",
@@ -1604,25 +1643,123 @@ def _troca_no_editor_aberto(video, porta, abrir):
     try:
         with urlopen(req, timeout=5) as r:
             resp = json.loads(r.read())
+    except HTTPError as e:
+        detalhe = _erro_do_corpo(e)
+        if e.code == 409:
+            # A UNICA recusa que nao se resolve derrubando: la dentro ha um
+            # render/audio em andamento, e o `taskkill /T` levaria o ffmpeg
+            # junto. Minutos de maquina sumindo sem nada perguntar e o
+            # defeito de sempre desta casa, do lado do fogao.
+            sys.exit(f"[editor] o editor da porta {porta} esta ocupado com "
+                     f"uma tarefa ({detalhe}). Espere ela terminar: derrubar "
+                     f"o editor agora mataria a tarefa no meio.")
+        return f"HTTP {e.code} - {detalhe}"
     except (URLError, OSError, ValueError) as e:
-        sys.exit(f"[editor] a porta {porta} esta ocupada e nao consegui "
-                 f"trocar de video nela (nao e um editor deste programa, "
-                 f"ou nao respondeu): {e}")
+        return repr(e)
     if not resp.get("ok"):
-        sys.exit(f"[editor] ja tem um editor aberto na porta {porta}, mas "
-                 f"ele recusou abrir {video!r}: {resp.get('erro')}")
+        return f"recusou abrir {video!r}: {resp.get('erro')}"
     print(f"[editor] ja tinha um editor aberto na porta {porta}; troquei "
           f"para {video} nele em vez de abrir outro.")
     if abrir:
         webbrowser.open(url)
+    return None
+
+
+def _dono_da_porta(porta):
+    """(pid, imagem) de quem escuta 127.0.0.1:porta, ou (None, None).
+
+    `netstat` e `tasklist` porque nao ha dependencia nova nisso - o
+    programa ja chama `taskkill` para cancelar tarefa. A imagem importa:
+    derrubar as cegas quem responde numa porta e derrubar o que nao e
+    nosso."""
+    alvo = f"127.0.0.1:{porta}"
+    try:
+        r = subprocess.run(["netstat", "-ano", "-p", "TCP"],
+                           capture_output=True, text=True)
+    except OSError:
+        return None, None
+    pid = None
+    for linha in r.stdout.splitlines():
+        c = linha.split()
+        if len(c) == 5 and c[0].upper() == "TCP" and c[1] == alvo:
+            # a linha LISTENING e a do dono; as ESTABLISHED sao as conexoes
+            # do navegador com ele e tem o mesmo pid - por isso qualquer uma
+            # serve, com a de escuta preferida. O pid 0 e das linhas
+            # TIME_WAIT de conexao ja fechada: dono nenhum.
+            if c[4] == "0":
+                continue
+            pid = c[4]
+            if c[3].upper() == "LISTENING":
+                break
+    if not pid:
+        return None, None
+    try:
+        r = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH",
+                            "/FO", "CSV"], capture_output=True, text=True)
+        img = r.stdout.strip().split('","')[0].strip('"')
+    except OSError:
+        img = ""
+    return pid, (img or "?")
+
+
+def _derruba_porta(porta):
+    """Mata o dono da porta - so se for python, que e o que este editor e.
+
+    Recusar o resto nao e cerimonia: 8731 e uma porta como qualquer outra, e
+    no dia em que outro programa estiver nela, mata-lo para abrir uma
+    transcricao seria estrago feito por conta propria."""
+    pid, img = _dono_da_porta(porta)
+    if pid is None:
+        sys.exit(f"[editor] a porta {porta} esta ocupada e nao consegui "
+                 f"descobrir por quem. Rode com --porta 8732.")
+    if not img.lower().startswith("python"):
+        sys.exit(f"[editor] a porta {porta} e de {img} (pid {pid}), que nao "
+                 f"e um editor deste programa. Nao derrubo processo dos "
+                 f"outros - rode com --porta 8732.")
+    subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                   capture_output=True)
+    print(f"[editor] derrubei o editor velho da porta {porta} "
+          f"({img}, pid {pid}).")
+
+
+def _abre_porta(porta, insiste=0.0):
+    """Escuta na porta, ou None se ela estiver ocupada.
+
+    `insiste` existe para depois do taskkill: o Windows costuma liberar a
+    porta na hora, mas "costuma" nao e "sempre", e falhar aqui devolveria a
+    pessoa exatamente ao lugar de onde ela veio."""
+    fim = time.monotonic() + insiste
+    while True:
+        try:
+            return ServidorEditor(("127.0.0.1", porta), Handler)
+        except OSError:
+            if time.monotonic() >= fim:
+                return None
+            time.sleep(0.15)
 
 
 def serve(video, porta=8731, abrir=True):
+    """Abre o editor, e abre mesmo: se a porta estiver ocupada, tenta a
+    saida educada (trocar de video no editor que ja esta la) e, quando ela
+    nao funciona, derruba quem esta na porta e sobe um editor novo.
+
+    A ordem e essa de proposito: trocar no editor aberto e instantaneo e
+    nao mexe no navegador que a pessoa ja tem na tela. Derrubar e o plano
+    B, e ele so e seguro porque o corte ja esta no disco antes - `grava`
+    roda a cada gesto e antes de cada subprocesso."""
     sessao = Sessao(video)
-    try:
-        srv = ServidorEditor(("127.0.0.1", porta), Handler)
-    except OSError:
-        return _troca_no_editor_aberto(sessao.nome, porta, abrir)
+    srv = _abre_porta(porta)
+    if srv is None:
+        razao = _troca_no_editor_aberto(sessao.nome, porta, abrir)
+        if razao is None:
+            return
+        print(f"[editor] a porta {porta} nao respondeu como editor deste "
+              f"programa ({razao}).")
+        _derruba_porta(porta)
+        srv = _abre_porta(porta, insiste=5.0)
+        if srv is None:
+            sys.exit(f"[editor] derrubei quem estava na porta {porta} e ela "
+                     f"continua ocupada. Rode com --porta 8732.")
     srv.sessao, srv.tarefa = sessao, Tarefa()
     url = f"http://127.0.0.1:{porta}/"
     iv = sessao.intervalos()

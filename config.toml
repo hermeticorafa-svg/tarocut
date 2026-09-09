@@ -296,7 +296,12 @@ fade         = 0.010
 # "1080p30" reduz para 1080p/30fps: ~4x mais rapido, arquivo bem menor.
 perfil       = "1080p30"
 qualidade    = 24          # menor = melhor. 20-26 e a faixa util.
-# decode e encode na GPU Intel. Se der problema, ponha false.
+# decode e encode na GPU Intel. Ate 09/09/2026 este `true` nao fazia nada -
+# a tentativa QSV faltava `-hwaccel_output_format qsv` e falhava 100% das
+# vezes, calada, caindo pro software sempre. Consertado, MEDIDO no IMG_0247
+# (70 emendas): com outro programa disputando a maquina, 267s de GPU contra
+# 1539s de software nos mesmos 15 trechos - 5,76x. Se der problema, ponha
+# false.
 gpu          = true
 
 [revisao]
@@ -457,6 +462,30 @@ deslocamento    = 0.012
 # saida pedida pelo Rafael em 02/09 e suave, direita primeiro depois
 # esquerda, uma fase apos a outra (nao se sobrepoem).
 fade_saida      = 0.4
+
+[cartas.midia]
+# Midia avulsa (foto, grafico - NAO carta do baralho, ver catalogo_midias())
+# na sintaxe do roteiro escrito a mao: "[t] arquivo.jpg; full; Xs". Pedido
+# do Rafael, 09/09/2026, especificacao (nao medicao, sem video editado a
+# mao usando isto ainda - mesmo aviso do bloco [cartas] la em cima).
+# `carta_altura`/`carta_margem` de [cartas] continuam mandando no tamanho
+# da midia QUANDO ELA NAO E full (a coluna da direita) - nao ha numero
+# novo para isso, e nao deveria haver: e o MESMO lugar da tela que a carta
+# secundaria ocupa.
+
+# quanto do quadro uma imagem 'full' pode cobrir, sem distorcer (o ffmpeg
+# escala preservando o aspecto e para na primeira das duas bater - por
+# isso sao DOIS numeros, largura e altura, e nao um so). Pedido literal do
+# Rafael: "max-width 98%, max-height 95%".
+max_largura     = 0.98
+max_altura      = 0.95
+# quanto tempo as cartas/midias da pilha levam para sumir ANTES de uma
+# imagem full aparecer, e para voltar DEPOIS que ela some - pedido literal
+# do Rafael: "fade-out de 2 segundos". O MESMO numero nos dois lados, e
+# vale para TUDO que estiver em tela naquele instante, nao so a midia
+# citada na linha - ver `_recorta_blackout` para o porque disso ser mais
+# seguro que respeitar o fade que cada carta/midia ja tinha.
+fade_cartas     = 2.0
 
 [legenda]
 # Onde quebrar o .srt que sai junto com o video. NAO e medicao contra nada

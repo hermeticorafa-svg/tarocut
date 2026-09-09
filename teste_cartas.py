@@ -534,6 +534,218 @@ diz(q.count(chr(10)) == 1 and all(len(x) <= CL["max_linha"] + 8
 diz(tc.quebra_legenda("curto", CL["max_linha"]) == "curto",
     "41: texto que cabe nao ganha quebra")
 
+# ---- audio do cartao ------------------------------------------------------
+# O botao de tocar de um cartao nao pode parar no fim do proprio texto: o
+# achado do Rafael (09/09) foi o modo cartas "pulando" audio que o modo onda
+# tocava direto - um restauro de milissegundo colado a uma emenda, ou uma
+# palavra cujo tempo o alinhador errou, sobrevivem ao corte sem que NENHUMA
+# palavra os reivindique (a regra da metade do token exclui o texto, nao o
+# som). Ver o docstring de `amplia_audio_legendas` para os dois casos MEDIDOS
+# ("3 de espadas", "4 de espadas") que motivaram isto.
+
+print("\n== audio do cartao: o botao de tocar alcanca mais que o texto")
+
+# 42. Mesmo ponto de partida do teste 34: "sai" sobrevive so 20% e nao entra
+#     na legenda. Sem cartao vizinho, o unico cartao tem de tocar da ponta a
+#     ponta do video - e la que aqueles 0,2s moram.
+st = [tok("fica", 0.0, 1.0), tok("sai", 1.0, 2.0)]
+cenas = tc.monta_legendas(st, [(0.0, 1.2)], CC_TODO)
+tc.amplia_audio_legendas(cenas, 2.0)
+diz(len(cenas) == 1 and cenas[0]["txt"] == "fica",
+    "42: mesmo ponto de partida do teste 34 - 'sai' nao entra na legenda")
+diz(aprox(cenas[0]["audio_s"], 0.0) and aprox(cenas[0]["audio_e"], 2.0),
+    f"42: sem cartao vizinho, o unico cartao toca da ponta a ponta do "
+    f"video (veio {cenas[0]['audio_s']:.2f}-{cenas[0]['audio_e']:.2f})")
+
+# 43. Dois cartoes com um RESTO entre eles: a hesitacao do meio sobrevive so
+#     10% (abaixo dos 50% que dao entrada na legenda) - a mesma forma do
+#     'elaborar,' seguido de 'e elabora.' no "4 de espadas" (34%, tambem
+#     abaixo do piso). Os dois cartoes de TEXTO tem de repartir esse resto
+#     entre si sem sobra e sem buraco.
+st = [tok("Um", 0.0, 0.5), tok("dois", 0.5, 1.0),
+      tok("resto", 1.0, 10.0, "hesitacao"), tok("Depois", 12.0, 12.5),
+      tok("disso.", 12.5, 13.0)]
+iv = [(0.0, 1.0), (8.0, 8.9), (12.0, 13.0)]
+cenas = tc.monta_legendas(st, iv, CC_TODO)
+diz(len(cenas) == 2 and cenas[0]["txt"] == "Um dois"
+    and cenas[1]["txt"] == "Depois disso.",
+    f"43: a hesitacao do meio (10% de sobrevida) nao vira cartao, e o "
+    f"buraco de saida que ela deixa quebra o cartao em dois "
+    f"(veio {[c['txt'] for c in cenas]})")
+tc.amplia_audio_legendas(cenas, 13.0)
+diz(aprox(cenas[0]["audio_s"], 0.0) and aprox(cenas[1]["audio_e"], 13.0),
+    "43: as pontas tocam da borda do video, nao da propria palavra")
+diz(aprox(cenas[0]["audio_e"], cenas[1]["audio_s"]),
+    f"43: o fim de um cartao E o comeco do proximo, byte a byte - sem "
+    f"isso o resto da hesitacao (8,0-8,9s) nao tem botao de tocar em "
+    f"lugar nenhum (veio {cenas[0]['audio_e']:.3f} != "
+    f"{cenas[1]['audio_s']:.3f})")
+
+
+def _recorta_teste(ini, fim, iv):
+    total = 0.0
+    for a, b in iv:
+        x, y = max(a, ini), min(b, fim)
+        if y > x:
+            total += y - x
+    return total
+
+
+total_iv = sum(b - a for a, b in iv)
+total_cartoes = sum(_recorta_teste(c["audio_s"], c["audio_e"], iv) for c in cenas)
+diz(aprox(total_iv, total_cartoes),
+    f"43: cartao por cartao, em ordem, toca `iv` inteiro uma vez cada "
+    f"pedaco - nada falta e nada dobra (iv tem {total_iv:.3f}s, os "
+    f"cartoes somam {total_cartoes:.3f}s)")
+
+# ---- midia avulsa e tela cheia no roteiro (09/09/2026) -------------------
+# A mesma sintaxe do roteiro, para foto/grafico que nao e carta do baralho.
+# Midia nao entra no catalogo_midias() real (nao ha arquivo em midias/ so
+# para o teste) - `parse_roteiro` aceita a lista por parametro, do mesmo
+# jeito que ja aceita `nomes` fabricado; ver a lista MIDIAS logo abaixo.
+
+MIDIAS = ["grafico.png", "mapa-astral.jpg", "outro.png"]
+FADE_FORA = CC["midia"]["fade_cartas"]
+FADE_POP = tc.FADE_POP
+
+print(f"\n== midia/tela cheia: fade_cartas={FADE_FORA}s fade_pop={FADE_POP}s "
+      f"({len(MIDIAS)} midia(s) de teste)")
+
+# 44. Midia comum entra na pilha da direita, sem lado escrito - ela nunca
+#     aceita lado, ponto 2 do pedido do Rafael.
+ev, er, no = tc.parse_roteiro("[0:30] grafico.png; 12s", "", DUR, CC_TODO,
+                               NOMES, MIDIAS)
+diz(len(ev) == 1 and not er, f"44: midia comum gera 1 evento sem erro "
+    f"(veio {len(ev)} evento(s), {len(er)} erro(s))")
+if len(ev) == 1:
+    e = ev[0]
+    diz(e["lado"] == "direita" and e["tipo"] == "midia",
+        f"44: vai para a direita, tipo midia (veio {e['lado']}/{e['tipo']})")
+    diz(aprox(e["fade_ini"], 42.0, 1e-6),
+        f"44: 'Xs' conta do tempo escrito, igual carta (esperado 42.0, "
+        f"veio {e['fade_ini']})")
+
+# 45. Midia RECUSA lado escrito - 'direita'/'esquerda' nao estao no
+#     vocabulario dela (so 'full' e o tempo).
+ev, er, no = tc.parse_roteiro("[0:30] grafico.png; direita", "", DUR,
+                               CC_TODO, NOMES, MIDIAS)
+diz(not ev and len(er) == 1,
+    f"45: midia com lado escrito vira erro, nao evento (veio {len(ev)} "
+    f"evento(s), {len(er)} erro(s))")
+
+# 46. Midia empilha com carta do mesmo lado - MESMO mecanismo de pilha,
+#     midia e carta na mesma posicao (direita) contam juntas.
+ev, er, no = tc.parse_roteiro(
+    "[0:30] A Torre; direita\n[0:40] grafico.png", "", DUR, CC_TODO,
+    NOMES, MIDIAS)
+diz([e["prof"] for e in ev] == [0, 1],
+    f"46: midia empilha sobre carta do mesmo lado (veio "
+    f"{[e['prof'] for e in ev]})")
+
+# 47. 'full' exige Xs - sem duracao, erro (nao "fica ate o rabo_final",
+#     que esconderia carta por acidente pelo video quase inteiro).
+ev, er, no = tc.parse_roteiro("[0:30] mapa-astral.jpg; full", "", DUR,
+                               CC_TODO, NOMES, MIDIAS)
+diz(not ev and len(er) == 1,
+    f"47: 'full' sem tempo vira erro (veio {len(er)} erro(s))")
+
+# 48. 'full' basico: tipo, janela e pop de entrada/saida (FADE_POP, nao o
+#     fade macio da carta - quem fadeia macio sao as cartas em volta).
+ev, er, no = tc.parse_roteiro("[0:30] mapa-astral.jpg; full; 8s", "", DUR,
+                               CC_TODO, NOMES, MIDIAS)
+diz(len(ev) == 1 and not er, f"48: 'full' basico gera 1 evento sem erro "
+    f"(veio {len(ev)} evento(s), {len(er)} erro(s))")
+if len(ev) == 1:
+    e = ev[0]
+    diz(e["tipo"] == "full", f"48: tipo == full (veio {e['tipo']})")
+    diz(aprox(e["ini"], 30.0) and aprox(e["fade_ini"], 38.0),
+        f"48: fica em tela dos 30s aos 38s (veio {e['ini']}-{e['fade_ini']})")
+    diz(aprox(e["fade_dur"], FADE_POP) and aprox(e["fade_in"], FADE_POP),
+        f"48: entra/sai em pop curto (FADE_POP={FADE_POP}), nao fade macio "
+        f"(veio fade_dur={e['fade_dur']}, fade_in={e['fade_in']})")
+
+# 49. Duas imagens full que se cobrem no tempo - recusa a segunda.
+ev, er, no = tc.parse_roteiro(
+    "[0:30] mapa-astral.jpg; full; 20s\n[0:40] grafico.png; full; 5s", "",
+    DUR, CC_TODO, NOMES, MIDIAS)
+diz(len(ev) == 1 and len(er) == 1,
+    f"49: duas imagens full sobrepostas - so a 1a sobrevive (veio "
+    f"{len(ev)} evento(s), {len(er)} erro(s))")
+
+# 50. Duas imagens full em sequencia (sem se cobrir) - as duas legitimas.
+ev, er, no = tc.parse_roteiro(
+    "[0:30] mapa-astral.jpg; full; 5s\n[1:00] grafico.png; full; 5s", "",
+    DUR, CC_TODO, NOMES, MIDIAS)
+diz(len(ev) == 2 and not er,
+    f"50: duas imagens full em sequencia sao legitimas (veio {len(ev)} "
+    f"evento(s), {len(er)} erro(s))")
+
+# 51. O CORACAO do pedido: uma imagem full apaga o que esta na pilha, com
+#     fade de `fade_cartas` segundos ANTES dela comecar e DEPOIS que ela
+#     acaba - nao importa quando a carta mesma ia sumir. 'A Torre' entra
+#     aos 10s sem tempo declarado (ia ate o rabo do video, 190s); a imagem
+#     full fica em tela dos 30s aos 38s.
+ev, er, no = tc.parse_roteiro(
+    "[0:10] A Torre; esquerda\n[0:30] mapa-astral.jpg; full; 8s", "", DUR,
+    CC_TODO, NOMES, MIDIAS)
+torres = [e for e in ev if e["carta"] == "A Torre"]
+diz(len(torres) == 2, f"51: 'A Torre' vira DOIS pedacos - antes e depois "
+    f"do buraco (veio {len(torres)})")
+if len(torres) == 2:
+    antes, depois = torres
+    diz(aprox(antes["ini"], 10.0) and aprox(antes["fade_ini"], 28.0)
+        and aprox(antes["fim"], 30.0),
+        f"51: o pedaco de ANTES some exatamente onde a imagem full comeca "
+        f"(esperado ini=10.0 fade_ini=28.0 fim=30.0, veio ini={antes['ini']} "
+        f"fade_ini={antes['fade_ini']} fim={antes['fim']})")
+    # a imagem full acaba (com o proprio pop) em 38.0+FADE_POP - e e ALI,
+    # nao `fade_fora` segundos depois, que o pedaco de DEPOIS renasce: o
+    # fade de entrada COMECA na hora, e leva `fade_fora` segundos para
+    # completar.
+    volta_em = 38.0 + FADE_POP
+    diz(aprox(depois["ini"], volta_em, 1e-6) and aprox(depois["fade_in"], FADE_FORA),
+        f"51: o pedaco de DEPOIS renasce assim que a imagem full acaba, "
+        f"com fade de entrada de {FADE_FORA}s (esperado ini={volta_em:.3f}, "
+        f"veio ini={depois['ini']} fade_in={depois['fade_in']})")
+    diz(aprox(depois["fade_ini"], 190.0, 1e-6),
+        f"51: e o fade de saida dela continua marcado para {190.0}s, o "
+        f"mesmo tempo de antes do buraco (veio {depois['fade_ini']})")
+    diz(aprox(depois["fim"], 190.0 + CC["fade"], 1e-6),
+        f"51: e mantem a MESMA duracao de saida que tinha antes do corte "
+        f"(esperado fim={190.0 + CC['fade']:.3f}, veio {depois['fim']})")
+
+# 52. Tempo de 'full' que passa do rabo_final e aparado, com NOTA - mesma
+#     regra da carta (ninguem encurta pedido em silencio).
+ev, er, no = tc.parse_roteiro("[1:00] mapa-astral.jpg; full; 400s", "", DUR,
+                               CC_TODO, NOMES, MIDIAS)
+diz(len(ev) == 1 and aprox(ev[0]["fade_ini"], DUR - RABO, 1e-6),
+    "52: tempo de 'full' longo demais e aparado no rabo do video")
+diz(len(no) == 1 and no[0]["linha"] == 1,
+    f"52: e a aparagem vira NOTA na linha (veio {len(no)} nota(s))")
+
+# 53. Nome que nao bate em carta nem em midia - mensagem cobre as duas
+#     listas, e nunca vira evento.
+ev, er, no = tc.parse_roteiro("[0:30] nao-existe.png; 5s", "", DUR, CC_TODO,
+                               NOMES, MIDIAS)
+diz(not ev and len(er) == 1,
+    f"53: nome fora dos dois catalogos vira erro (veio {len(er)} erro(s))")
+
+# 54. `_agrupa_camadas` NAO cria camada para evento tipo 'full' - ela nao
+#     tem lado nem profundidade, e quem desenha e outra parte do grafo.
+ev, er, no = tc.parse_roteiro(
+    "[0:10] A Torre; esquerda; 5s\n[0:30] mapa-astral.jpg; full; 8s", "",
+    DUR, CC_TODO, NOMES, MIDIAS)
+cam = tc._agrupa_camadas(ev)
+diz(all(c["tipo"] != "full" for c in cam) and len(cam) == 1,
+    f"54: a camada da pilha nao inclui a imagem full (veio {len(cam)} "
+    f"camada(s), tipos {[c['tipo'] for c in cam]})")
+
+# 55. `janelas_reenquadra` ignora a imagem full (lado != direita) - ela
+#     cobre o quadro sozinha, nao pede o crop da Mariana centralizada.
+jan = tc.janelas_reenquadra(ev, CC["junta_janela"])
+diz(len(jan) == 0, f"55: imagem full nao abre janela de reenquadramento "
+    f"(veio {len(jan)})")
+
 print()
 if falhas:
     for f in falhas:

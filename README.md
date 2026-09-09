@@ -229,9 +229,11 @@ venv\Scripts\python.exe tarocut.py audio "C:\Users\marip\Videos\IMG_0247.MOV"
 ```
 
 Gera um `.m4a` só com o áudio cortado, já normalizado. **~50 s para um vídeo
-de 4 min, contra 5–6 min do render de vídeo**, e 3 MB em vez de 286 MB — o
-gargalo do render é decodificar 4K60 HEVC 10 bits, e com `-vn` o ffmpeg nem
-toca no vídeo. Para julgar corte, gaguejada e volume, ouvir basta.
+de 4 min, contra alguns minutos do render de vídeo** (varia com a máquina e
+o que mais está rodando nela — o `render` usa a GPU Intel por padrão), e
+3 MB em vez de 286 MB. Com `-vn` o ffmpeg nem toca no vídeo, então o `audio`
+não sente o gargalo de decodificar 4K60 HEVC 10 bits que o `render` sente.
+Para julgar corte, gaguejada e volume, ouvir basta.
 
 ```bash
 venv\Scripts\python.exe tarocut.py previa "C:\Users\marip\Videos\IMG_0247.MOV"
@@ -312,6 +314,23 @@ finais.
   ele escolheu e quanto do tempo o rosto passa atrás de uma carta.
 - **carta do mesmo lado com outra em cena** = empilha sobre ela, e desce
   sozinha quando a de baixo sai.
+
+**Foto ou gráfico que não é carta do baralho** entra pela pasta `midias/`
+(mesmo autocomplete, mesma garantia — só entra o que estiver lá dentro).
+Duas formas de linha:
+
+```
+[2:10] grafico.png; 12s
+[3:02] mapa-astral.jpg; full; 8s
+```
+
+Sem `full`, a mídia entra na mesma pilha da direita, do mesmo tamanho de
+uma carta — mas nunca aceita `esquerda`/`direita`, ela só vai para a
+direita. Com `full`, ela ocupa o centro da tela quase inteira (`Xs` é
+obrigatório aqui) e **toda carta ou mídia que estiver em cena some com um
+fade de 2s antes dela aparecer, e volta com outro fade de 2s depois que
+ela desaparece** — é um recurso raro, para quando você precisa mostrar uma
+imagem que não é carta.
 
 **Clicar num tempo da esquerda escreve a linha na direita**, já com o
 colchete, numa quebra nova — daí é só digitar o nome da carta. Os dois
@@ -430,6 +449,10 @@ principal_entra = 3.0    # quando a carta principal entra
 rabo_final      = 10.0   # os últimos N segundos são sem carta
 carta_altura    = 0.85   # fração da altura do quadro; aperta a faixa
                          # livre do meio, e o enquadramento responde sozinho
+[cartas.midia]
+max_largura     = 0.98   # o quanto uma imagem 'full' pode cobrir do quadro
+fade_cartas     = 2.0    # quanto tempo as cartas levam para sumir/voltar
+                         # em volta de uma imagem 'full'
 [legenda]
 max_linha       = 42     # largura de uma linha do .srt
 max_segundos    = 6.0    # um cartão não fica mais que isto na tela

@@ -1961,16 +1961,19 @@ $("abrirVeu").addEventListener("click", (ev) => {
   por cima: uma linha por carta.
 
   E de novo a regra que manda em tudo o que ha aqui dentro: ESTA TELA NAO
-  DECIDE NADA. Ela nao le a sintaxe do roteiro, nao resolve nome de carta,
-  nao escolhe lado, nao calcula profundidade de pilha e nao sabe onde a
-  carta pousa no quadro. Isso tudo volta pronto do servidor, do MESMO
-  `tc.parse_roteiro` que o `exportar` chama - senao a previa mostraria uma
-  coisa e o arquivo levaria outra, que e o defeito que este programa inteiro
-  persegue. O que ela faz e escrever texto, mostrar o que voltou, e tocar.
+  DECIDE NADA. Ela nao le a sintaxe do roteiro, nao resolve nome de carta
+  nem de midia, nao escolhe lado, nao calcula profundidade de pilha e nao
+  sabe onde a carta pousa no quadro. Isso tudo volta pronto do servidor, do
+  MESMO `tc.parse_roteiro` que o `exportar` chama - senao a previa mostraria
+  uma coisa e o arquivo levaria outra, que e o defeito que este programa
+  inteiro persegue. O que ela faz e escrever texto, mostrar o que voltou, e
+  tocar. Isso vale tambem para a midia (foto/grafico avulso - nao carta do
+  baralho): a tela nem sabe que "full" apaga o resto da pilha com fade, so
+  sugere a palavra no autocomplete e mostra o evento que o servidor devolve.
 */
 
 const K = {
-  est: null,      // /cartas: as 78 cartas, os eventos, os erros, a legenda
+  est: null,      // /cartas: as cartas, as midias, os eventos, os erros, a legenda
   sig: "",        // assinatura da lista de legendas ja desenhada
   ctx: null,      // onde o cursor esta no roteiro (linha, campo, digitado)
   ops: [], sel: -1,
@@ -2104,7 +2107,12 @@ function pintaCenas(forca) {
         if (A.ctx.state === "running") { A.ctx.suspend(); atualizaBotaoCena(); atualizaBotaoGeral(); return; }
         if (A.ctx.state === "suspended") { A.ctx.resume(); atualizaBotaoCena(); atualizaBotaoGeral(); return; }
       }
-      toca(recorta(c.s, c.e));
+      // `audio_s`/`audio_e`, nao `s`/`e`: o cartao MOSTRA o envelope da
+      // palavra, mas toca ate onde o PROXIMO cartao comeca - senao audio
+      // mantido que sobrevive colado a uma emenda (um restauro de
+      // milissegundo, uma palavra que o alinhador errou) fica sem botao
+      // nenhum que o alcance. Ver `tc.amplia_audio_legendas`.
+      toca(recorta(c.audio_s, c.audio_e));
     };
     el.appendChild(p);
 
@@ -2146,11 +2154,17 @@ async function salvaCena(el, c, texto) {
 }
 
 /* A legenda que esta soando. Mesma ideia do verde da folha: o som diz onde
-   esta, e as duas telas mostram o mesmo lugar. */
+   esta, e as duas telas mostram o mesmo lugar.
+
+   Por `audio_s`/`audio_e`, nao por `s`/`e`: sao eles que o botao de tocar
+   usa (ver `pintaCenas`), e tocar tudo passa por aqui tambem (`acende` no
+   modo cartas). Casar pelo envelope do TEXTO apagaria o cartao certo bem
+   no meio do trecho que ele mesmo esta tocando, toda vez que sobrar audio
+   colado a uma emenda sem palavra que o reivindique. */
 function acendeCena(t) {
   const cenas = K.est ? K.est.legendas : [];
   let achou = -1;
-  for (const c of cenas) if (c.s <= t && t < c.e) { achou = c.n; break; }
+  for (const c of cenas) if (c.audio_s <= t && t < c.audio_e) { achou = c.n; break; }
   if (achou !== K.acesa) {
     const antes = $("cenas").querySelector(".cena.soando");
     if (antes) {
@@ -2340,7 +2354,8 @@ function pintaRoteiro() {
     d.appendChild(document.createTextNode(mmss(e.ini) + "–" + mmss(e.fim) + "  "));
     d.appendChild(b);
     d.appendChild(document.createTextNode(
-      "  " + e.lado + (e.prof ? " · empilhada " + e.prof : "")));
+      "  " + e.lado + (e.prof ? " · empilhada " + e.prof : "")
+      + (e.tipo === "midia" ? " · mídia" : "")));
     if (e.diz) {
       const s = document.createElement("span");
       s.className = "diz";
@@ -2437,10 +2452,20 @@ function contexto() {
 
 function candidatos(ctx) {
   const q = semAcento(ctx.digitado.trim());
+  // campo 0: carta do baralho OU midia avulsa (tc.catalogo_midias()) - a
+  // MESMA lista que tc.parse_roteiro aceita, entao "sera impossivel"
+  // escrever um nome que o export recuse. Nao sabemos ainda qual das duas
+  // e - so o servidor decide isso, olhando o nome inteiro - entao a
+  // sugestao junta as duas listas.
   if (ctx.campo === 0)
-    return K.est.cartas.filter((n) => semAcento(n).includes(q)).slice(0, 60);
+    return K.est.cartas.concat(K.est.midias)
+      .filter((n) => semAcento(n).includes(q)).slice(0, 60);
+  // campo 1: 'esquerda'/'direita' (so vale para carta) e 'full' (so vale
+  // para midia) - a tela nao sabe qual das duas o campo 0 virou, entao
+  // sugere as tres e deixa o servidor recusar a combinacao errada, como
+  // ja faz com tudo o mais nesta sintaxe.
   if (ctx.campo === 1)
-    return ["esquerda", "direita"].filter((n) => n.startsWith(q));
+    return ["esquerda", "direita", "full"].filter((n) => n.startsWith(q));
   return [];                                // o tempo ninguem sugere
 }
 

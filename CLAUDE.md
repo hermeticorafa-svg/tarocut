@@ -35,6 +35,7 @@ mesmos comandos.
 | `teste_revisao.py` | as promessas do passe de julgamento que quebram em silêncio |
 | `teste_cartas.py` | as promessas das cartas: o agrupamento por menção, o roteiro escrito à mão e a legenda |
 | `baralho.py` | o catálogo das 78 e o casador de menção na fala |
+| `midias/` | foto/gráfico avulso (não carta) que o roteiro à mão pode pôr na tela — `catalogo_midias()` em `tarocut.py`, não é módulo próprio |
 | `rosto.py` | onde o rosto anda — é dele que sai o reenquadramento |
 | `lexico.py` | gera `lexicon/terms.txt` a partir do livro do Yala |
 | `.claude/commands/revisar.md` | o passe de julgamento: o que o Claude lê e o que ele tem de conferir depois |
@@ -826,6 +827,45 @@ uma carta que passava do fim do vídeo é o único caso que segue em frente —
 e vira NOTA na linha, porque encurtar o pedido de alguém em silêncio é o
 mesmo defeito com outra roupa.
 
+**Mídia avulsa (foto, gráfico — não carta do baralho) usa a MESMA pilha, e
+ganhou um modo à parte.** `parse_roteiro` também aceita `catalogo_midias()`
+— os arquivos de `midias/`, pasta nova, mesma garantia da carta
+("impossível adicionar imagem que não esteja ali"). Duas formas de linha,
+as duas pedido do Rafael em 09/09/2026, especificação e não medição (zero
+vídeo editado à mão usando isto ainda):
+
+- `[1:29] grafico.png; 12s` — entra na pilha da direita pelo MESMO
+  mecanismo da carta secundária (empilha, desce, abre janela de
+  reenquadramento); nunca aceita lado escrito, porque só existe a direita
+  para ela.
+- `[1:29] mapa.jpg; full; 8s` — tela cheia, centralizada, cobrindo o maior
+  espaço possível sem distorcer (`cartas.midia.max_largura`/`max_altura`,
+  0,98/0,95). Exige `Xs`: sem duração declarada ela tomaria conta do vídeo
+  inteiro até o `rabo_final`, escondendo carta por acidente.
+
+**Uma imagem `full` apaga (e devolve) tudo que estava na pilha, com fade —
+nunca com o fade que cada carta já tinha.** É o pedido central: "as cartas
+que estiverem sendo mostradas devem ser removidas com um fade-out de 2
+segundos antes da imagem full, e retornar com um fade-in depois que ela
+desaparece." `_recorta_blackout`/`_corta_ev_full` cortam cada evento vivo
+da pilha contra a janela da imagem full — o pedaço de ANTES tem o fim
+forçado para terminar exatamente quando ela começa, com fade de
+`midia.fade_cartas` (2,0s); o pedaço de DEPOIS renasce exatamente quando
+ela acaba, com fade de entrada do mesmo tamanho.
+
+Os dois lados da janela são ASSIMÉTRICOS de propósito: o de entrada já vem
+com a folga subtraída (o fade tem que TERMINAR na hora certa), o de saída
+não tem folga nenhuma somada (o fade tem que COMEÇAR na hora certa) —
+simétrico nos dois lados deixaria a carta sumida `fade_cartas` segundos A
+MAIS depois da imagem desaparecer, que não é "voltar depois que ela
+desaparece", é "voltar um tempo depois disso". A imagem `full` em si entra
+e sai em corte seco (`FADE_POP`, o mesmo pop da carta secundária
+automática) — quem faz o fade macio são as cartas/mídias em volta dela,
+sumindo e voltando. Ela não empilha (não tem lado nem profundidade) e não
+pode se sobrepor a outra `full`: `parse_roteiro` recusa a segunda enquanto
+a primeira ainda está em tela, mesma lógica de "vivos" que já protege a
+pilha.
+
 **A pilha se conta, não se digita.** "Carta adicionada ao mesmo lado
 enquanto houver outra dá stack nessa carta" é uma regra sobre o que JÁ ESTÁ
 NA TELA, então a profundidade se calcula: quem entra pega a MENOR VAGA
@@ -922,6 +962,52 @@ Ela é irmã do `correcoes.json` e não a mesma coisa: aquele é sobre o que a
 PALAVRA diz, este é sobre o que o CARTÃO diz. Um cartão são muitas palavras
 e a volta não é decomponível.
 
+**O botão de tocar de um cartão vai além do que o cartão escreve, e por um
+tempo não ia — e foi assim que o modo cartas ficou tocando um vídeo
+diferente do que o modo onda tocava.** Achado do Rafael em 09/09, ouvindo o
+"3 de espadas" e o "4 de espadas": uma palavra sobrevivia ao corte, mas
+clicar no ▶ do cartão dela "pulava" um pedaço comprido e da palavra não
+saía som nenhum. A causa não era o corte — era o BOTÃO: ele tocava
+`recorta(c.s, c.e)`, o mesmo `[s,e]` que a regra da metade do token usa
+para decidir o TEXTO do cartão (acima). Áudio mantido não respeita esse
+envelope: um restauro de milissegundo (`montagem.json`) ou uma palavra cujo
+tempo o alinhador errou podem deixar som que sobrevive ao corte colado a um
+dos dois lados de um cartão, sem pertencer ao texto de nenhum — e sem
+pertencer ao texto de nenhum, o botão de tocar de nenhum cartão alcançava
+aquele som. O modo onda não tem esse limite (arrasta ou seleciona por
+tempo, livre de cartão); o modo cartas, tocando cartão por cartão, tinha.
+
+MEDIDO nos dois vídeos que motivaram o achado: no "3 de espadas", a palavra
+'capacidade' (316,06-317,26s) é seguida de uma retomada cortada, 'com essa
+capacidade.' (317,26-319,12s) — e um restauro de 0,80s dentro DELA
+(318,36-319,16s) sobrevivia ao corte sem que nenhum cartão alcançasse esse
+tempo: o cartão de 'capacidade' parava no fim da própria palavra, o
+seguinte só começava no 'de' em 319,22s. No "4 de espadas", 'elaborar,' é
+seguido de uma hesitação resgatada de 3,03s onde só 1,03s sobrevive
+(34%, abaixo dos 50% que dão entrada na legenda) — esse segundo de fala
+ficava sem cartão nenhum que o tocasse.
+
+`amplia_audio_legendas` fecha isso com a MESMA regra do resto desta seção:
+`s`/`e` continuam sendo o envelope do TEXTO (o que `aplica_legendas` casa e
+`escreve_srt` exporta — essa função nunca entra no caminho do `exportar`),
+mas o cartão ganha `audio_s`/`audio_e` para o BOTÃO: cada cartão toca da
+sua própria palavra inicial até onde o PRÓXIMO cartão começa, e as pontas
+tocam até a ponta do vídeo. Isso reparte a fonte inteira sem sobra e sem
+buraco — `audio_e` de um cartão É `audio_s` do próximo, o mesmo número —,
+e cartão por cartão, em ordem, passa a tocar exatamente `iv`, a mesma coisa
+que o botão de tocar tudo toca de uma vez só. Corrigido isso, o modo
+cartas e o modo onda tocam o MESMO áudio sempre, porque o modo cartas é a
+última olhada antes do render de verdade.
+
+O que esta função NÃO faz, de propósito: não decide se `capacidade` ou
+`elaborar,` deveriam sobreviver mais ou menos do que sobrevivem hoje. Isso
+é corte — `cortes`/`restauros` de `montagem.json` —, e mexer nisso sem
+medir seria o mesmo erro que este arquivo inteiro persegue, só que ao
+contrário: sobrescrever julgamento humano em vez de deixá-lo sumir. Se
+depois deste conserto uma palavra ainda soar cortada demais no modo
+cartas, a pergunta certa é ouvir de novo no modo onda e ajustar o corte
+por ali — o ajuste chega ao modo cartas pela mesma `intervalos()`, sempre.
+
 **O editor grava o corte antes de qualquer subprocesso.** O `_cumpre_carga`
 completa, AO ABRIR, a decisão de palavra que a geometria deixou pela metade
 — e isso só entrava no disco no primeiro gesto. Quem abrisse o editor e
@@ -1000,7 +1086,16 @@ cartas da direita, e as cinco recusas que impedem meio roteiro de sair
 calado. E a legenda: o relógio da saída depois da emenda, a palavra cortada
 pela metade que não entra, o rótulo do programa que não vira texto, a fala
 recuperada que vira, e a edição à mão que casa pelo tempo de fonte — ou
-volta como órfã, se o corte a levou embora.
+volta como órfã, se o corte a levou embora. E o áudio do cartão: o botão de
+tocar de cada um alcança até onde o próximo cartão começa, nunca só o
+próprio texto, e cartão por cartão, em ordem, cobre `iv` inteiro sem sobra
+e sem buraco — a garantia que faz o modo cartas tocar o MESMO áudio que o
+modo onda. E a mídia avulsa: sem lado escrito, empilhando na MESMA pilha
+da direita, `full` exigindo `Xs`, duas imagens `full` não podem se
+sobrepor, e o coração do recorte — uma carta viva antes de uma imagem
+`full` some com fade terminando exatamente onde ela começa, e volta com
+fade começando exatamente onde ela acaba, nunca com folga somada nos dois
+lados ao mesmo tempo.
 
 **Rode `conferir` antes de ouvir.** Ele lê o corte pela mesma função do
 `render` e lista só o suspeito: pendência sem resposta, anotação
@@ -1012,10 +1107,27 @@ ouvia — foi assim que seis defeitos chegaram juntos a ele, nenhum de
 julgamento de conteúdo. `conferir <video> --em 3:05` traduz um tempo da
 prévia de volta para a fonte.
 
-Depois ouça, não renderize: `audio` sai em ~50 s (3 MB) contra 5–6 min do
-`render` (286 MB) — o gargalo é decodificar 4K60 HEVC 10 bits. `render
---dry-run` mostra quanto sai sem gastar tempo. `previa` abre no mpv quando a
-dúvida for visual.
+Depois ouça, não renderize: `audio` sai em ~50 s (3 MB) contra alguns
+minutos do `render` (286 MB) — o gargalo era decodificar 4K60 HEVC 10 bits
+em software, e virou GPU por padrão (`[render].gpu = true`) em 09/09/2026:
+`grafo()` ganhou o parâmetro `hw` que `grafo_cartas` já tinha, e `_corta_final`
+passou a mandar `-hwaccel_output_format qsv` — sem isso o ffmpeg 9 entrega
+quadro de GPU do mesmo jeito e o grafo de software quebra, que era por que a
+tentativa QSV falhava 100% das vezes antes e o render caia pro software
+calado. `render --dry-run` mostra quanto sai sem gastar tempo. `previa` abre
+no mpv quando a dúvida for visual.
+
+**"quanto tempo" não tem resposta única - depende do que mais a máquina
+está fazendo.** MEDIDO no IMG_0247 (677s, 70 emendas, `1080p30`): 17min7s
+com um editor de vídeo concorrente disputando CPU/GPU. Um teste pareado de
+15 trechos, SOB A MESMA disputa (GPU e software rodados em sequência, um
+logo depois do outro): GPU 267,1s contra software 1539,3s (25,6min) - 5,76x
+mais rápido, mesmo com a máquina ocupada. Numa máquina livre a proporção
+deve ser parecida ou melhor; o número absoluto, não - a CPU de 15W deste
+projeto sofre mais com disputa que uma GPU dedicada. O corte em si não muda
+com a GPU (framemd5 idêntico em pts/dts/tamanho nos 10 primeiros trechos do
+IMG_0247; só o pixel muda, porque o algoritmo de escala da GPU é diferente
+do `scale` de software - mesma diferença já documentada em `grafo_cartas`).
 
 Os vídeos de calibração são **IMG_0246, IMG_0247 e IMG_0248** — já julgados,
 com `anotacoes.json` pronto. É contra eles que os números do `config.toml`
