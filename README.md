@@ -283,15 +283,73 @@ longe da emenda. Ouça e conserte a borda no editor; mexer na anotação não
 resolve, porque a anotação está ancorada num tempo que a palavra não
 ocupa.
 
-**4. Export**:
+**4. As cartas e a legenda** — no editor, o botão **cartas** parte a tela ao
+meio. À esquerda, o texto que **sobrou** do corte, uma linha por legenda,
+com o tempo do vídeo pronto e um ▶ para ouvir só aquele trecho. À direita,
+o roteiro das cartas.
+
+O texto da esquerda é editável: é dele que sai o `.srt` que acompanha o
+vídeo. Ele já vem escrito com o que se ouve; corrija o que quiser, aperte
+enter, e a correção fica azul (a mesma cor que a folha usa para "isto foi
+uma pessoa"). Apagar tudo devolve o texto automático. Os tempos não se
+editam — eles são o corte.
+
+À direita, marque **este vídeo é sobre uma carta** e escolha a carta: ela
+entra à esquerda aos 3 s e fica até 10 s antes do fim (os últimos 10 s são
+só você falando). Abaixo, uma carta por linha:
+
+```
+[1:29] Rainha de Copas; direita; 12s
+```
+
+O nome da carta tem autocomplete com as 78 do baralho — as mesmas de que
+sai a imagem, então **não dá para errar o nome**. `esquerda`/`direita` também.
+O lado e o tempo são opcionais: sem tempo, a carta fica até aqueles 10 s
+finais.
+
+- **carta à direita** = a Mariana vai para o centro, com uma carta de cada
+  lado. O enquadramento sai do rastreio de rosto, e o rodapé diz o zoom que
+  ele escolheu e quanto do tempo o rosto passa atrás de uma carta.
+- **carta do mesmo lado com outra em cena** = empilha sobre ela, e desce
+  sozinha quando a de baixo sai.
+
+**Clicar num tempo da esquerda escreve a linha na direita**, já com o
+colchete, numa quebra nova — daí é só digitar o nome da carta. Os dois
+lados falam o mesmo relógio (o do vídeo pronto), então não há tradução no
+meio.
+
+Linha que o programa não entende sai em vermelho, na linha, e o export
+recusa até você consertar — meio roteiro renderizado calado seria pior. E
+cada carta aceita aparece no rodapé com **o que se ouve naquele instante**,
+entre aspas: se você mexer no corte depois de escrever o roteiro, é aí que
+o escorregão aparece.
+
+Dois botões exportam, e os dois escrevem o `.srt` junto (desmarque `.srt
+junto` se não quiser):
+
+- **prévia lo-res** — 360p/15fps com o **áudio final**. Minutos, e é ela que
+  se olha para aprovar a dança das cartas.
+- **vídeo final** — resolução do original, o mesmo áudio, as cartas
+  bakeadas. Sai ao lado do arquivo de origem, como `<vídeo>_final.mov`.
+
+Pela linha de comando é o mesmo:
+
+```bash
+venv\Scripts\python.exe tarocut.py exportar "C:\Users\marip\Videos\IMG_0247.MOV" --previa
+```
+
+**5. Export sem carta nenhuma** — se o vídeo não leva carta:
+
 
 ```bash
 venv\Scripts\python.exe tarocut.py render "C:\Users\marip\Videos\IMG_0247.MOV"
 ```
 
-Sai um `.mov` cortado, com o volume corrigido, pronto pro CapCut.
+Sai um `.mov` cortado, com o volume corrigido, pronto pro CapCut. (O
+`exportar` faz a mesma coisa quando o roteiro de cartas esta vazio, e
+ainda escreve o `.srt`.)
 
-Os passos 2 e 3 são opcionais: sem eles, o render usa as propostas
+Os passos 2, 3 e 4 são opcionais: sem eles, o render usa as propostas
 automáticas.
 
 ---
@@ -361,6 +419,25 @@ Se ficar agressivo demais, mexa aqui:
 pausa_alvo      = 0.45   # pausa longa vira isto
 pausa_intocavel = 0.75   # abaixo disto nem toca
 ```
+
+As cartas e a legenda têm blocos próprios, e nenhum deles é medição contra
+vídeo editado à mão — são o que você pediu, e o comentário de cada um diz
+isso:
+
+```toml
+[cartas]
+principal_entra = 3.0    # quando a carta principal entra
+rabo_final      = 10.0   # os últimos N segundos são sem carta
+carta_altura    = 0.85   # fração da altura do quadro; aperta a faixa
+                         # livre do meio, e o enquadramento responde sozinho
+[legenda]
+max_linha       = 42     # largura de uma linha do .srt
+max_segundos    = 6.0    # um cartão não fica mais que isto na tela
+```
+
+Se o render final com cartas ficar lento (é o `overlay` em 4K que custa),
+o botão é `[render].perfil = "1080p30"`: ~4x mais rápido, e ainda deixa a
+carta mais nítida, porque em 1080p ela é reduzida em vez de ampliada.
 
 O léxico fica em `lexicon/`:
 

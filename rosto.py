@@ -157,15 +157,48 @@ def suaviza(amostras, janela=5):
 
 
 def resumo(amostras, suaves):
+    """Onde o rosto andou, em fracao do quadro.
+
+    `topo_min` e `alt_med` vieram depois (09/09/2026) e existem por um
+    motivo so: sem a ALTURA da caixa do rosto nao da para reenquadrar sem
+    cortar a cabeca. O `cy` e o CENTRO do rosto, e uma janela montada em
+    volta dele passa a lamina no meio da testa - foi o que aconteceu na
+    primeira previa do layout 3 que de fato reenquadrou (ver
+    `tarocut._janela_layout3`). `topo_min` e o ponto mais alto que a cabeca
+    alcanca no video inteiro; e dele que a folga se mede.
+
+    Percentil 5, e nao o minimo: uma deteccao ruim isolada - meia cara no
+    canto do quadro, um rosto no cartaz da parede - subiria o topo do
+    enquadramento do video inteiro. A `suaviza` protege `cx`/`cy` com
+    mediana movel pela mesma razao, mas ela joga fora `w`/`h` no caminho,
+    entao aqui a defesa e o percentil sobre as amostras cruas."""
     cobertura = sum(1 for a in amostras if a["achou"]) / max(1, len(amostras))
     if not suaves:
         return {"cobertura": cobertura}
     cxs = [s["cx"] for s in suaves]
     cys = [s["cy"] for s in suaves]
+    achou = [a for a in amostras if a["achou"]]
+    extra = {}
+    if achou:
+        topos = [a["cy"] - a["h"] / 2 for a in achou]
+        extra = {"topo_min": float(np.percentile(topos, 5)),
+                 "alt_med": float(np.median([a["h"] for a in achou]))}
     return {
         "cobertura": cobertura,
         "cx_min": min(cxs), "cx_max": max(cxs),
         "cy_min": min(cys), "cy_max": max(cys),
+        # ONDE ELA FICA, que nao e o meio de onde ela ANDA: o enquadramento
+        # se centra nisto (ver `tarocut._janela_layout3`). Ela se inclina de
+        # vez em quando, e o meio do vaivem puxa o quadro para o lado da
+        # inclinacao - a mediana fica onde ela passa a maior parte da aula.
+        "cx_med": float(np.median(cxs)), "cy_med": float(np.median(cys)),
+        # p5/p95, e nao min/max: e contra ELES que o enquadramento
+        # decide, e um segundo de inclinacao maxima nao pode mandar no
+        # quadro do video inteiro. O min/max continua ali porque e o que
+        # diz o tamanho do vaivem.
+        "cx_p05": float(np.percentile(cxs, 5)),
+        "cx_p95": float(np.percentile(cxs, 95)),
+        **extra,
     }
 
 

@@ -294,7 +294,7 @@ fade         = 0.010
 # "igual" preserva codec, resolucao, fps e cor do original (HEVC 10-bit
 # HLG). E o que entra no CapCut do jeito que voce ja esta acostumado.
 # "1080p30" reduz para 1080p/30fps: ~4x mais rapido, arquivo bem menor.
-perfil       = "igual"
+perfil       = "1080p30"
 qualidade    = 24          # menor = melhor. 20-26 e a faixa util.
 # decode e encode na GPU Intel. Se der problema, ponha false.
 gpu          = true
@@ -391,6 +391,29 @@ carta_margem    = 0.025
 # a janela de crop do layout 3 (Mariana centralizada) - fracao do quadro
 crop_margem     = 0.08
 
+# --- roteiro escrito a mao (o "modo cartas" do editor) -----------------
+# Os quatro numeros abaixo NAO sao medicao, e nao ha video editado a mao
+# para medir contra: sao a especificacao que o Rafael ditou em 09/09/2026
+# ao pedir o modo cartas. Estao aqui, e nao como valor padrao de
+# parametro, pela regra do CLAUDE.md - default de parametro e um segundo
+# lugar decidindo a mesma coisa.
+
+# quanto tempo depois do inicio do video a carta PRINCIPAL entra (com o
+# fade de `fade`). Ela fica a esquerda o video inteiro dali em diante.
+principal_entra = 3.0
+# os ultimos segundos do video nao levam carta nenhuma: "sempre e so a
+# Mariana falando, sem cartas". E daqui que sai o fim de toda carta sem
+# tempo declarado no roteiro - inclusive o da principal - e e aqui que
+# uma carta com `Xs` longo demais e aparada (com nota na tela, nunca em
+# silencio).
+rabo_final      = 10.0
+# dois trechos com carta a DIREITA separados por menos que isto viram uma
+# janela so de reenquadramento. Sem isso, duas cartas a direita a um
+# segundo uma da outra fariam a Mariana pular do centro para o quadro
+# inteiro e voltar - o zoom piscaria por nada. Gosto declarado, nao
+# medicao: veja na previa antes de mexer.
+junta_janela    = 2.0
+
 [cartas.enumeracao]
 # Layout 4 (empilhamento), que o plano original de 'adicionar cartas'
 # deixou de fora. Pedido do Rafael em 02/09: quando o video NAO tem uma
@@ -434,6 +457,34 @@ deslocamento    = 0.012
 # saida pedida pelo Rafael em 02/09 e suave, direita primeiro depois
 # esquerda, uma fase apos a outra (nao se sobrepoem).
 fade_saida      = 0.4
+
+[legenda]
+# Onde quebrar o .srt que sai junto com o video. NAO e medicao contra nada
+# deste projeto: e convencao de legendagem (Netflix, BBC e a maioria dos
+# guias publicos batem nesses numeros), escolhida porque nao ha video
+# legendado a mao para medir contra. Quem manda no texto e o editor: cada
+# cartao e editavel na tela e a decisao vai para `legendas.json`.
+#
+# O relogio da legenda e o da SAIDA, sempre - e o unico que existe para
+# quem assiste o video pronto.
+
+# largura de uma linha e teto de um cartao (duas linhas). Acima disso, a
+# legenda cobre a carta e some do celular.
+max_linha       = 42
+max_caracteres  = 84
+# um cartao nao fica mais que isto na tela, nem menos que aquilo. O minimo
+# so ESTICA o fim do cartao, e nunca por cima do proximo: cartao de 0,3 s
+# pisca e nao se le.
+max_segundos    = 6.0
+min_segundos    = 1.2
+# silencio entre duas palavras (no relogio da SAIDA) que fecha o cartao
+# mesmo com espaco de sobra. E a respiracao da frase - e depois do corte
+# ela vale mais que antes, porque a pausa que sobrou foi escolhida.
+pausa_quebra    = 0.7
+# ponto/interrogacao/reticencias so fecham o cartao se ele ja tiver pelo
+# menos isto de texto. Sem esse piso, "Sim." vira um cartao sozinho e a
+# legenda passa a piscar em toda frase curta.
+min_caracteres  = 24
 
 [alinhamento]
 # Quanto o alinhador (wav2vec2) pode discordar do Whisper sobre ONDE a

@@ -170,6 +170,25 @@ class Sessao:
             self._carrega_correcoes(corr)
         self._aplica_correcoes()
 
+        # ---- modo cartas ------------------------------------------------
+        # As 78 cartas saem do disco UMA vez: e a mesma lista que alimenta
+        # o autocomplete da tela, o parser do roteiro e a imagem do
+        # overlay. Reler a pasta a cada tecla digitada seria absurdo, e ter
+        # uma segunda lista em JS seria pior - o dia em que uma carta
+        # entrasse na pasta, a tela ofereceria carta que o export recusa.
+        self.cartas_nomes = tc.catalogo_cartas()
+        rot = tc.carrega_roteiro(self.d) or {}
+        self.principal = rot.get("principal") or ""
+        self.roteiro = rot.get("roteiro") or ""
+        self.sem_legenda = bool(rot.get("sem_legenda"))
+        # o corte contra o qual o roteiro foi escrito da ultima vez. Ver
+        # `tc.roteiro_caducou`: o relogio do roteiro e o da SAIDA, e um
+        # corte novo escorrega todos os tempos de uma vez.
+        self.roteiro_mantido = rot.get("mantido")
+        self.legendas = {}
+        for it in (tc.carrega_legendas(self.d) or {}).get("itens", []):
+            self.legendas[(round(it["s"], 3), round(it["e"], 3))] = dict(it)
+
         self.pilha = []
         # RLock, e nao Lock: `acao` segura a tranca e chama `estado`,
         # que chama `intervalos`. E ela e necessaria porque o
@@ -859,9 +878,28 @@ class Sessao:
                 mudou = False
 
             if mudou:
-                tc.jdump(self.montagem(), self.d / "montagem.json")
-                tc.jdump(self.correcoes_doc(), self.d / "correcoes.json")
+                self.grava()
             return self.enxuga(self.estado(ini, fim, i0, i1, mudou))
+
+    def grava(self):
+        """Poe no disco o corte que a TELA esta mostrando.
+
+        Sai do `acao` porque agora ha um segundo momento em que isso e
+        obrigatorio: antes de qualquer subprocesso (`audio`, `render`,
+        `exportar`) ler o `montagem.json`. O `_cumpre_carga` completa a
+        decisao de palavra que a geometria deixou pela metade AO ABRIR, e
+        so entrava no disco no primeiro gesto - quem abrisse o editor e
+        clicasse direto em "exportar" recebia um arquivo com o corte de
+        antes da correcao, ate 2 s diferente do que a tela mostrava.
+        MEDIDO no "2 de espadas": o editor mostra 2min18 e o disco tinha
+        2min16.
+
+        Nao e gravacao silenciosa: o que vai para o disco e exatamente o
+        que esta na tela, e a diferenca que a carga corrigiu ja esta
+        escrita no `aviso` desde que a sessao abriu."""
+        with self.lock:
+            tc.jdump(self.montagem(), self.d / "montagem.json")
+            tc.jdump(self.correcoes_doc(), self.d / "correcoes.json")
 
     # ------------------------------------------------------------- a tela
 
@@ -1185,6 +1223,133 @@ class Sessao:
                             "previa": round(prev, 2)})
             return out
 
+    # --------------------------------------------------------- modo cartas
+
+    def _cenas(self, iv):
+        """Os cartoes de legenda deste corte, com o que foi escrito a mao
+        por cima. Sai de `tc.monta_legendas` - o MESMO lugar de onde sai o
+        .srt do `exportar` -, senao a tela mostraria uma legenda e o
+        arquivo levaria outra."""
+        cenas = tc.monta_legendas(self.stream, iv, self.C)
+        orfas = tc.aplica_legendas(cenas, list(self.legendas.values()))
+        return cenas, orfas
+
+    def cartas_estado(self):
+        """Tudo o que a tela do modo cartas precisa, de uma vez.
+
+        Quem le o roteiro e monta os eventos e o `tc.parse_roteiro` - o
+        MESMO que o `exportar` usa. A tela nao decide que carta aparece,
+        nem quando, nem de que lado, pela mesma razao que ela nao calcula
+        corte: duas leituras da mesma sintaxe divergem, e a que diverge
+        calada e a que ninguem esta olhando.
+
+        Cada evento volta com o `diz` - o que se ouve naquele instante,
+        tirado do proprio cartao de legenda. E ele, e nao o aviso de
+        caducidade, a defesa de verdade contra o corte que mudou depois do
+        roteiro: um `[1:29]` que escorregou passa a mostrar outra frase, na
+        linha, na hora."""
+        with self.lock:
+            iv = self.intervalos()
+            mantido = sum(b - a for a, b in iv)
+            cenas, orfas = self._cenas(iv)
+            eventos, erros, notas = tc.parse_roteiro(
+                self.roteiro, self.principal, mantido, self.C,
+                self.cartas_nomes)
+            for ev in eventos:
+                c = next((x for x in cenas
+                          if x["ini"] <= ev["ini"] <= x["fim"]), None)
+                if c is None:
+                    c = min(cenas, key=lambda x: abs(x["ini"] - ev["ini"]),
+                            default=None)
+                ev["diz"] = (c["txt"][:70] if c else "")
+            return {
+                "principal": self.principal,
+                "roteiro": self.roteiro,
+                "semLegenda": self.sem_legenda,
+                "cartas": self.cartas_nomes,
+                "eventos": eventos,
+                "erros": erros,
+                "notas": notas,
+                "mantido": round(mantido, 2),
+                "caducou": tc.roteiro_caducou(
+                    {"mantido": self.roteiro_mantido}, mantido),
+                "legendas": cenas,
+                "orfas": orfas,
+                "rabo": self.C["cartas"]["rabo_final"],
+                "entra": self.C["cartas"]["principal_entra"],
+            }
+
+    def _grava_roteiro(self, mantido):
+        tc.jdump({"versao": 1, "video": self.src.name,
+                  "principal": self.principal, "roteiro": self.roteiro,
+                  "sem_legenda": self.sem_legenda,
+                  # o corte de AGORA, gravado so quando ele salva de dentro
+                  # do modo cartas - que e onde ele ve, linha por linha, o
+                  # que se ouve em cada tempo. Ver `cartas_estado`.
+                  "mantido": round(mantido, 3)},
+                 self.d / "cartas-roteiro.json")
+
+    def salva_cartas(self, b):
+        """Grava o roteiro e a carta principal. Devolve o estado novo."""
+        with self.lock:
+            if "principal" in b:
+                nome = str(b.get("principal") or "").strip()
+                self.principal = nome
+            if "roteiro" in b:
+                self.roteiro = str(b.get("roteiro") or "")
+            if "semLegenda" in b:
+                self.sem_legenda = bool(b.get("semLegenda"))
+            self.roteiro_mantido = sum(x - a for a, x in self.intervalos())
+            self._grava_roteiro(self.roteiro_mantido)
+            # o roteiro fala no relogio da SAIDA, e a saida vem do corte:
+            # salvar um sem o outro deixaria no disco um roteiro medido
+            # contra um corte que o disco nao tem.
+            self.grava()
+            return self.cartas_estado()
+
+    def salva_legenda(self, b):
+        """O texto de UM cartao de legenda, escrito a mao.
+
+        Casa pelo TEMPO DE FONTE do cartao, nunca pelo numero - um corte
+        novo renumera todos os de baixo e a edicao passaria a valer para
+        outra frase (mesma regra do `montagem.json` e da resposta de
+        pendencia).
+
+        Texto vazio volta ao automatico, e e assim que se desfaz: e a mesma
+        convencao do `_corrige` para a palavra. Legenda vazia de verdade
+        nao existe - o cartao sumiria do .srt sem nada dizer que ele sumiu.
+
+        `orig` guarda o texto automatico do dia da edicao, para o editor
+        poder dizer depois que o de baixo mudou: a edicao continua valendo
+        por ser a mais explicita, mas quem olha merece saber que ela ficou
+        para tras."""
+        with self.lock:
+            iv = self.intervalos()
+            cenas, _ = self._cenas(iv)
+            try:
+                s, e = float(b.get("s")), float(b.get("e"))
+            except (TypeError, ValueError):
+                return None
+            alvo = next((c for c in cenas if abs(c["s"] - s) <= 0.05
+                         and abs(c["e"] - e) <= 0.05), None)
+            if alvo is None:
+                return None
+            novo = " ".join(str(b.get("texto") or "").split())
+            chave = (round(alvo["s"], 3), round(alvo["e"], 3))
+            if not novo or novo == alvo["auto"]:
+                self.legendas.pop(chave, None)
+            else:
+                prev = self.legendas.get(chave)
+                self.legendas[chave] = {
+                    "s": chave[0], "e": chave[1],
+                    "orig": prev["orig"] if prev else alvo["auto"],
+                    "novo": novo}
+            tc.jdump({"versao": 1, "video": self.src.name,
+                      "itens": [self.legendas[k]
+                                for k in sorted(self.legendas)]},
+                     self.d / "legendas.json")
+            return self.cartas_estado()
+
     # ------------------------------------------------------------ documento
 
     def doc(self):
@@ -1328,6 +1493,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._envia(S.wav.read_bytes(), "audio/wav")
             if rota == "/videos":
                 return self._envia({"videos": videos_disponiveis(S.nome)})
+            if rota == "/cartas":
+                return self._envia(S.cartas_estado())
             self._envia({"erro": "nao existe"}, codigo=404)
         except (BrokenPipeError, ConnectionAbortedError):
             pass
@@ -1348,13 +1515,37 @@ class Handler(BaseHTTPRequestHandler):
                     return self._envia(S.em_previa(b.get("previa")))
                 except (TypeError, ValueError):
                     return self._envia({"erro": "tempo invalido"}, codigo=400)
+            if rota == "/cartas":
+                return self._envia(S.salva_cartas(b))
+            if rota == "/legenda":
+                est = S.salva_legenda(b)
+                if est is None:
+                    return self._envia(
+                        {"erro": "esse cartao de legenda nao existe mais - "
+                                 "o corte mudou"}, codigo=409)
+                return self._envia(est)
             if rota == "/rodar":
                 cmd = b.get("cmd")
-                if cmd not in ("audio", "render", "conferir", "previa"):
+                if cmd not in ("audio", "render", "conferir", "previa",
+                               "exportar", "exportar-previa"):
                     return self._envia({"erro": "comando desconhecido"},
                                        codigo=400)
-                argv = [sys.executable, str(ROOT / "tarocut.py"), cmd,
-                        str(S.video)]
+                # O export leva bandeira; os outros nao. Quem decide se a
+                # legenda sai e o proprio roteiro (o `sem_legenda` gravado
+                # no `cartas-roteiro.json`), e nao o botao: o comando de
+                # linha tem de fazer a mesma coisa que o botao faz.
+                # o subprocesso le o corte do DISCO; a tela pode estar
+                # mostrando um que ainda nao chegou la (ver `grava`).
+                S.grava()
+                argv = [sys.executable, str(ROOT / "tarocut.py")]
+                if cmd.startswith("exportar"):
+                    argv += ["exportar", str(S.video)]
+                    if cmd.endswith("previa"):
+                        argv.append("--previa")
+                    if S.sem_legenda:
+                        argv.append("--sem-legenda")
+                else:
+                    argv += [cmd, str(S.video)]
                 return self._envia({"ok": T.roda(argv, cmd)})
             if rota == "/cancelar":
                 if T.rodando:

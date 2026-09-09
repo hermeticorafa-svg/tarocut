@@ -23,7 +23,8 @@ import tarocut as tc
 
 IV_SEM_CORTE = [(0.0, 1_000_000.0)]
 
-CC = tc.cfg()["cartas"]
+CC_TODO = tc.cfg()
+CC = CC_TODO["cartas"]
 ATRASO, PERSIST = CC["atraso"], CC["persistencia"]
 
 falhas = []
@@ -199,7 +200,7 @@ if len(eventos) == 3:
     diz(eventos[2]["lado"] == "direita" and eventos[2]["prof"] == 0,
         "9: 2a mencao da 2a sessao vai para direita/prof 0")
 
-# 10. _agrupa_camadas_enumeracao: duas sessoes que colocam a MESMA carta
+# 10. _agrupa_camadas: duas sessoes que colocam a MESMA carta
 #     na MESMA posicao de pilha (esquerda/prof 0) viram 1 camada so, com
 #     2 ocorrencias - nao 2 camadas (e o que faz o overlay caro por
 #     camada nao dobrar de custo so porque a carta se repete).
@@ -207,7 +208,7 @@ gap_longo = PERSIST + 5.0
 m = [menc("Rainha de Copas", 10.0, 10.3),
      menc("Rainha de Copas", 10.3 + gap_longo, 10.3 + gap_longo + 0.3)]
 eventos, _ = tc._agrupa_cartas_enumeracao(m, IV_SEM_CORTE, CC, CE)
-camadas = tc._agrupa_camadas_enumeracao(eventos)
+camadas = tc._agrupa_camadas(eventos)
 diz(len(eventos) == 2, f"10: 2 sessoes isoladas geram 2 eventos (veio {len(eventos)})")
 diz(len(camadas) == 1, f"10: mesma carta na mesma posicao vira 1 camada so "
     f"(veio {len(camadas)})")
@@ -221,7 +222,7 @@ if len(camadas) == 1:
 m = [menc("Rainha de Copas", 10.0, 10.3),
      menc("Rei de Copas", 10.3 + gap_longo, 10.3 + gap_longo + 0.3)]
 eventos, _ = tc._agrupa_cartas_enumeracao(m, IV_SEM_CORTE, CC, CE)
-camadas = tc._agrupa_camadas_enumeracao(eventos)
+camadas = tc._agrupa_camadas(eventos)
 diz(len(camadas) == 2, f"11: cartas diferentes na mesma posicao NAO fundem "
     f"(veio {len(camadas)} camada(s), esperado 2)")
 
@@ -245,6 +246,293 @@ if len(eventos) == 3:
         f"12: o Cavaleiro (3o evento de verdade) vai pra esquerda/prof 1, "
         f"nao direita (a mencao ignorada nao consome lado nem "
         f"profundidade) (veio {eventos[2]['lado']}/{eventos[2]['prof']})")
+
+
+# ---- roteiro escrito a mao (o "modo cartas" do editor) -------------------
+# O outro autor das cartas. `cmd_cartas` adivinha pela fala; aqui quem
+# escreve e ele, e o que quebra calado e diferente: uma linha que o parser
+# nao entende e some, uma pilha que se sobrepoe, um tempo que caiu nos
+# segundos finais onde nao ha carta. Nenhuma dessas aparece na previa como
+# erro - aparece como carta que nao esta la, e ninguem conta as cartas que
+# faltam.
+
+DUR = 200.0                       # duracao do CORTE (relogio da saida)
+ENTRA, RABO = CC["principal_entra"], CC["rabo_final"]
+FADE = CC["fade"]
+NOMES = tc.catalogo_cartas()
+
+print(f"\n== roteiro a mao: principal_entra={ENTRA}s rabo_final={RABO}s "
+      f"fade={FADE}s ({len(NOMES)} cartas no catalogo)")
+
+# 13. As 78 cartas do baralho, e o autocomplete da tela sai desta lista.
+diz(len(NOMES) == 78, f"13: o catalogo tem as 78 cartas (veio {len(NOMES)})")
+
+# 14. A carta principal, sozinha: esquerda, fundo da pilha, do
+#     `principal_entra` ao `rabo_final`. E o unico evento que nao vem de
+#     uma linha escrita.
+ev, er, no = tc.parse_roteiro("", "2 de Espadas", DUR, CC_TODO, NOMES)
+diz(len(ev) == 1 and not er, f"14: principal sozinha gera 1 evento sem erro "
+    f"(veio {len(ev)} evento(s), {len(er)} erro(s))")
+if len(ev) == 1:
+    p = ev[0]
+    diz(p["lado"] == "esquerda" and p["prof"] == 0,
+        f"14: a principal e a ancora - esquerda, fundo da pilha (veio "
+        f"{p['lado']}/{p['prof']})")
+    diz(aprox(p["ini"], ENTRA, 1e-6),
+        f"14: entra em {ENTRA}s (veio {p['ini']})")
+    diz(aprox(p["fade_ini"], DUR - RABO, 1e-6),
+        f"14: comeca a sumir {RABO}s antes do fim (esperado {DUR - RABO}, "
+        f"veio {p['fade_ini']})")
+
+# 15. Sem tempo declarado, qualquer carta vai ate o mesmo lugar: os
+#     `rabo_final` segundos finais sao sem carta, e isso vale para todas.
+ev, er, no = tc.parse_roteiro("[0:30] A Torre; direita", "", DUR, CC_TODO, NOMES)
+diz(len(ev) == 1 and aprox(ev[0]["fade_ini"], DUR - RABO, 1e-6),
+    f"15: carta sem tempo vai ate o rabo do video (esperado {DUR - RABO})")
+
+# 16. Com tempo, `Xs` e o tempo VISIVEL - o fade comeca depois dele.
+ev, er, no = tc.parse_roteiro("[0:30] A Torre; direita; 12s", "", DUR, CC_TODO, NOMES)
+diz(len(ev) == 1 and aprox(ev[0]["fade_ini"], 42.0, 1e-6),
+    f"16: '12s' conta a partir do tempo escrito (esperado 42,0, veio "
+    f"{ev[0]['fade_ini'] if ev else '-'})")
+diz(len(ev) == 1 and aprox(ev[0]["fim"], 42.0 + FADE, 1e-6),
+    f"16: e o fade de saida vem DEPOIS dos 12s, nao dentro deles")
+
+# 17. Tempo que passa do rabo e aparado - com NOTA, nunca calado. Encurtar
+#     o pedido de alguem em silencio e o defeito que este programa persegue.
+ev, er, no = tc.parse_roteiro("[0:30] A Torre; direita; 400s", "", DUR, CC_TODO, NOMES)
+diz(len(ev) == 1 and aprox(ev[0]["fade_ini"], DUR - RABO, 1e-6),
+    "17: tempo longo demais e aparado no rabo do video")
+diz(len(no) == 1 and no[0]["linha"] == 1,
+    f"17: e a aparagem vira NOTA na linha (veio {len(no)} nota(s) "
+    f"na linha {no[0]['linha'] if no else '-'})")
+
+# 18. A pilha se CONTA, nao se digita: a 2a carta do mesmo lado empilha
+#     sobre a 1a enquanto ela estiver viva.
+ev, er, no = tc.parse_roteiro(
+    "[0:30] A Torre; esquerda\n[0:40] A Morte; esquerda", "", DUR, CC_TODO, NOMES)
+diz([e["prof"] for e in ev] == [0, 1],
+    f"18: segunda carta do mesmo lado empilha (veio {[e['prof'] for e in ev]})")
+
+# 19. E DESCE quando a de baixo sai. Sem isso, um video comprido faria a
+#     pilha marchar para o centro a cada carta nova.
+ev, er, no = tc.parse_roteiro(
+    "[0:30] A Torre; esquerda; 5s\n[1:00] A Morte; esquerda", "", DUR, CC_TODO, NOMES)
+diz([e["prof"] for e in ev] == [0, 0],
+    f"19: a pilha desce quando a de baixo ja saiu (veio "
+    f"{[e['prof'] for e in ev]})")
+
+# 20. Com principal, a carta a esquerda empilha SOBRE ela - a principal
+#     ocupa o fundo o video inteiro.
+ev, er, no = tc.parse_roteiro("[0:30] A Torre; esquerda", "A Morte", DUR,
+                               CC_TODO, NOMES)
+diz([e["prof"] for e in ev] == [0, 1] and ev[0]["carta"] == "A Morte",
+    f"20: com principal, a carta da esquerda empilha sobre ela (veio "
+    f"{[(e['carta'], e['prof']) for e in ev]})")
+
+# 21. Carta a direita = layout 3 (Mariana ao centro). A janela de
+#     reenquadramento sai das cartas da DIREITA e de mais nada.
+ev, er, no = tc.parse_roteiro(
+    "[0:30] A Torre; esquerda\n[1:00] A Morte; direita; 10s", "", DUR,
+    CC_TODO, NOMES)
+jan = tc.janelas_reenquadra(ev, CC["junta_janela"])
+diz(len(jan) == 1 and aprox(jan[0][0], 60.0, 1e-6),
+    f"21: so a carta da direita abre janela de reenquadramento (veio {jan})")
+
+# 22. Duas janelas coladas viram uma: sem isso o enquadramento piscaria
+#     entre uma carta e a seguinte.
+ev, er, no = tc.parse_roteiro(
+    "[0:30] A Torre; direita; 10s\n[0:41] A Morte; direita; 10s", "", DUR,
+    CC_TODO, NOMES)
+jan = tc.janelas_reenquadra(ev, CC["junta_janela"])
+diz(len(jan) == 1, f"22: duas cartas a direita quase coladas dao UMA janela "
+    f"de reenquadramento (veio {len(jan)})")
+
+# 23. A ordem do overlay e por PROFUNDIDADE, e nao por chegada: e o que
+#     mantem "a mais funda por cima" quando a pilha desce (caso 19).
+ev, er, no = tc.parse_roteiro(
+    "[0:30] A Torre; esquerda\n[0:35] A Morte; esquerda; 5s\n"
+    "[1:00] O Diabo; esquerda", "", DUR, CC_TODO, NOMES)
+cam = tc._agrupa_camadas(ev)
+diz([c["prof"] for c in cam] == sorted(c["prof"] for c in cam),
+    f"23: as camadas saem em ordem de profundidade (veio "
+    f"{[(c['carta'], c['prof']) for c in cam]})")
+
+# ---- o que o roteiro RECUSA ---------------------------------------------
+# Linha que o programa nao entende nao pode virar carta que nao aparece:
+# o export recusa enquanto houver erro, e o editor os mostra na linha.
+
+# 24. Nome de carta que nao existe.
+ev, er, no = tc.parse_roteiro("[0:30] Rainha de Bastoes; direita", "", DUR,
+                               CC_TODO, NOMES)
+diz(not ev and len(er) == 1 and er[0]["linha"] == 1,
+    f"24: carta fora do baralho vira erro na linha, nao evento "
+    f"(veio {len(ev)} evento(s), {len(er)} erro(s))")
+
+# 25. Linha sem tempo.
+ev, er, no = tc.parse_roteiro("A Torre; direita", "", DUR, CC_TODO, NOMES)
+diz(not ev and len(er) == 1, "25: linha sem tempo vira erro")
+
+# 26. Tempo dentro dos segundos finais - a carta nunca apareceria.
+ev, er, no = tc.parse_roteiro("[3:15] A Torre; direita", "", DUR, CC_TODO, NOMES)
+diz(not ev and len(er) == 1,
+    f"26: tempo dentro do rabo do video vira erro (veio {len(er)} erro(s))")
+
+# 27. A MESMA carta duas vezes na tela ao mesmo tempo (a regra que o modo
+#     enumeracao ja tinha): duas copias da mesma ilustracao deslocadas de
+#     1% parecem defeito de render, nao empilhamento.
+ev, er, no = tc.parse_roteiro(
+    "[0:30] A Torre; esquerda\n[0:40] A Torre; direita", "", DUR, CC_TODO, NOMES)
+diz(len(ev) == 1 and len(er) == 1,
+    f"27: a mesma carta sobreposta consigo mesma vira erro "
+    f"(veio {len(ev)} evento(s), {len(er)} erro(s))")
+
+# 28. A mesma carta DEPOIS que a primeira saiu e legitima.
+ev, er, no = tc.parse_roteiro(
+    "[0:30] A Torre; esquerda; 5s\n[1:00] A Torre; direita", "", DUR,
+    CC_TODO, NOMES)
+diz(len(ev) == 2 and not er,
+    f"28: a mesma carta de novo, depois que a primeira saiu, e legitima "
+    f"(veio {len(ev)} evento(s), {len(er)} erro(s))")
+
+# 29. Comentario e linha vazia nao viram nada nem erram.
+ev, er, no = tc.parse_roteiro("# so um lembrete\n\n   \n[0:30] A Torre; direita",
+                               "", DUR, CC_TODO, NOMES)
+diz(len(ev) == 1 and not er, "29: comentario e linha vazia sao ignorados")
+
+# 30. Os erros saem em ordem de LINHA - eles vao para a margem do editor,
+#     ao lado da linha de que falam, e a checagem da pilha corre depois da
+#     leitura de todas as linhas.
+ev, er, no = tc.parse_roteiro(
+    "[0:30] A Torre; esquerda\n[0:35] A Torre; direita\n[9:99] Nada; direita",
+    "", DUR, CC_TODO, NOMES)
+diz([e["linha"] for e in er] == sorted(e["linha"] for e in er),
+    f"30: os erros saem em ordem de linha (veio {[e['linha'] for e in er]})")
+
+# 31. O tempo se le nos formatos que ele escreve, e num lugar so (o mesmo
+#     `le_tempo` do `conferir --em`).
+diz(aprox(tc.le_tempo("1:29"), 89.0) and aprox(tc.le_tempo("01:29,5".replace(",", ".")), 89.5)
+    and aprox(tc.le_tempo("0:01:29"), 89.0) and aprox(tc.le_tempo("89"), 89.0),
+    "31: le_tempo entende 1:29, 01:29.5, 0:01:29 e 89")
+diz(tc.le_tempo("banana") is None and tc.le_tempo("") is None,
+    "31: le_tempo devolve None no que nao e tempo, em vez de chutar")
+
+
+# ---- legenda ------------------------------------------------------------
+# O .srt sai do MESMO corte que o video. O que quebra calado aqui: uma
+# palavra que sobreviveu ao corte e nao entrou no cartao (legenda que diz
+# menos que o audio), um cartao que atravessa uma emenda com o tempo da
+# fonte, uma edicao a mao que se perde quando o corte muda.
+
+CL = CC_TODO["legenda"]
+print(f"\n== legenda: max {CL['max_caracteres']} caracteres, "
+      f"{CL['min_segundos']}-{CL['max_segundos']}s por cartao")
+
+
+def tok(t, s, e, k="palavra"):
+    return {"k": k, "t": t, "s": s, "e": e, "cut": False}
+
+
+# 32. O basico: o texto que sobra vira cartao, no relogio da SAIDA.
+st = [tok("Uma", 0.0, 0.4), tok("frase", 0.4, 0.9), tok("curta.", 0.9, 1.4)]
+cenas = tc.monta_legendas(st, [(0.0, 1.4)], CC_TODO)
+diz(len(cenas) == 1 and cenas[0]["txt"] == "Uma frase curta.",
+    f"32: as palavras viram um cartao (veio {[c['txt'] for c in cenas]})")
+
+# 33. O corte anda o relogio: uma palavra depois de um trecho cortado sai
+#     no tempo da SAIDA, nao no da fonte. Sem isso a legenda inteira
+#     escorrega depois da primeira emenda.
+st = [tok("Antes", 0.0, 0.5), tok("depois", 10.0, 10.5)]
+cenas = tc.monta_legendas(st, [(0.0, 0.5), (10.0, 10.5)], CC_TODO)
+diz(len(cenas) == 1 and aprox(cenas[0]["ini"], 0.0, 1e-6)
+    and aprox(cenas[0]["fim"], 1.0, 1e-6),
+    f"33: o cartao sai no relogio da saida, nao no da fonte "
+    f"(veio {cenas[0]['ini']:.2f}-{cenas[0]['fim']:.2f}, esperado 0,00-1,00)")
+
+# 34. Palavra cortada pela METADE nao entra - e a mesma regra da metade do
+#     token com que o editor decide o que um arrasto pegou.
+st = [tok("fica", 0.0, 1.0), tok("sai", 1.0, 2.0)]
+cenas = tc.monta_legendas(st, [(0.0, 1.2)], CC_TODO)
+diz(len(cenas) == 1 and cenas[0]["txt"] == "fica",
+    f"34: palavra que sobrevive menos da metade nao entra na legenda "
+    f"(veio {[c['txt'] for c in cenas]})")
+
+# 35. Pausa longa fecha o cartao mesmo com espaco de sobra.
+st = [tok("Antes", 0.0, 0.5), tok("depois", 3.0, 3.5)]
+cenas = tc.monta_legendas(st, [(0.0, 4.0)], CC_TODO)
+diz(len(cenas) == 2, f"35: a pausa longa fecha o cartao (veio {len(cenas)})")
+
+# 36. Cartao nao passa do teto de caracteres.
+st = [tok("palavra", i * 0.3, i * 0.3 + 0.25) for i in range(40)]
+cenas = tc.monta_legendas(st, [(0.0, 40 * 0.3)], CC_TODO)
+diz(all(len(c["txt"]) <= CL["max_caracteres"] for c in cenas),
+    f"36: nenhum cartao passa de {CL['max_caracteres']} caracteres "
+    f"(maior veio com {max(len(c['txt']) for c in cenas)})")
+diz(all(c["fim"] - c["ini"] >= CL["min_segundos"] - 1e-6
+        or c is cenas[-1] for c in cenas),
+    "36: nenhum cartao pisca abaixo do minimo")
+
+# 37. Rotulo do programa nao e fala: "hesitação" e "?? 1.2s" nao entram na
+#     legenda. Sao etiqueta, e ninguem leu nada ali.
+st = [tok("Isto", 0.0, 0.4), tok("hesitação", 0.4, 1.0, "hesitacao"),
+      tok("?? 1.2s", 1.0, 2.2, "hesitacao"), tok("fica.", 2.2, 2.6)]
+cenas = tc.monta_legendas(st, [(0.0, 2.6)], CC_TODO)
+todo = " ".join(c["txt"] for c in cenas)
+diz("hesita" not in todo and "??" not in todo and "Isto" in todo
+    and "fica." in todo,
+    f"37: rotulo do programa nao vira legenda (veio "
+    f"{[c['txt'] for c in cenas]})")
+# ...e os 1,8s de audio ilegivel entre as duas palavras separam os cartoes,
+# como qualquer outra pausa: juntar "Isto" e "fica." num cartao so faria a
+# legenda afirmar uma frase que ninguem sabe se foi dita assim.
+diz(len(cenas) == 2, f"37: e o buraco entre elas quebra o cartao "
+    f"(veio {len(cenas)})")
+
+# 38. Fala RECUPERADA de uma lacuna entra: e fala, e esta no video.
+st = [tok("Isto", 0.0, 0.4), tok("tambem conta", 0.4, 1.4, "hesitacao")]
+cenas = tc.monta_legendas(st, [(0.0, 1.4)], CC_TODO)
+diz(len(cenas) == 1 and "tambem conta" in cenas[0]["txt"],
+    f"38: fala recuperada de lacuna entra na legenda (veio "
+    f"{[c['txt'] for c in cenas]})")
+
+# 39. A edicao a mao casa pelo TEMPO DE FONTE, e nao pelo numero do
+#     cartao: um corte novo renumera todos os de baixo e a legenda escrita
+#     para um passaria a valer para outro.
+st = [tok("Primeiro", 0.0, 0.5), tok("cartao.", 0.5, 1.2),
+      tok("Segundo", 4.0, 4.6), tok("cartao.", 4.6, 5.2)]
+iv = [(0.0, 6.0)]
+cenas = tc.monta_legendas(st, iv, CC_TODO)
+alvo = cenas[-1]
+mao = [{"s": alvo["s"], "e": alvo["e"], "orig": alvo["auto"],
+        "novo": "escrito a mao"}]
+cenas2 = tc.monta_legendas(st, iv, CC_TODO)
+orfas = tc.aplica_legendas(cenas2, mao)
+diz(not orfas and cenas2[-1]["txt"] == "escrito a mao" and cenas2[-1]["mao"],
+    f"39: a edicao a mao volta no cartao certo (veio "
+    f"{cenas2[-1]['txt']!r}, {len(orfas)} orfa(s))")
+diz(cenas2[0]["txt"] == cenas2[0]["auto"] and not cenas2[0]["mao"],
+    "39: e nao vaza para o cartao vizinho")
+
+# 40. Edicao que nao acha mais cartao nenhum volta como ORFA. Sumir com o
+#     que alguem escreveu, calado, e o defeito de sempre.
+orfas = tc.aplica_legendas(tc.monta_legendas(st, iv, CC_TODO),
+                           [{"s": 999.0, "e": 999.5, "orig": "x", "novo": "y"}])
+diz(len(orfas) == 1, f"40: edicao sem cartao correspondente volta como orfa "
+    f"(veio {len(orfas)})")
+
+# 41. O .srt: numeracao de 1, virgula no milissegundo, no maximo 2 linhas.
+diz(tc.srt_tempo(0) == "00:00:00,000" and tc.srt_tempo(89.5) == "00:01:29,500"
+    and tc.srt_tempo(3723.004) == "01:02:03,004",
+    f"41: o tempo do .srt sai no formato do formato (veio "
+    f"{tc.srt_tempo(89.5)})")
+longo = "palavra " * 12
+q = tc.quebra_legenda(longo, CL["max_linha"])
+diz(q.count(chr(10)) == 1 and all(len(x) <= CL["max_linha"] + 8
+                                   for x in q.split(chr(10))),
+    f"41: texto largo quebra em DUAS linhas, nao tres (veio "
+    f"{q.count(chr(10)) + 1} linha(s))")
+diz(tc.quebra_legenda("curto", CL["max_linha"]) == "curto",
+    "41: texto que cabe nao ganha quebra")
 
 print()
 if falhas:

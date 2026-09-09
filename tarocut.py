@@ -222,6 +222,27 @@ def hhmmss(t):
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
+def le_tempo(txt):
+    """"1:29", "01:29.5", "0:01:29", "89" -> segundos. None se nao der.
+
+    Uma conversao so de tempo escrito para segundo, porque ja houve duas: o
+    `--em` do conferir tinha esta linha no corpo do comando, e o roteiro de
+    cartas precisa dela de novo. Duas leituras do mesmo "1:29" e a mesma
+    coisa dita duas vezes, e a que diverge calada e sempre a que ninguem
+    esta olhando.
+
+    O relogio de quem escreve "1:29" e sempre o da SAIDA - e o do .m4a, o da
+    previa e o do video exportado. Quem traduz para a fonte e
+    `_mapa_previa`, e ninguem mais."""
+    p = str(txt).strip().split(":")
+    if not p or len(p) > 3 or any(not x.strip() for x in p):
+        return None
+    try:
+        return sum(float(x) * 60 ** i for i, x in enumerate(reversed(p)))
+    except ValueError:
+        return None
+
+
 def run(cmd, **kw):
     return subprocess.run(cmd, capture_output=True, text=True,
                           encoding="utf-8", errors="replace", **kw)
@@ -234,8 +255,21 @@ def wdir(video):
 
 
 def jdump(obj, path):
-    with open(path, "w", encoding="utf-8") as f:
+    """Grava JSON de um jeito que nao pode deixar o arquivo pela metade.
+
+    Escreve ao lado e troca com `os.replace`, que e atomico: ou o arquivo
+    antigo esta la inteiro, ou o novo esta. Os arquivos que passam por
+    aqui sao justamente os que este programa jura nao perder -
+    `anotacoes.json`, `montagem.json`, `respostas.json`, `legendas.json` -,
+    e `open(w)` TRUNCA antes de escrever: um travamento no meio, ou um
+    `render` lendo no instante errado, deixava o arquivo vazio ou pela
+    metade. A janela existe de verdade - o editor grava a cada gesto, e
+    desde o modo cartas grava tambem a cada meio segundo de digitacao."""
+    path = Path(path)
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(obj, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, path)
 
 
 def jload(path):
@@ -2783,20 +2817,185 @@ def grafo(iv, C, escala=None, fps=None):
     return "\n".join(L)
 
 
-def _janela_layout3(resumo, margem):
-    """Janela de crop (fracao 0-1 do quadro original) que cobre o vaivem
-    MEDIDO do rosto (rosto.json/resumo.cx_min..cy_max) com folga, para o
-    layout 3 (Mariana centralizada, ver overview da feature). Cortar na
-    fracao que o EIXO MAIS largo precisa, nos dois eixos, preserva o
-    aspecto 16:9 sem distorcer ao escalar de volta: quando o crop tem o
-    mesmo aspecto do quadro inteiro, a fracao de largura cortada e igual
-    a fracao de altura cortada."""
+_ASPECTO_CARTA = None
+
+
+def aspecto_carta():
+    """Largura/altura da imagem de uma carta, medida no proprio arquivo.
+
+    MEDIDO (09/09/2026) nas 78 de `tarodeyala-borda`: 0,5609 nas 78, sem
+    uma unica excecao - o baralho e uniforme. Mesmo assim isto le o disco
+    em vez de guardar 0,5609 no config: a faixa livre entre as duas cartas
+    sai deste numero, e um baralho redigitalizado noutro formato mudaria a
+    geometria do layout 3 em silencio.
+
+    Por ffprobe, e nao por cv2: o `imread` do OpenCV nao abre caminho com
+    acento no Windows, e ha `11 - a forca.jpg` na pasta. Uma leitura por
+    processo, guardada aqui.
+
+    Devolve o valor de referencia quando a leitura falha - errar a faixa
+    livre por alguns por cento e melhor que nao exportar."""
+    global _ASPECTO_CARTA
+    if _ASPECTO_CARTA is None:
+        _ASPECTO_CARTA = 0.5609
+        try:
+            import baralho
+            img = next(iter(sorted(baralho.BARALHO.glob("*.jpg"))), None)
+            if img:
+                r = run([FFPROBE, "-v", "error", "-select_streams", "v",
+                         "-show_entries", "stream=width,height", "-of", "json",
+                         str(img)])
+                st = json.loads(r.stdout)["streams"][0]
+                _ASPECTO_CARTA = st["width"] / st["height"]
+        except Exception:
+            pass
+    return _ASPECTO_CARTA
+
+
+def faixa_livre(C, w, h):
+    """(inicio, fim) da faixa de largura que as duas cartas NAO cobrem, em
+    fracao do quadro. E o espaco que sobra para a Mariana no layout 3, e e
+    contra ele que `_janela_layout3` decide o reenquadramento.
+
+    MEDIDO num quadro 16:9 com os numeros de hoje (`carta_altura` 0,85 e
+    `carta_margem` 0,025): cada carta cobre 0,268 da largura e sobram 0,414
+    no meio. Mexer em `carta_altura` aperta esta faixa e o enquadramento
+    responde sozinho - e por isso que a conta esta aqui e nao num numero
+    escrito a mao."""
+    cc = C["cartas"]
+    larg = cc["carta_altura"] * h * aspecto_carta() / max(1, w)
+    a = min(0.49, cc["carta_margem"] + larg)
+    return a, 1 - a
+
+
+def _janela_layout3(resumo, margem, livre=(0.293, 0.707)):
+    """A janela de crop (fracao 0-1 do quadro) que poe a Mariana no meio,
+    entre as duas cartas - o layout 3.
+
+    Ate 09/09/2026 esta funcao devolvia a janela que cobre o VAIVEM do
+    rosto com folga, e nunca foi olhada porque o reenquadramento nao
+    acontecia (ver `_reenquadra`). Na primeira previa em que aconteceu ela
+    cortou a testa da Mariana e ainda a deixou encostada na carta. As duas
+    perguntas certas nao sao "onde o rosto anda":
+
+    QUE TAMANHO. A janela e a MAIOR possivel (o menor zoom) que ainda
+    deixa o rosto dentro da faixa que as cartas nao cobrem - a conta e um
+    sistema de tres desigualdades em `l`, resolvido aqui de cabeca porque
+    tem solucao fechada. Contra `p05`/`p95` do rastreio, e nao min/max: um
+    segundo de inclinacao maxima nao manda no quadro do video inteiro.
+
+    Mas ANTES DISSO ela tem de caber a cabeca inteira, do `topo_min` ao
+    queixo, com folga - e essa e a restricao que ganha quando as duas se
+    contradizem. Rosto encostando na borda da carta e feio; rosto cortado
+    e defeito.
+
+    ONDE. Horizontal: dentro do intervalo que as desigualdades deixam, o
+    meio. Vertical: NAO se centraliza o rosto - `cy` e o CENTRO dele, e uma
+    janela montada em volta disso corta a testa. A folga se mede do
+    `topo_min`, o ponto mais alto que a cabeca alcanca.
+
+    A janela sai com a MESMA fracao nos dois eixos, e e isso que preserva o
+    16:9 quando `_reenquadra` a devolve ao tamanho do quadro.
+
+    rosto.json antigo nao tem `cx_p05`, `topo_min` nem `alt_med`; ai vale
+    min/max e um rosto de 0,18 do quadro, que e a ordem de grandeza desta
+    cena. Rodar `cartas`/`exportar --force` refaz o rastreio com os campos
+    novos."""
     cx0, cx1 = resumo.get("cx_min", 0.4), resumo.get("cx_max", 0.6)
     cy0, cy1 = resumo.get("cy_min", 0.3), resumo.get("cy_max", 0.5)
-    l = min(1.0, max(cx1 - cx0, cy1 - cy0) + 2 * margem)
-    x = min(max(0.0, (cx0 + cx1) / 2 - l / 2), 1 - l)
-    y = min(max(0.0, (cy0 + cy1) / 2 - l / 2), 1 - l)
+    p5 = resumo.get("cx_p05", cx0)
+    p95 = resumo.get("cx_p95", cx1)
+    alt = resumo.get("alt_med", 0.18)
+    topo = resumo.get("topo_min", cy0 - alt / 2)
+    a, b = livre
+
+    # o maior `l` que ainda permite um `x` valido (as tres desigualdades:
+    # p95 nao passa de `b`, p05 nao fica antes de `a`, a janela cabe no
+    # quadro)
+    l = min(1.0, p5 / max(1e-6, a), (1 - p95) / max(1e-6, 1 - b))
+    # ...mas nunca menor que o que a faixa livre exige para caber o vaivem
+    l = max(l, (p95 - p5) / max(1e-6, b - a))
+    # ...e nunca menor que a cabeca inteira com folga. Esta ganha das
+    # outras duas de proposito.
+    l = max(l, (cy1 + alt / 2) - topo + margem)
+    l = min(1.0, l)
+
+    lo = max(0.0, p95 - b * l)
+    hi = min(1.0 - l, p5 - a * l)
+    x = (lo + hi) / 2 if hi >= lo else min(max(lo, 0.0), 1.0 - l)
+    y = min(max(0.0, topo - margem), 1.0 - l)
     return x, y, l, l
+
+
+def rosto_atras_da_carta(doc, janela, livre):
+    """Que fracao do tempo o CENTRO do rosto fica atras de uma carta, com
+    este enquadramento. Zero e o ideal e nem sempre existe.
+
+    Nao decide nada - o `exportar` imprime. Existe porque o enquadramento e
+    a unica parte deste programa que nao tem como se justificar sozinha na
+    tela: quem olha a previa ve um quadro, e nao sabe se aquele quadro e o
+    melhor que a geometria permitia."""
+    sv = (doc or {}).get("suavizado") or []
+    x, _, l, _ = janela
+    a, b = livre
+    if not sv or l <= 0:
+        return None
+    fora = sum(1 for s in sv if not (a <= (s["cx"] - x) / l <= b))
+    return fora / len(sv)
+
+
+def _reenquadra(L, entrada, janelas, resumo, w, h, margem, livre):
+    """Poe a Mariana no CENTRO durante `janelas` (o layout 3) e devolve o
+    rotulo de saida. Sem janela nenhuma, nao acrescenta filtro algum.
+
+    O jeito obvio - um `crop` so, com `w`/`h` como expressao de `t` que
+    alterna entre o quadro inteiro e a janela do rosto - NAO FUNCIONA, e
+    foi assim que este programa desenhou carta por uma semana. MEDIDO
+    (09/09/2026) com o proprio ffmpeg 9.0.1 deste projeto: um
+    `crop=w='if(between(t\\,2\\,4),320,640)':h='...'` sobre um testsrc2 de
+    640x360 sai 640x360 do primeiro ao ultimo quadro. O `crop` avalia `x` e
+    `y` a cada quadro, mas `w` e `h` UMA vez, na configuracao do filtro (em
+    t=0, quando a condicao ainda e falsa) - e nao poderia ser diferente:
+    quadro de tamanho variavel nao passa por `overlay` nem por encoder. O
+    docstring antigo dizia que "o ffmpeg 9.x reavalia sozinho quadro a
+    quadro"; nao reavalia, e o reenquadramento nunca aconteceu. O `x`/`y`
+    variavel tambem nao movia nada, porque com `w` igual a largura inteira
+    o proprio filtro prende o `x` em 0.
+
+    O que funciona e ter o quadro reenquadrado como uma SEGUNDA imagem, de
+    tamanho constante, ligada por cima quando a janela manda: recorta a
+    janela do rosto, devolve ao tamanho do quadro e sobrepoe com `enable`.
+    Sai identico ao layout 1 fora das janelas (o overlay fica em
+    passagem), e trocado por inteiro dentro delas.
+
+    O PRECO e um `scale` por quadro do video inteiro, e nao so dentro das
+    janelas: o ramo do `split` recebe todos os quadros, esteja o `overlay`
+    ligado ou nao. E por isso que quem chama so passa `janelas` quando
+    existe carta a direita de verdade - sem elas nao ha `split`, nao ha
+    `scale` e nao ha custo nenhum.
+
+    Como `_janela_layout3` devolve a MESMA fracao para os dois eixos, a
+    janela tem o aspecto do quadro e voltar ao tamanho cheio nao distorce -
+    e a razao de ela ser escrita daquele jeito la."""
+    if not janelas:
+        return entrada
+    x, y, lw, lh = _janela_layout3(resumo, margem, livre)
+    # A janela pode SER o quadro inteiro - acontece quando a cabeca so cabe
+    # assim (MEDIDO no IMG_0246: l = 1,00). Ai nao ha reenquadramento
+    # nenhum a fazer, e montar split+crop+scale para copiar o quadro
+    # custaria um `scale` por quadro do video para nao mudar um pixel.
+    if lw > 0.995 and lh > 0.995:
+        return entrada
+    # par nos dois eixos: yuv420p nao aceita croma de meio pixel
+    cw = max(2, int(lw * w) // 2 * 2)
+    ch = max(2, int(lh * h) // 2 * 2)
+    cx, cy = int(x * w), int(y * h)
+    ativo = "+".join(f"between(t\\,{a:.3f}\\,{b:.3f})" for a, b in janelas)
+    L.append(f"[{entrada}]split[rq0][rq1];")
+    L.append(f"[rq1]crop=w={cw}:h={ch}:x={cx}:y={cy},"
+             f"scale={w}:{h}:flags=bicubic,setsar=1[rqz];")
+    L.append(f"[rq0][rqz]overlay=x=0:y=0:enable='{ativo}'[rqbase];")
+    return "rqbase"
 
 
 def grafo_cartas(iv, C, cartas, resumo_rosto, w_fonte, h_fonte,
@@ -2811,13 +3010,12 @@ def grafo_cartas(iv, C, cartas, resumo_rosto, w_fonte, h_fonte,
     2+=uma por carta secundaria DISTINTA, na ordem de `secundarias_imgs`
     (lista de (nome, Path), sem repetir carta).
 
-    Reenquadramento: um `crop` so, com w/h/x/y como expressao de `t` (o
-    ffmpeg 9.x reavalia sozinho quadro a quadro - versoes antigas exigiam
-    `eval=frame`, que sumiu da lista de opcoes) que alterna entre o
-    quadro inteiro (layout 1) e a
-    janela de `_janela_layout3` (layout 3) - troca dura, sem pan suave,
-    porque so muda quando uma carta secundaria entra ou sai, e isso ja
-    tem o fade dela para disfarcar o corte.
+    Reenquadramento: `_reenquadra`, que alterna entre o quadro inteiro
+    (layout 1) e a janela de `_janela_layout3` (layout 3) - troca dura,
+    sem pan suave, porque so muda quando uma carta secundaria entra ou
+    sai, e isso ja tem o fade dela para disfarcar o corte. Ate 09/09/2026
+    isto era um `crop` so com `w`/`h` em expressao de `t`, e o
+    reenquadramento nunca aconteceu - a medicao e a explicacao estao la.
 
     Fade: so a carta PRINCIPAL tem fade suave de entrada (`format=yuva420p`
     + `fade=alpha=1`, uma vez, nunca sai). A secundaria liga/desliga com
@@ -2872,7 +3070,6 @@ def grafo_cartas(iv, C, cartas, resumo_rosto, w_fonte, h_fonte,
         L.append("[vc]hwdownload,format=p010le[vd];")
         ult_base = "vd"
 
-    x, y, lw, lh = _janela_layout3(resumo_rosto, cc["crop_margem"])
     secs = cartas["secundarias"]
 
     def _janela_ativa(spans):
@@ -2884,14 +3081,9 @@ def grafo_cartas(iv, C, cartas, resumo_rosto, w_fonte, h_fonte,
         return "+".join(f"between(t\\,{s['ini']:.3f}\\,{s['fim']:.3f})"
                          for s in spans)
 
-    ativo = _janela_ativa(secs) if secs else "0"
-    cw, ch = lw * w_trab, lh * h_trab
-    cx0, cy0 = x * w_trab, y * h_trab
-    L.append(
-        f"[{ult_base}]crop=w='if({ativo},{cw:.1f},{w_trab})':"
-        f"h='if({ativo},{ch:.1f},{h_trab})':"
-        f"x='if({ativo},{cx0:.1f},0)':y='if({ativo},{cy0:.1f},0)'[base];"
-    )
+    base = _reenquadra(L, ult_base, [(s["ini"], s["fim"]) for s in secs],
+                       resumo_rosto, w_trab, h_trab, cc["crop_margem"],
+                       faixa_livre(C, w_trab, h_trab))
 
     altura_px = max(2, int(h_trab * cc["carta_altura"]))
     margem_px = int(w_trab * cc["carta_margem"])
@@ -2900,7 +3092,7 @@ def grafo_cartas(iv, C, cartas, resumo_rosto, w_fonte, h_fonte,
 
     L.append(f"[1:v]scale=-2:{altura_px},format=yuva420p,"
              f"fade=t=in:st=0:d={fade}:alpha=1[cartaP];")
-    L.append(f"[base][cartaP]overlay=x={margem_px}:y={y_carta}[c0];")
+    L.append(f"[{base}][cartaP]overlay=x={margem_px}:y={y_carta}[c0];")
 
     ult = "c0"
     for i, (nome, _) in enumerate(secundarias_imgs, start=2):
@@ -2917,9 +3109,19 @@ def grafo_cartas(iv, C, cartas, resumo_rosto, w_fonte, h_fonte,
     return "\n".join(L)
 
 
-def _agrupa_camadas_enumeracao(eventos):
-    """Eventos (um por MENCAO) -> camadas de overlay (uma por POSICAO de
-    pilha distinta - lado+profundidade+carta). Nao e a mesma coisa: a
+# Entrada de carta quando quem chama nao pede fade nenhum: curta o
+# bastante para nao se distinguir do corte seco que sempre foi a entrada
+# da carta secundaria neste programa (`grafo_cartas`), e longa o bastante
+# para RELIGAR o alfa da camada antes da proxima ocorrencia dela - ver a
+# nota comprida em `grafo_cartas_pilhas`. E forma de regra, nao taxa: por
+# isso fica aqui e nao no config.toml.
+FADE_POP = 0.05
+
+
+def _agrupa_camadas(eventos):
+    """Eventos (um por MENCAO, ou uma linha de roteiro) -> camadas de
+    overlay (uma por POSICAO de pilha distinta - lado+profundidade+carta).
+    Nao e a mesma coisa: a
     mesma carta (ou categoria) pode voltar a ocupar a mesma posicao de
     pilha numa sessao de enumeracao POSTERIOR (dentro de uma sessao so,
     nunca se repete - profundidade so cresce, nunca volta atras), e cada
@@ -2937,7 +3139,7 @@ def _agrupa_camadas_enumeracao(eventos):
     Cada ocorrencia de uma camada precisa "religar" o alfa para 1 antes
     do proprio fade de saida - sem isso, o `fade=t=out` da ocorrencia
     anterior deixaria a imagem transparente para sempre, inclusive na
-    ocorrencia seguinte. `grafo_cartas_enumeracao` faz isso encadeando
+    ocorrencia seguinte. `grafo_cartas_pilhas` faz isso encadeando
     um `fade=t=in` bem curto (nao e um fade de estilo, so restaura o
     alfa) antes de cada `fade=t=out` - por isso devolve a lista de
     ocorrencias por camada, nao so a janela unida."""
@@ -2950,16 +3152,42 @@ def _agrupa_camadas_enumeracao(eventos):
             ordem.append(chave)
         camadas[chave]["ocorrencias"].append(
             {"ini": ev["ini"], "fim": ev["fim"],
-             "fade_ini": ev["fade_ini"], "fade_dur": ev["fade_dur"]})
-    return [camadas[k] for k in ordem]
+             "fade_ini": ev["fade_ini"], "fade_dur": ev["fade_dur"],
+             # o roteiro escrito a mao pede fade macio tambem na ENTRADA
+             # (`[cartas].fade`); a enumeracao automatica nao pede nada e
+             # fica com o corte seco de sempre.
+             "fade_in": ev.get("fade_in", FADE_POP)})
+    # Ordenada por PROFUNDIDADE, e nao por ordem de chegada: quem chama
+    # monta a cadeia de overlay nesta ordem, e a carta mais funda na pilha
+    # (a mais perto do centro) tem de ser desenhada por cima.
+    #
+    # Na enumeracao automatica os dois criterios dao a mesma lista - la a
+    # profundidade so cresce (esq0, dir0, esq1, dir1...), e este sort e
+    # estavel. No roteiro escrito a mao a pilha DESCE quando a carta de
+    # baixo some, e ai uma camada rasa pode nascer depois de uma funda:
+    # pela ordem de chegada ela seria desenhada por cima e taparia a de
+    # dentro, invertendo a ilusao de profundidade.
+    return sorted((camadas[k] for k in ordem), key=lambda c: c["prof"])
 
 
-def grafo_cartas_enumeracao(iv, C, camadas, janelas_sessao, resumo_rosto,
-                              w_fonte, h_fonte, imgs, escala=None, fps=None,
-                              hw=False):
-    """Como `grafo_cartas()`, mas para o modo `--sem-principal` (layout 4,
-    empilhamento - ver `_agrupa_cartas_enumeracao`): sem carta fixa, duas
-    pilhas que alternam de lado e crescem a cada mencao nova.
+def grafo_cartas_pilhas(iv, C, camadas, janelas_sessao, resumo_rosto,
+                         w_fonte, h_fonte, imgs, escala=None, fps=None,
+                         hw=False):
+    """O overlay em PILHAS: sem carta fixa embutida, duas pilhas que
+    crescem para o centro, e o crop do layout 3 nas janelas que quem chama
+    disser.
+
+    Dois caminhos chegam aqui, e chegam de proposito no MESMO lugar:
+    `cartas --sem-principal` (as pilhas montadas pela fala, layout 4, ver
+    `_agrupa_cartas_enumeracao`) e o roteiro escrito a mao no modo cartas
+    do editor (ver `parse_roteiro`). Sao a mesma imagem com dois autores;
+    dois lugares montando esse filter_complex seriam dois lugares decidindo
+    onde a carta pousa, que e o mesmo defeito de ter dois lugares decidindo
+    o corte - so se descobre desalinhado tarde, olhando.
+
+    No caminho do roteiro, a carta PRINCIPAL nao e um caso especial daqui:
+    ela e simplesmente a camada esquerda de profundidade 0 que dura o video
+    quase inteiro. Quem sabe que ela e a ancora e o `parse_roteiro`.
 
     Correcao do Rafael em 02/09, contra frame de video editado a mao: a
     1a versao empilhava verticalmente com a carta pequena (0,32 de
@@ -2970,17 +3198,18 @@ def grafo_cartas_enumeracao(iv, C, camadas, janelas_sessao, resumo_rosto,
     borda esquerda, a da direita a partir da borda direita. Altura
     constante (`y_base`), so o X muda com a profundidade.
 
-    `camadas` vem de `_agrupa_camadas_enumeracao` (uma por POSICAO de
+    `camadas` vem de `_agrupa_camadas` (uma por POSICAO de
     pilha, nao por mencao - ver a nota la sobre por que isso importa
     para o tempo de render). `imgs` e um Path por camada, na MESMA
     ordem de `camadas` - convencao de quem chama isto: input 0=video,
     1..N=uma imagem por camada, nessa ordem.
 
-    `janelas_sessao` e a lista de (inicio, fim) por sessao de enumeracao,
-    devolvida por `_agrupa_cartas_enumeracao` - e a janela em que o crop
-    do layout 3 (Mariana centralizada) fica ativo, a mesma ideia de
-    `grafo_cartas`/`_janela_layout3`, so que aqui uma sessao pode ter
-    varias cartas em vez de uma so secundaria.
+    `janelas_sessao` e a lista de (inicio, fim) em que o crop do layout 3
+    (Mariana centralizada) fica ativo - a mesma ideia de
+    `grafo_cartas`/`_janela_layout3`, so que aqui uma janela pode ter
+    varias cartas em vez de uma so secundaria. Quem as calcula e quem
+    chama: `_agrupa_cartas_enumeracao` por sessao de fala, ou
+    `janelas_reenquadra` por "ha carta a direita agora?".
 
     Mesmas notas de `hw`/`escala` de `grafo_cartas()` - nao duplicadas
     aqui, ver aquela docstring."""
@@ -3007,16 +3236,9 @@ def grafo_cartas_enumeracao(iv, C, camadas, janelas_sessao, resumo_rosto,
     def _janela(a, b):
         return f"between(t\\,{a:.3f}\\,{b:.3f})"
 
-    x, y, lw, lh = _janela_layout3(resumo_rosto, cc["crop_margem"])
-    ativo = "+".join(_janela(a, b) for a, b in janelas_sessao) \
-        if janelas_sessao else "0"
-    cw, ch = lw * w_trab, lh * h_trab
-    cx0, cy0 = x * w_trab, y * h_trab
-    L.append(
-        f"[{ult_base}]crop=w='if({ativo},{cw:.1f},{w_trab})':"
-        f"h='if({ativo},{ch:.1f},{h_trab})':"
-        f"x='if({ativo},{cx0:.1f},0)':y='if({ativo},{cy0:.1f},0)'[base];"
-    )
+    base = _reenquadra(L, ult_base, janelas_sessao, resumo_rosto,
+                       w_trab, h_trab, cc["crop_margem"],
+                       faixa_livre(C, w_trab, h_trab))
 
     # Mesmo tamanho da carta principal (layout 1) - ver nota no
     # docstring. `ce["carta_altura"]` nao existe mais de proposito: duas
@@ -3030,12 +3252,11 @@ def grafo_cartas_enumeracao(iv, C, camadas, janelas_sessao, resumo_rosto,
     deslocamento_px = int(w_trab * ce["deslocamento"])
     y_base = (h_trab - altura_px) // 2
 
-    # Nao e um fade de estilo - "religa" o alfa a 1 no comeco de CADA
-    # ocorrencia da camada (ver `_agrupa_camadas_enumeracao`), curto o
-    # bastante para nao se distinguir do corte seco que e a entrada de
-    # toda carta secundaria neste programa (`grafo_cartas` faz o mesmo
-    # corte seco, so que sem precisar disso porque a principal nunca
-    # repete a mesma camada).
+    # O `fade=t=in` de cada ocorrencia faz DUAS coisas, e a segunda e a
+    # que nao se pode tirar: ele e a entrada da carta (macia no roteiro
+    # escrito a mao, um piscar de `FADE_POP` na enumeracao automatica, que
+    # sempre entrou em corte seco) e ele RELIGA o alfa a 1 no comeco de
+    # CADA ocorrencia da camada (ver `_agrupa_camadas`).
     #
     # `alpha=1` nos dois: sem isso `fade` desbota a COR (para preto), nao
     # o alfa - a carta vira um retangulo preto solido em vez de ficar
@@ -3053,15 +3274,14 @@ def grafo_cartas_enumeracao(iv, C, camadas, janelas_sessao, resumo_rosto,
     # vira passthrough e quem aparece por baixo e o `format=yuva420p` de
     # base (alfa 255 constante) - e o `enable` do PROPRIO overlay, nao
     # este alfa, quem decide se a camada e desenhada fora dali.
-    POP = 0.05
-
-    ult = "base"
+    ult = base
     for i, (camada, img) in enumerate(zip(camadas, imgs), start=1):
-        # `camadas` esta em ordem cronologica de 1a ocorrencia (ver
-        # `_agrupa_camadas_enumeracao`), e profundidade so cresce dentro
-        # de um lado - por isso a carta mais nova de cada pilha SEMPRE
-        # vem depois na cadeia de overlay, ou seja, sempre por cima da
-        # anterior do mesmo lado. Nao precisa reordenar para isso.
+        # `camadas` ja vem ordenada por PROFUNDIDADE (`_agrupa_camadas`),
+        # entao a carta mais funda de cada pilha - a mais perto do centro -
+        # vem depois na cadeia de overlay, ou seja, e desenhada por cima da
+        # que esta mais para a borda. A ordem se decide la e nao aqui
+        # porque `imgs` vem casada com esta lista, uma entrada de ffmpeg
+        # por camada, na mesma ordem.
         desloc = camada["prof"] * deslocamento_px
         xpos = str(margem_px + desloc) if camada["lado"] == "esquerda" else \
             f"W-{margem_px + desloc}-w"
@@ -3070,7 +3290,8 @@ def grafo_cartas_enumeracao(iv, C, camadas, janelas_sessao, resumo_rosto,
         fades, janelas = [], []
         for oc in camada["ocorrencias"]:
             janela_oc = _janela(oc["ini"], oc["fim"])
-            fades.append(f"fade=t=in:st={oc['ini']:.3f}:d={POP}:alpha=1:"
+            fades.append(f"fade=t=in:st={oc['ini']:.3f}:"
+                          f"d={oc['fade_in']:.3f}:alpha=1:"
                           f"enable='{janela_oc}'")
             fades.append(f"fade=t=out:st={oc['fade_ini']:.3f}:"
                           f"d={oc['fade_dur']:.3f}:alpha=1:"
@@ -3279,8 +3500,13 @@ def confere_pelo_whisper(d, C, stream, iv, rotulo):
 
 
 def _plano(a, rotulo):
-    """Etapas comuns a render, audio e previa: aplica as decisoes humanas e
-    calcula os trechos a manter."""
+    """Etapas comuns a render, audio, previa e exportar: aplica as decisoes
+    humanas e calcula os trechos a manter.
+
+    Devolve o `stream` junto porque o `exportar` precisa dele para a
+    legenda - o texto que sobra depois do corte. Buscar o fluxo por fora
+    seria le-lo do disco SEM as tres camadas de decisao humana empilhadas,
+    e a legenda passaria a dizer coisa que o video nao diz."""
     C, d, stream, dur, db, hop, anot, mont, corr = _base(
         a.video, rotulo, getattr(a, "ignorar_transcript", False))
     iv = intervalos(stream, C, dur, db, hop, anot, mont)
@@ -3320,7 +3546,7 @@ def _plano(a, rotulo):
         sys.exit(f"[{rotulo}] abortado: o corte nao deixou nenhum trecho. "
                  f"Provavelmente uma anotacao cobre o video inteiro - veja "
                  f"{d/'anotacoes.json'}.")
-    return C, d, dur, iv
+    return C, d, stream, dur, iv
 
 
 def escreve_edl(d, src, iv):
@@ -4167,8 +4393,9 @@ def cmd_conferir(a):
     mantido = sum(b - x for x, b in iv)
 
     if getattr(a, "em", None):
-        p = a.em.split(":")
-        t = sum(float(x) * 60 ** i for i, x in enumerate(reversed(p)))
+        t = le_tempo(a.em)
+        if t is None:
+            sys.exit(f"[conferir] nao entendi o tempo {a.em!r} - use MM:SS")
         print(f"[conferir] previa {hhmmss(t)} = fonte {para_fonte(t):.2f}s "
               f"({hhmmss(para_fonte(t))})")
         return
@@ -4230,7 +4457,7 @@ def cmd_editor(a):
 
 
 def cmd_previa(a):
-    _, d, dur, iv = _plano(a, "previa")
+    _, d, _, dur, iv = _plano(a, "previa")
     meta = jload(d / "meta.json")
     edl = escreve_edl(d, meta["src"], iv)
     mantido = sum(b - x for x, b in iv)
@@ -4294,7 +4521,7 @@ def cmd_audio(a):
     O gargalo do render e decodificar 4K60 HEVC 10 bits; com `-vn` o ffmpeg
     nem toca no video. Da para ouvir a edicao inteira em segundos em vez de
     minutos, que e o que torna a calibracao viavel."""
-    C, d, dur, iv = _plano(a, "audio")
+    C, d, _, dur, iv = _plano(a, "audio")
     meta = jload(d / "meta.json")
     ca = C["audio"]
     fade = ca["fade"]
@@ -4491,6 +4718,457 @@ def _agrupa_cartas_enumeracao(mencoes, iv, cc, ce):
     return eventos, janelas_sessao
 
 
+# ------------------------------------------------ roteiro de cartas (mao)
+#
+# O outro caminho das cartas, e o que o Rafael pediu em 09/09/2026: em vez
+# de o programa adivinhar pela fala (`cmd_cartas`, que continua existindo),
+# ELE escreve o roteiro no "modo cartas" do editor, uma linha por carta:
+#
+#     [1:29] Rainha de Copas; direita; 12s
+#
+# A diferenca com `cmd_cartas` nao e de mecanismo - a geometria, a pilha e
+# o reenquadramento sao os MESMOS (`grafo_cartas_pilhas`) - e de quem
+# decide. La e regra, aqui e gente; e por isso o que sai daqui e sagrado
+# como `anotacoes.json` e o que sai de la e proposta.
+#
+# TODO tempo do roteiro e do relogio da SAIDA (depois do corte). E o unico
+# relogio que existe para quem assiste, e o mesmo do .m4a que ele ouve e do
+# .srt que sai junto. Se o corte mudar depois de o roteiro ser escrito,
+# cada tempo escorrega - a mesma familia do selo do transcript.md. Por isso
+# o `mantido` do dia fica gravado no arquivo e `roteiro_caducou` pergunta.
+
+# [1:29] carta; lado; tempo. Colchete opcional na leitura (a tela sempre
+# escreve com ele); lado e tempo, tambem - sem lado a carta vai para o lado
+# que a principal nao ocupa, sem tempo ela fica ate `rabo_final`.
+RE_LINHA_ROTEIRO = re.compile(r"^\[?\s*([0-9:.]+)\s*\]?\s*(.*)$")
+RE_SEGUNDOS = re.compile(r"^([0-9]+(?:[.,][0-9]+)?)\s*s?$")
+
+# So dois lados, e o autocomplete da tela escreve os dois por extenso. As
+# abreviacoes existem para quem digita a linha na mao.
+LADO_ALT = {"esquerda": "esquerda", "esq": "esquerda",
+            "direita": "direita", "dir": "direita"}
+
+
+def _chave_carta(s):
+    """Chave de comparacao de nome de carta: sem acento, sem caixa, sem
+    espaco dobrado. O espaco dobrado importa - ha arquivo com dois espacos
+    no nome ("10 -  a roda da fortuna.jpg") e o nome de exibicao herda a
+    forma do arquivo."""
+    import baralho
+    return " ".join(baralho.chave(str(s)).split())
+
+
+def catalogo_cartas():
+    """O nome de exibicao das 78 cartas, na ordem do arquivo.
+
+    A lista que o editor oferece no autocomplete, a que o roteiro aceita e
+    a de onde sai a imagem do overlay sao a MESMA - `baralho.catalogo()`,
+    que le a pasta. E por isso que errar o nome de uma carta na tela e
+    impossivel: as duas pontas leem o mesmo disco."""
+    import baralho
+    return [c["nome"] for c in baralho.catalogo()]
+
+
+def parse_roteiro(texto, principal, dur_saida, C, nomes=None):
+    """O roteiro escrito a mao -> os eventos de carta, em tempo de SAIDA.
+
+    Devolve `(eventos, erros, notas)`, e as tres listas importam:
+
+    - `eventos` e o que vai para a tela do video, ja com lado e
+      profundidade de pilha resolvidos;
+    - `erros` sao linhas que nao viraram carta nenhuma. O export RECUSA
+      enquanto houver uma - metade de um roteiro renderizado em silencio
+      seria decisao humana sumindo, o defeito que este programa persegue;
+    - `notas` sao linhas que viraram carta com alguma diferenca do que
+      estava escrito (uma carta aparada porque invadia os `rabo_final`
+      segundos finais). Nao impedem nada, e sao ditas na tela pela mesma
+      razao: o programa nao muda o pedido de ninguem calado.
+
+    A PROFUNDIDADE nao esta escrita no roteiro, e nao deve estar: "carta
+    adicionada ao mesmo lado enquanto houver outra da stack nessa carta" e
+    uma regra sobre o QUE JA ESTA NA TELA, entao ela se conta, nao se
+    digita. Quem entra conta quantas cartas do mesmo lado estao vivas
+    naquele instante - e e por isso que a pilha desce sozinha quando a de
+    baixo some.
+
+    A carta PRINCIPAL e o caso especial de uma linha so: esquerda,
+    profundidade 0, do `principal_entra` ate o `rabo_final`. Ela e a ancora
+    - fica no fundo da pilha esquerda o video inteiro -, e por isso e a
+    primeira da lista mesmo que alguma linha do roteiro comece antes
+    dela."""
+    cc = C["cartas"]
+    nomes = catalogo_cartas() if nomes is None else nomes
+    por_chave = {_chave_carta(n): n for n in nomes}
+    fade = cc["fade"]
+    # depois disto nao entra carta nenhuma: "os ultimos 10 segundos sao so
+    # a Mariana falando". E o fim de toda carta sem tempo declarado.
+    corta_em = dur_saida - cc["rabo_final"]
+
+    eventos, erros, notas = [], [], []
+
+    def evento(carta, lado, ini, fade_ini, linha, escrito):
+        return {"carta": carta, "lado": lado, "prof": 0,
+                "ini": round(ini, 3), "fade_ini": round(fade_ini, 3),
+                "fim": round(min(dur_saida, fade_ini + fade), 3),
+                "fade_dur": fade, "fade_in": fade,
+                "linha": linha, "escrito": escrito}
+
+    def erro(linha, texto, msg):
+        erros.append({"linha": linha, "texto": texto, "erro": msg})
+
+    if principal:
+        nome = por_chave.get(_chave_carta(principal))
+        if not nome:
+            erro(0, principal, f"'{principal}' nao e uma carta do baralho")
+        elif corta_em <= cc["principal_entra"]:
+            erro(0, principal,
+                 f"o corte tem {dur_saida:.0f}s: nao cabe a carta principal "
+                 f"entre {cc['principal_entra']:.0f}s e os "
+                 f"{cc['rabo_final']:.0f}s finais")
+        else:
+            eventos.append(evento(nome, "esquerda", cc["principal_entra"],
+                                  corta_em, 0, nome))
+
+    for n, bruta in enumerate(texto.splitlines(), start=1):
+        crua = bruta.strip()
+        if not crua or crua.startswith("#"):
+            continue
+        m = RE_LINHA_ROTEIRO.match(crua)
+        t = le_tempo(m.group(1)) if m else None
+        if t is None:
+            erro(n, crua, "a linha tem de comecar com o tempo: "
+                          "[1:29] Rainha de Copas; direita")
+            continue
+        campos = [x.strip() for x in m.group(2).split(";")]
+        if not campos[0]:
+            erro(n, crua, "falta o nome da carta depois do tempo")
+            continue
+        nome = por_chave.get(_chave_carta(campos[0]))
+        if not nome:
+            erro(n, crua, f"'{campos[0]}' nao e uma carta do baralho")
+            continue
+
+        lado, segundos, ruim = None, None, False
+        for extra in campos[1:]:
+            if not extra:
+                continue
+            k = _chave_carta(extra)
+            if k in LADO_ALT:
+                lado = LADO_ALT[k]
+            elif RE_SEGUNDOS.match(k):
+                segundos = float(RE_SEGUNDOS.match(k).group(1).replace(",", "."))
+            else:
+                erro(n, crua, f"nao entendi '{extra}' - depois da carta so "
+                              f"cabe 'esquerda'/'direita' e um tempo como '12s'")
+                ruim = True
+                break
+        if ruim:
+            continue
+        # Sem lado escrito: a principal ja ocupa a esquerda, entao a carta
+        # nova vai para o lado que sobra. Sem principal, a esquerda e o
+        # lado de comecar. O autocomplete da tela escreve o lado sempre -
+        # este padrao e para quem digita a linha na mao.
+        if lado is None:
+            lado = "direita" if principal else "esquerda"
+
+        if t >= corta_em:
+            erro(n, crua, f"{hhmmss(t)} ja esta nos {cc['rabo_final']:.0f}s "
+                          f"finais do corte ({hhmmss(dur_saida)}), onde nao "
+                          f"entra carta")
+            continue
+        if t < 0:
+            erro(n, crua, "tempo negativo")
+            continue
+        if segundos is None:
+            fade_ini = corta_em
+        else:
+            fade_ini = t + segundos
+            if fade_ini > corta_em:
+                notas.append({"linha": n, "nota":
+                              f"aparei para {corta_em - t:.0f}s: os "
+                              f"{cc['rabo_final']:.0f}s finais do video sao "
+                              f"sem carta"})
+                fade_ini = corta_em
+        eventos.append(evento(nome, lado, t, fade_ini, n, campos[0]))
+
+    # ---- a pilha se conta, nao se digita -----------------------------
+    # A principal (linha 0) na frente de tudo: ela e o fundo da pilha
+    # esquerda por definicao, mesmo que alguma linha do roteiro comece
+    # antes dos `principal_entra` segundos dela.
+    ordem = sorted(eventos, key=lambda e: (e["linha"] != 0, e["ini"], e["linha"]))
+    fim = []
+    for ev in ordem:
+        vivos = [x for x in fim if x["fim"] > ev["ini"] + 1e-6]
+        if ev["linha"] != 0:
+            # a MENOR vaga livre daquele lado, e nao "quantas ha" nem "a
+            # mais funda + 1": e o que faz a pilha DESCER quando a carta de
+            # baixo sai, em vez de marchar para o centro a cada carta nova
+            # de um video comprido. A posicao de quem ficou nao se mexe.
+            ocupadas = {x["prof"] for x in vivos if x["lado"] == ev["lado"]}
+            ev["prof"] = next(k for k in range(len(ocupadas) + 1)
+                              if k not in ocupadas)
+        # A MESMA carta duas vezes na tela ao mesmo tempo e a mesma coisa
+        # que o modo enumeracao ja recusava (pedido do Rafael em 02/09):
+        # duas copias da mesma ilustracao deslocadas de 1% da largura
+        # parecem defeito de render, nao empilhamento.
+        repetida = next((x for x in vivos if x["carta"] == ev["carta"]), None)
+        if repetida:
+            erro(ev["linha"], ev["escrito"],
+                 f"'{ev['carta']}' ja esta na tela desde {hhmmss(repetida['ini'])} "
+                 f"- de um tempo para a primeira sair antes")
+            continue
+        choque = next((x for x in vivos if x["lado"] == ev["lado"]
+                       and x["prof"] == ev["prof"]), None)
+        if choque:
+            erro(ev["linha"], ev["escrito"],
+                 f"cai em cima de '{choque['carta']}' na mesma posicao da "
+                 f"pilha - troque o lado ou o tempo")
+            continue
+        fim.append(ev)
+    # em ordem de LINHA, e nao na ordem em que foram descobertos: a lista
+    # vai para a margem do editor, ao lado da linha de que ela fala, e a
+    # checagem da pilha corre depois da leitura de todas as linhas.
+    erros.sort(key=lambda e: e["linha"])
+    return fim, erros, notas
+
+
+def janelas_reenquadra(eventos, junta):
+    """As janelas em que a Mariana fica CENTRALIZADA (o crop do layout 3).
+
+    A regra e a que o Rafael ditou: "adicionar uma carta a direita quer
+    dizer necessariamente mudar para o layout onde ela fica ao centro". Ou
+    seja, a pergunta e uma so - ha carta a direita agora? -, e nao ha
+    terceira resposta.
+
+    Duas janelas separadas por menos de `junta` viram uma. Sem isso, duas
+    cartas a direita a um segundo uma da outra fariam o enquadramento
+    voltar ao quadro inteiro e fechar de novo - o zoom piscaria por nada, e
+    seria o unico movimento de camera do video inteiro a nao dizer nada."""
+    pontos = sorted((e["ini"], e["fim"]) for e in eventos
+                    if e["lado"] == "direita")
+    out = []
+    for a, b in pontos:
+        if out and a - out[-1][1] <= junta:
+            out[-1][1] = max(out[-1][1], b)
+        else:
+            out.append([a, b])
+    return [(a, b) for a, b in out]
+
+
+def roteiro_caducou(doc, mantido, tol=0.15):
+    """O corte mudou depois de o roteiro ser escrito?
+
+    Mesma pergunta, mesmo numero e mesma cegueira do `previa_no_disco` do
+    editor e da fase 0 do `/anotar`: compara a duracao do corte de entao
+    com a de agora, com 0,15 s de folga, e nao percebe quem tira 200 ms num
+    lugar e devolve 200 ms noutro.
+
+    Existe porque o roteiro fala no relogio da SAIDA. Um `[1:29]` escrito
+    contra um corte e apontando para outro nao erra por pouco: erra tudo o
+    que vem depois do ponto que mudou, e erra calado."""
+    velho = (doc or {}).get("mantido")
+    if velho is None:
+        return None
+    return {"antes": round(velho, 2), "agora": round(mantido, 2),
+            "velho": abs(velho - mantido) > tol}
+
+
+def carrega_roteiro(d):
+    p = d / "cartas-roteiro.json"
+    return jload(p) if p.exists() else None
+
+
+# ---------------------------------------------------------------- legenda
+#
+# O .srt sai do MESMO corte que o video, e por isso ele nao pode ser feito
+# do `transcript.md`: aquele arquivo e a transcricao ipsis litteris da
+# fonte, com o que foi cortado ainda dentro. A legenda e o que SOBROU, no
+# relogio de quem assiste.
+
+RE_FIM_FRASE = re.compile(r"[.!?…]['\"”’)\]]*$")
+
+
+def _texto_legenda(t):
+    """O que este token diz na legenda, ou "" se ele nao diz nada.
+
+    Fala recuperada de lacuna entra - e fala, e esta no video. O rotulo
+    "hesitação" e o `?? N.Ns` nao entram: sao etiqueta do programa, nao
+    palavra dita. E a mesma pergunta que o `pecas` do editor faz para
+    decidir se um token e vao, e pela mesma razao - ali ninguem leu nada."""
+    txt = str(t.get("t") or "").strip()
+    if t.get("k") == "palavra":
+        return txt
+    if not txt or txt == "hesitação" or txt.startswith("??"):
+        return ""
+    return txt
+
+
+def monta_legendas(stream, iv, C):
+    """Os cartoes do .srt: o que sobrou do texto, no relogio da SAIDA.
+
+    Uma palavra entra quando MAIS DA METADE dela sobrevive ao corte. Nao e
+    numero novo: e a mesma regra da metade do token com que o editor decide
+    o que um arrasto pegou (CLAUDE.md, "Selecionar por tempo casa por
+    METADE do token"), e ela se paga aqui pelo mesmo motivo - 18 ms de uma
+    palavra raspada na emenda nao sao a palavra, e a palavra inteira e.
+
+    Onde quebrar vem do `[legenda]` do config: largura do cartao, teto de
+    tempo, a pausa que fecha a frase e o piso de texto para um ponto final
+    poder fechar. Nenhum desses numeros e medicao contra este projeto - nao
+    ha video legendado a mao para medir - e o comentario la diz isso.
+
+    O `s`/`e` de cada cartao e de FONTE, e nao de saida, de proposito: e
+    por ele que uma legenda editada a mao se reencontra depois (mesma regra
+    do `montagem.json` e da resposta de pendencia - tempo de fonte nao
+    caduca, numero de ordem sim), e e por ele que o botao de play do editor
+    sabe o que tocar. Um cartao pode atravessar um corte: ai o intervalo de
+    fonte contem material cortado, e tocar por `iv` dentro dele devolve
+    exatamente o que se ouve - que e o ponto."""
+    cl = C["legenda"]
+    total = sum(b - a for a, b in iv)
+
+    palavras = []
+    for t in stream:
+        txt = _texto_legenda(t)
+        if not txt:
+            continue
+        dur = max(1e-6, t["e"] - t["s"])
+        vivo = sum(max(0.0, min(b, t["e"]) - max(a, t["s"])) for a, b in iv)
+        if vivo <= dur / 2:
+            continue
+        palavras.append({"txt": txt, "s": t["s"], "e": t["e"],
+                         "ini": _tempo_saida(t["s"], iv),
+                         "fim": _tempo_saida(t["e"], iv)})
+
+    cenas = []
+    for p in palavras:
+        c = cenas[-1] if cenas else None
+        if c is None:
+            quebra = True
+        else:
+            largura = len(c["txt"]) + 1 + len(p["txt"])
+            quebra = (p["ini"] - c["fim"] > cl["pausa_quebra"]
+                      or largura > cl["max_caracteres"]
+                      or p["fim"] - c["ini"] > cl["max_segundos"]
+                      or (c["fecha"] and len(c["txt"]) >= cl["min_caracteres"]))
+        if quebra:
+            cenas.append({"txt": p["txt"], "s": p["s"], "e": p["e"],
+                          "ini": p["ini"], "fim": p["fim"],
+                          "fecha": bool(RE_FIM_FRASE.search(p["txt"])),
+                          "palavras": [p]})
+        else:
+            c["txt"] += " " + p["txt"]
+            c["e"], c["fim"] = p["e"], p["fim"]
+            c["fecha"] = bool(RE_FIM_FRASE.search(p["txt"]))
+            c["palavras"].append(p)
+
+    # O piso de tempo so ESTICA o fim, e nunca por cima do cartao seguinte:
+    # legenda que pisca nao se le, legenda que se sobrepoe some no player.
+    for i, c in enumerate(cenas):
+        if c["fim"] - c["ini"] < cl["min_segundos"]:
+            teto = cenas[i + 1]["ini"] if i + 1 < len(cenas) else total
+            c["fim"] = min(teto, c["ini"] + cl["min_segundos"])
+
+    saida = []
+    for n, c in enumerate(cenas, start=1):
+        saida.append({"n": n, "s": round(c["s"], 3), "e": round(c["e"], 3),
+                      "ini": round(c["ini"], 3), "fim": round(c["fim"], 3),
+                      "auto": c["txt"], "txt": c["txt"], "mao": False,
+                      # tempo de FONTE de cada palavra do cartao, so para o
+                      # editor mover o verde palavra a palavra ao tocar - so
+                      # vale enquanto "mao" for False, porque legenda escrita
+                      # a mao troca o texto e a lista deixa de bater com ele.
+                      "palavras": [{"txt": w["txt"], "s": round(w["s"], 3),
+                                    "e": round(w["e"], 3)}
+                                   for w in c["palavras"]]})
+    return saida
+
+
+def aplica_legendas(cenas, itens, tol=0.05):
+    """Poe por cima de cada cartao o texto que uma pessoa escreveu.
+
+    Casa pelo TEMPO DE FONTE do cartao, nunca pelo numero: um corte novo no
+    meio do video renumera todos os cartoes de baixo, e a legenda escrita
+    para um passaria a valer para outro. Mesma regra do `s`/`e` do
+    `montagem.json` e da resposta de pendencia, pela mesma razao.
+
+    Devolve as ORFAS - as edicoes que nao acharam cartao nenhum. Elas
+    acontecem quando o corte mudou a ponto de o cartao nao existir mais, e
+    dizer isso e obrigatorio: sumir com o texto que alguem escreveu, calado,
+    e o defeito que este programa inteiro persegue.
+
+    `orig` fica guardado para o editor poder mostrar quando o texto DE
+    BAIXO mudou depois da edicao (uma correcao de palavra, um corte novo) -
+    a edicao continua valendo, por ser a mais explicita, mas quem olha
+    merece saber que ela ficou para tras."""
+    livres = list(itens or [])
+    for c in cenas:
+        casa = None
+        for it in livres:
+            if (abs(it.get("s", -9) - c["s"]) <= tol
+                    and abs(it.get("e", -9) - c["e"]) <= tol):
+                casa = it
+                break
+        if casa is None:
+            continue
+        livres.remove(casa)
+        c["txt"] = casa.get("novo", c["auto"])
+        c["mao"] = True
+        c["orig"] = casa.get("orig", "")
+    return livres
+
+
+def carrega_legendas(d):
+    p = d / "legendas.json"
+    return jload(p) if p.exists() else None
+
+
+def srt_tempo(t):
+    ms = int(round(max(0.0, t) * 1000))
+    h, ms = divmod(ms, 3600000)
+    m, ms = divmod(ms, 60000)
+    s, ms = divmod(ms, 1000)
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+def quebra_legenda(txt, larg):
+    """Uma linha, ou duas quebradas no espaco mais perto do meio.
+
+    Duas e o teto de propósito: a terceira linha come a imagem, e num
+    cartao com o teto de `max_caracteres` ela nao chega a ser necessaria.
+    Quando nem duas cabem (uma palavra enorme, um texto colado a mao maior
+    que o cartao), sai como esta - aparar o que uma pessoa escreveu seria
+    pior que a linha comprida."""
+    txt = " ".join(str(txt).split())
+    if len(txt) <= larg:
+        return txt
+    meio, melhor, dist = len(txt) // 2, None, len(txt)
+    for i, ch in enumerate(txt):
+        if ch == " " and abs(i - meio) < dist:
+            melhor, dist = i, abs(i - meio)
+    if melhor is None:
+        return txt
+    return txt[:melhor] + "\n" + txt[melhor + 1:]
+
+
+def escreve_srt(cenas, path, C):
+    """O .srt, em UTF-8 com BOM e fim de linha CRLF.
+
+    Os dois sao do formato, nao gosto: e um formato de Windows, e o player
+    velho que abre um .srt sem BOM em cp1252 mostra "espadas" com o acento
+    quebrado. Quem le direito (YouTube, Premiere, VLC, CapCut) aceita os
+    dois jeitos - so um dos dois lados erra, entao vale o lado seguro."""
+    L = []
+    for c in cenas:
+        L.append(str(c["n"]))
+        L.append(f"{srt_tempo(c['ini'])} --> {srt_tempo(c['fim'])}")
+        L.append(quebra_legenda(c["txt"], C["legenda"]["max_linha"]))
+        L.append("")
+    with open(path, "w", encoding="utf-8-sig", newline="\r\n") as f:
+        f.write("\n".join(L))
+    return path
+
+
 def _resolve_carta(texto):
     import baralho
     alvo = baralho.chave(texto)
@@ -4519,21 +5197,30 @@ def _catalogo_img(nome):
              f"e o render - baralho completo/ mudou no meio do caminho?")
 
 
-def _roda_previa_cartas(d, a, meta, gscript_hw, gscript_sw, entradas, mantido):
-    """Ultimo trecho comum a `cmd_cartas`, os dois modos: ffmpeg com o
-    grafo (QSV primeiro, software se aquele falhar) e o mpv, se pedido.
-    Extraida porque so os grafos e as entradas diferem entre 'carta
-    principal' e '--sem-principal' - o resto (por que 360p/15fps, por que
-    dois grafos, por que QSV primeiro) e a mesma explicacao, nao duas."""
-    saida = d / "cartas_previa.mp4"
+def _previa_lores(d, C, a, meta, gscript_hw, gscript_sw, entradas, mantido,
+                   saida, rotulo):
+    """A previa barata: video pequeno, AUDIO FINAL. Depois abre o mpv.
+
+    Serve aos dois caminhos de carta - o `cartas` (mencao achada na fala) e
+    o `exportar --previa` (roteiro escrito a mao) -, e por isso e um lugar
+    so: por que 360p/15fps, por que dois grafos, por que QSV primeiro e a
+    mesma explicacao para os dois, nao duas.
+
+    O audio recebe o MESMO loudnorm de duas passadas do arquivo de
+    qualidade final - pedido do Rafael ao encomendar o modo cartas: "uma
+    previa de baixissima resolucao (apenas o audio bom)". Custa uma medicao
+    e um remux com `-c:v copy`, poucos segundos, e e o que faz a previa
+    valer como julgamento do que vai sair - a mesma razao pela qual
+    `trecho_audio` mora num lugar so."""
+    bruto = d / "_previa_bruta.mp4"
 
     def _saidas(gscript):
         return (["-/filter_complex", str(gscript), "-map", "[vo]", "-map", "[ao]",
                  "-t", f"{mantido:.3f}",
                  "-c:v", "libx264", "-preset", "fast", "-crf", "28",
-                 "-c:a", "aac", "-b:a", "128k", str(saida)])
+                 "-c:a", "aac", "-b:a", "192k", "-ar", "48000", str(bruto)])
 
-    print(f"[cartas] gerando previa lo-res...", flush=True)
+    print(f"[{rotulo}] gerando previa lo-res...", flush=True)
     # QSV primeiro: decode de software do IMG_0301 inteiro (5,5min) levou
     # mais de 30min so nesta etapa, contra minutos com QSV - MEDIDO no
     # checkpoint 4. Se a combinacao hwaccel+filtros nao colar nesta versao
@@ -4544,15 +5231,27 @@ def _roda_previa_cartas(d, a, meta, gscript_hw, gscript_sw, entradas, mantido):
     if r.returncode != 0:
         r = subprocess.run([FFMPEG, "-y", "-v", "error", "-stats"]
                             + entradas + _saidas(gscript_sw))
+    if r.returncode != 0 or not bruto.exists():
+        sys.exit(f"[{rotulo}] ffmpeg falhou na previa - veja os graph_*.txt")
+
+    ca = C["audio"]
+    print(f"[{rotulo}] medindo loudness...", flush=True)
+    af, entrada_lufs = _loudnorm(bruto, ca)
+    if entrada_lufs is not None:
+        print(f"[{rotulo}] {entrada_lufs} LUFS -> {ca['lufs_alvo']} LUFS")
+    r = subprocess.run([FFMPEG, "-y", "-v", "error", "-stats", "-i", str(bruto),
+                        "-c:v", "copy", "-af", af, "-c:a", "aac",
+                        "-b:a", "192k", "-ar", "48000", str(saida)])
+    bruto.unlink(missing_ok=True)
     if r.returncode != 0 or not saida.exists():
-        sys.exit("[cartas] ffmpeg falhou na previa - veja graph_cartas*.txt")
-    print(f"[cartas] previa pronta: {saida}  "
+        sys.exit(f"[{rotulo}] ffmpeg falhou na normalizacao da previa")
+    print(f"[{rotulo}] previa pronta: {saida}  "
           f"({saida.stat().st_size/1e6:.1f} MB)")
     mpv = _find_mpv()
     if mpv and not a.sem_abrir:
         subprocess.run([mpv, "--force-window=yes",
-                        f"--force-media-title=previa cartas {Path(a.video).name}",
-                        str(saida)])
+                        f"--force-media-title=previa {rotulo} "
+                        f"{Path(a.video).name}", str(saida)])
 
 
 def cmd_cartas(a):
@@ -4573,7 +5272,7 @@ def cmd_cartas(a):
       enumera VARIAS cartas ou TIPOS de carta (rainhas, reis, pajens...)
       sem nenhuma ser o tema - nao ha "a mais mencionada" que faca
       sentido fixar. Cada mencao alterna de lado e empilha sobre a
-      anterior do mesmo lado (`grafo_cartas_enumeracao`, layout 4)."""
+      anterior do mesmo lado (`grafo_cartas_pilhas`, layout 4)."""
     import baralho
     C, d, stream, dur, db, hop, anot, mont, corr = _base(a.video, "cartas")
     iv = intervalos(stream, C, dur, db, hop, anot, mont)
@@ -4627,24 +5326,24 @@ def cmd_cartas(a):
         jdump(cartas, d / "cartas.json")
 
         # Uma camada de overlay por POSICAO de pilha, nao por mencao - ver
-        # a nota em `_agrupa_camadas_enumeracao` sobre por que isso e o
+        # a nota em `_agrupa_camadas` sobre por que isso e o
         # que faz esta previa terminar em minutos, nao quase uma hora.
-        camadas = _agrupa_camadas_enumeracao(eventos)
+        camadas = _agrupa_camadas(eventos)
         print(f"[cartas] {len(eventos)} mencao(oes) cabem em "
               f"{len(camadas)} posicao(oes) de pilha distintas "
               f"({len(camadas)} camada(s) de overlay)")
         imgs = [_catalogo_img(c["carta"]) for c in camadas]
         gscript_hw = d / "graph_cartas_qsv.txt"
         gscript_hw.write_text(
-            grafo_cartas_enumeracao(iv, C, camadas, janelas_sessao,
-                                     resumo_rosto, w_fonte, h_fonte, imgs,
-                                     escala=360, fps=15, hw=True),
+            grafo_cartas_pilhas(iv, C, camadas, janelas_sessao,
+                                 resumo_rosto, w_fonte, h_fonte, imgs,
+                                 escala=360, fps=15, hw=True),
             encoding="utf-8")
         gscript_sw = d / "graph_cartas.txt"
         gscript_sw.write_text(
-            grafo_cartas_enumeracao(iv, C, camadas, janelas_sessao,
-                                     resumo_rosto, w_fonte, h_fonte, imgs,
-                                     escala=360, fps=15, hw=False),
+            grafo_cartas_pilhas(iv, C, camadas, janelas_sessao,
+                                 resumo_rosto, w_fonte, h_fonte, imgs,
+                                 escala=360, fps=15, hw=False),
             encoding="utf-8")
 
         mantido = sum(b - x for x, b in iv)
@@ -4652,7 +5351,8 @@ def cmd_cartas(a):
         for img in imgs:
             entradas += ["-loop", "1", "-i", str(img)]
 
-        _roda_previa_cartas(d, a, meta, gscript_hw, gscript_sw, entradas, mantido)
+        _previa_lores(d, C, a, meta, gscript_hw, gscript_sw, entradas, mantido,
+                  d / "cartas_previa.mp4", "cartas")
         return
 
     contagem = {}
@@ -4714,11 +5414,80 @@ def cmd_cartas(a):
                 + [x for _, p in secundarias_imgs
                    for x in ("-loop", "1", "-i", str(p))])
 
-    _roda_previa_cartas(d, a, meta, gscript_hw, gscript_sw, entradas, mantido)
+    _previa_lores(d, C, a, meta, gscript_hw, gscript_sw, entradas, mantido,
+                  d / "cartas_previa.mp4", "cartas")
+
+
+def _corta_final(d, C, meta, g_hw, g_sw, entradas, saida, rotulo, emendas):
+    """O arquivo de qualidade final: corte pelo grafo, depois loudnorm de
+    duas passadas. Devolve o Path do que ficou pronto.
+
+    Extraida de `cmd_render` para o `exportar` nao ter uma SEGUNDA receita
+    de codificacao: o video com carta e o video sem carta tem de sair com o
+    mesmo codec, a mesma qualidade, os mesmos tags de cor e o mesmo
+    tratamento de audio - a unica diferenca entre eles e o que o
+    filter_complex desenha por cima. Duas receitas seriam duas respostas
+    para "como este projeto codifica video", e a que diverge calada e
+    sempre a que ninguem esta olhando (mesmo raciocinio do `_grafo_corte`
+    e do `trecho_audio`).
+
+    Dois grafos, QSV primeiro e software se aquele falhar: com decode QSV o
+    [0:v] pode chegar aos filtros em memoria de GPU, e so o grafo `hw=True`
+    poe o `hwdownload` que isso pede (ver `grafo_cartas`). Sem carta os
+    dois sao o mesmo arquivo, e a queda para software so tira o
+    `-hwaccel`."""
+    cr = C["render"]
+    corte = d / "_corte.mov"
+    hevc = "hevc" in meta.get("vcodec", "")
+    enc = ["-c:v", "hevc_qsv" if hevc else "h264_qsv",
+           "-global_quality", str(cr["qualidade"])]
+    if not cr["gpu"]:
+        enc = ["-c:v", "libx265" if hevc else "libx264",
+               "-crf", str(cr["qualidade"]), "-preset", "medium"]
+    cor = ["-color_primaries", "bt2020", "-color_trc", "arib-std-b67",
+           "-colorspace", "bt2020nc", "-tag:v", "hvc1"] if hevc else []
+
+    def _cmd(dec, g):
+        # "-/filter_complex arquivo" le o grafo de um arquivo. Necessario:
+        # sao centenas de emendas, nao cabem na linha de comando. (O antigo
+        # -filter_complex_script saiu no ffmpeg 9.)
+        return ([FFMPEG, "-y", "-v", "error", "-stats"] + dec + entradas
+                + ["-/filter_complex", str(g), "-map", "[vo]", "-map", "[ao]"]
+                + enc + cor
+                + ["-c:a", "aac", "-b:a", "192k", "-ar", "48000", str(corte)])
+
+    print(f"[{rotulo}] cortando ({emendas} emendas)...", flush=True)
+    r = None
+    if cr["gpu"]:
+        r = subprocess.run(_cmd(["-hwaccel", "qsv"], g_hw))
+        if r.returncode != 0:
+            print(f"[{rotulo}] o caminho QSV falhou; refazendo em software",
+                  flush=True)
+    if r is None or r.returncode != 0:
+        r = subprocess.run(_cmd([], g_sw))
+    if r.returncode != 0 or not corte.exists():
+        sys.exit(f"[{rotulo}] ffmpeg falhou no corte")
+
+    # ---- audio: loudnorm de duas passadas -----------------------------
+    ca = C["audio"]
+    print(f"[{rotulo}] medindo loudness...", flush=True)
+    af, entrada_lufs = _loudnorm(corte, ca)
+    print(f"[{rotulo}] entrada {entrada_lufs} LUFS -> alvo "
+          f"{ca['lufs_alvo']} LUFS" if entrada_lufs is not None
+          else f"[{rotulo}] medicao falhou; loudnorm em passada unica")
+    print(f"[{rotulo}] normalizando audio...", flush=True)
+    r = subprocess.run([FFMPEG, "-y", "-v", "error", "-stats", "-i",
+                        str(corte), "-c:v", "copy", "-af", af,
+                        "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
+                        str(saida)])
+    if r.returncode != 0:
+        sys.exit(f"[{rotulo}] ffmpeg falhou no audio")
+    corte.unlink(missing_ok=True)
+    return saida
 
 
 def cmd_render(a):
-    C, d, dur, iv = _plano(a, "render")
+    C, d, stream, dur, iv = _plano(a, "render")
     cr = C["render"]
     meta = jload(d / "meta.json")
     mantido = sum(b - a_ for a_, b in iv)
@@ -4738,46 +5507,158 @@ def cmd_render(a):
     gscript.write_text(grafo(iv, C, escala, fps), encoding="utf-8")
 
     saida = Path(a.out) if a.out else d / f"{Path(a.video).stem}_cortado.mov"
-    corte = d / "_corte.mov"
-    hevc = "hevc" in meta.get("vcodec", "")
-    enc = ["-c:v", "hevc_qsv" if hevc else "h264_qsv",
-           "-global_quality", str(cr["qualidade"])]
-    if not cr["gpu"]:
-        enc = ["-c:v", "libx265" if hevc else "libx264",
-               "-crf", str(cr["qualidade"]), "-preset", "medium"]
-    cor = ["-color_primaries", "bt2020", "-color_trc", "arib-std-b67",
-           "-colorspace", "bt2020nc", "-tag:v", "hvc1"] if hevc else []
-
-    dec = ["-hwaccel", "qsv"] if cr["gpu"] else []
-    cmd = ([FFMPEG, "-y", "-v", "error", "-stats"] + dec
-           # "-/filter_complex arquivo" le o grafo de um arquivo. Necessario:
-           # sao centenas de emendas, nao cabem na linha de comando. (O antigo
-           # -filter_complex_script saiu no ffmpeg 9.)
-           # `meta["src"]`, nao `a.video`: ver a mesma nota no `cmd_audio`.
-           + ["-i", str(meta["src"]), "-/filter_complex", str(gscript),
-              "-map", "[vo]", "-map", "[ao]"] + enc + cor
-           + ["-c:a", "aac", "-b:a", "192k", "-ar", "48000", str(corte)])
-    print(f"[render] cortando ({len(iv)} emendas)...", flush=True)
-    r = subprocess.run(cmd)
-    if r.returncode != 0 or not corte.exists():
-        sys.exit("[render] ffmpeg falhou no corte")
-
-    # ---- audio: loudnorm de duas passadas -----------------------------
-    ca = C["audio"]
-    print("[render] medindo loudness...", flush=True)
-    af, entrada_lufs = _loudnorm(corte, ca)
-    print(f"[render] entrada {entrada_lufs} LUFS -> alvo {ca['lufs_alvo']} LUFS"
-          if entrada_lufs is not None
-          else "[render] medicao falhou; loudnorm em passada unica")
-    print("[render] normalizando audio...", flush=True)
-    r = subprocess.run([FFMPEG, "-y", "-v", "error", "-stats", "-i",
-                        str(corte), "-c:v", "copy", "-af", af,
-                        "-c:a", "aac", "-b:a", "192k", "-ar", "48000", str(saida)])
-    if r.returncode != 0:
-        sys.exit("[render] ffmpeg falhou no audio")
-    corte.unlink(missing_ok=True)
+    # `meta["src"]`, nao `a.video`: ver a mesma nota no `cmd_audio`.
+    _corta_final(d, C, meta, gscript, gscript, ["-i", str(meta["src"])],
+                 saida, "render", len(iv))
     mb = saida.stat().st_size / 1e6
     print(f"[render] pronto: {saida}  ({hhmmss(mantido)}, {mb:.0f} MB)")
+
+def _monta_cartas(C, eventos, d, meta, force, rotulo):
+    """O que o ffmpeg precisa para desenhar um roteiro: as camadas (uma
+    entrada de imagem cada), as janelas de reenquadramento e o resumo do
+    rosto.
+
+    O rastreio de rosto so roda quando ha carta a DIREITA - e o unico caso
+    em que a Mariana e reenquadrada (layout 3). Sem isso, um video que so
+    usa a carta principal pagaria ~1,5 min de deteccao para alimentar um
+    `crop` que a expressao `if(0, ...)` nunca liga."""
+    camadas = _agrupa_camadas(eventos)
+    imgs = [_catalogo_img(c["carta"]) for c in camadas]
+    janelas = janelas_reenquadra(eventos, C["cartas"]["junta_janela"])
+    resumo = {}
+    if janelas:
+        import rosto
+        rjson = d / "rosto.json"
+        if not rjson.exists() or force:
+            print(f"[{rotulo}] medindo onde o rosto anda (uma vez por "
+                  f"video)...", flush=True)
+            rosto.rastreia(Path(meta["src"]), d)
+        doc = jload(rjson)
+        resumo = doc["resumo"]
+        livre = faixa_livre(C, meta["w"], meta["h"])
+        jan = _janela_layout3(resumo, C["cartas"]["crop_margem"], livre)
+        fora = rosto_atras_da_carta(doc, jan, livre)
+        # A unica parte disto que nao se justifica sozinha na previa: quem
+        # olha ve UM enquadramento e nao sabe se era o melhor possivel.
+        print(f"[{rotulo}] reenquadramento: zoom {1/max(1e-6, jan[2]):.2f}x, "
+              f"faixa livre entre as cartas {livre[0]:.2f}-{livre[1]:.2f}"
+              + (f", o rosto passa atras de uma carta em {fora*100:.0f}% do "
+                 f"tempo" if fora is not None else ""))
+    return camadas, imgs, janelas, resumo
+
+
+def cmd_exportar(a):
+    """O video pronto do modo cartas: o corte, as cartas do roteiro e o
+    .srt, tudo de uma vez.
+
+    E o fim do caminho que comeca no editor: `cartas-roteiro.json` diz que
+    carta aparece quando e de que lado, `legendas.json` diz o que cada
+    cartao de legenda escreve, e este comando desenha os dois sobre o corte
+    que o `montagem.json` deixou pronto.
+
+    Duas saidas, a mesma decisao: `--previa` da 360p/15fps com o AUDIO
+    FINAL, para conferir a dança das cartas em minutos; sem ela sai o
+    arquivo de qualidade, na resolucao do original (ou no `[render].perfil`
+    que estiver escolhido). As duas leem o mesmo roteiro e passam pelo
+    mesmo `grafo_cartas_pilhas` - se a previa esta certa, o final esta.
+
+    RECUSA quando o roteiro tem linha ilegivel, e nao pula a linha: meio
+    roteiro renderizado calado seria decisao humana sumindo pelo caminho
+    novo, que e o defeito que este programa persegue desde o primeiro dia.
+    Erro de roteiro, porem, nao e erro de corte - o editor mostra os
+    mesmos erros vermelhos na tela, na linha em que estao, antes de alguem
+    chegar aqui."""
+    C, d, stream, dur, iv = _plano(a, "exportar")
+    meta = jload(d / "meta.json")
+    mantido = sum(b - x for x, b in iv)
+    stem = Path(a.video).stem
+
+    doc = carrega_roteiro(d) or {}
+    eventos, erros, notas = parse_roteiro(doc.get("roteiro", ""),
+                                          doc.get("principal"), mantido, C)
+    for n in notas:
+        print(f"[exportar] linha {n['linha']}: {n['nota']}")
+    if erros:
+        for e in erros:
+            onde = ("a carta principal" if e["linha"] == 0
+                    else f"linha {e['linha']}")
+            print(f"[exportar] {onde}: {e['erro']}")
+        sys.exit("[exportar] abortado: o roteiro de cartas tem linha que o "
+                 "programa nao sabe desenhar. Conserte no modo cartas do "
+                 "editor - la o erro aparece na propria linha.")
+
+    caducou = roteiro_caducou(doc, mantido)
+    if caducou and caducou["velho"]:
+        print(f"[exportar] AVISO: o roteiro foi escrito contra um corte de "
+              f"{hhmmss(caducou['antes'])} e o de agora tem "
+              f"{hhmmss(caducou['agora'])}. O relogio do roteiro e o da "
+              f"SAIDA: todo tempo depois da primeira diferenca escorregou. "
+              f"Abra o modo cartas e confira antes de publicar.")
+
+    escala = fps = None
+    if a.previa:
+        escala, fps = 360, 15
+    elif C["render"]["perfil"] == "1080p30":
+        escala, fps = 1080, 30
+
+    saida = Path(a.out) if a.out else (
+        d / f"{stem}_previa_cartas.mp4" if a.previa
+        else Path(meta["src"]).parent / f"{stem}_final.mov")
+    saida.parent.mkdir(parents=True, exist_ok=True)
+
+    # ---- legenda ------------------------------------------------------
+    if not a.sem_legenda:
+        cenas = monta_legendas(stream, iv, C)
+        orfas = aplica_legendas(
+            cenas, (carrega_legendas(d) or {}).get("itens", []))
+        for o in orfas:
+            print(f"[exportar] AVISO: a legenda escrita a mao em "
+                  f"{o.get('s', 0):.2f}s da fonte nao casa com cartao "
+                  f"nenhum - o corte mudou depois dela: {o.get('novo','')[:50]}")
+        srt = saida.with_suffix(".srt")
+        escreve_srt(cenas, srt, C)
+        n_mao = sum(1 for c in cenas if c.get("mao"))
+        print(f"[exportar] legenda: {len(cenas)} cartoes "
+              f"({n_mao} escritos a mao) -> {srt}")
+
+    # ---- video --------------------------------------------------------
+    if eventos:
+        camadas, imgs, janelas, resumo = _monta_cartas(
+            C, eventos, d, meta, a.force, "exportar")
+        print(f"[exportar] {len(eventos)} carta(s) em {len(camadas)} camada(s) "
+              f"de overlay, {len(janelas)} janela(s) de reenquadramento")
+        for e in eventos:
+            print(f"  {hhmmss(e['ini'])} -> {hhmmss(e['fim'])}  "
+                  f"{e['lado']:8s} pilha {e['prof']}  {e['carta']}")
+        g_hw, g_sw = d / "graph_export_qsv.txt", d / "graph_export.txt"
+        for p, hw in ((g_hw, True), (g_sw, False)):
+            p.write_text(
+                grafo_cartas_pilhas(iv, C, camadas, janelas, resumo,
+                                    meta["w"], meta["h"], imgs,
+                                    escala=escala, fps=fps, hw=hw),
+                encoding="utf-8")
+        entradas = (["-i", str(meta["src"])]
+                    + [x for img in imgs for x in ("-loop", "1", "-i", str(img))])
+    else:
+        # Sem roteiro nenhum o `exportar` continua servindo: e o `render`
+        # com a legenda junto. Nao ha carta para desenhar, entao nao ha
+        # razao para o grafo caro.
+        print("[exportar] roteiro vazio: sai o corte sem carta nenhuma")
+        g_hw = g_sw = d / "graph_export.txt"
+        g_hw.write_text(grafo(iv, C, escala, fps), encoding="utf-8")
+        entradas = ["-i", str(meta["src"])]
+
+    print(f"[exportar] {len(iv)} trechos, {hhmmss(mantido)} de {hhmmss(dur)} "
+          f"(corta {100*(1-mantido/dur):.0f}%)")
+    if a.previa:
+        _previa_lores(d, C, a, meta, g_hw, g_sw, entradas, mantido, saida,
+                      "exportar")
+    else:
+        _corta_final(d, C, meta, g_hw, g_sw, entradas, saida, "exportar",
+                     len(iv))
+        print(f"[exportar] pronto: {saida}  ({hhmmss(mantido)}, "
+              f"{saida.stat().st_size/1e6:.0f} MB)")
+
 
 # ---------------------------------------------------------------------- lote
 
@@ -4887,6 +5768,23 @@ def main():
     ct.add_argument("--sem-abrir", action="store_true",
                     help="gera a previa mas nao abre o mpv sozinho")
     ct.set_defaults(fn=cmd_cartas)
+
+    ex = sub.add_parser("exportar",
+                        help="o video pronto: corte + cartas do roteiro + "
+                             ".srt (o que o modo cartas do editor exporta)")
+    ex.add_argument("video")
+    ex.add_argument("--previa", action="store_true",
+                    help="360p/15fps com o audio final, para conferir as "
+                         "cartas em minutos em vez de horas")
+    ex.add_argument("--sem-legenda", action="store_true",
+                    help="nao escreve o .srt ao lado do video")
+    ex.add_argument("--sem-abrir", action="store_true",
+                    help="gera a previa mas nao abre o mpv sozinho")
+    ex.add_argument("--out", default=None)
+    ex.add_argument("--force", action="store_true",
+                    help="refaz o rastreio de rosto mesmo se ja tiver cache")
+    ex.add_argument("--ignorar-transcript", action="store_true")
+    ex.set_defaults(fn=cmd_exportar)
 
     r = sub.add_parser("render")
     r.add_argument("video")

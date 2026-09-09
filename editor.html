@@ -114,11 +114,11 @@ body{
   padding:5px 7px;font:12px/1.2 inherit;color:var(--tinta);background:#fff;
   text-align:center;
 }
-#btPainel{
+#btPainel,#btCartas{
   border:1px solid var(--linha);background:var(--painel);border-radius:4px;
   padding:5px 9px;font:12px/1.2 inherit;cursor:pointer;color:#4a463f;
 }
-#btPainel:hover{background:#fff}
+#btPainel:hover,#btCartas:hover{background:#fff}
 #btPainel.forte{color:var(--alarme);border-color:var(--alarme);font-weight:600}
 
 /* --------------------------------------------------------- a faixa */
@@ -215,6 +215,127 @@ body{
 .abrirItem.atual{opacity:.45;cursor:default}
 .abrirItem span:last-child{color:#7d786f;white-space:nowrap}
 #abrirLista .vazio{color:#7d786f;padding:8px 6px}
+
+/* -------------------------------------------------------- modo cartas */
+/* A tela partida ao meio: a esquerda e o que SOBROU (o texto do corte, no
+   relogio da saida, editavel para virar .srt), a direita e o que vai
+   aparecer POR CIMA (o roteiro de cartas). As duas metades falam o MESMO
+   relogio - o de quem assiste o video pronto -, e e so por isso que clicar
+   num tempo da esquerda escreve uma linha valida na direita sem traducao
+   nenhuma no meio.
+
+   Quem decide o que cada linha do roteiro faz continua sendo o servidor
+   (`tc.parse_roteiro`), pela mesma razao de sempre: duas leituras da mesma
+   sintaxe divergem, e a que diverge calada e a que ninguem esta olhando. */
+#cartas{display:none;grid-template-columns:1fr 1fr;overflow:hidden}
+body.cartas #folha,body.cartas #faixa{display:none}
+body.cartas #cartas{display:grid}
+#btCartas.on{background:var(--tinta);color:var(--papel);border-color:var(--tinta)}
+
+/* ---- a metade esquerda: a legenda ---- */
+#cenas{overflow-y:auto;padding:12px 12px 30vh;border-right:1px solid var(--linha)}
+#cenasTopo{
+  font:11px/1.5 system-ui,"Segoe UI",sans-serif;color:#7d786f;
+  padding:0 6px 8px;border-bottom:1px solid var(--linha);margin-bottom:8px;
+}
+.cena{
+  display:grid;grid-template-columns:auto auto 1fr;gap:9px;
+  align-items:baseline;padding:4px 6px;border-radius:4px;
+}
+.cena:hover{background:#e2dfd8}
+/* O verde da FRASE e reserva: so pinta a linha inteira quando nao ha como
+   mover palavra a palavra (legenda escrita a mao - o texto ja nao bate mais
+   com o tempo de cada palavra da fala). Onde ha `.cenaW`, e o verde delas
+   que anda; a linha so rola ate a tela, sem se pintar por cima. */
+.cena.soando:not(.comPalavras){background:var(--toca)}
+.cenaW.toca{background:var(--toca)}
+.cenaT{
+  font:11px/1.7 ui-monospace,Consolas,monospace;color:#6b665e;cursor:pointer;
+  font-variant-numeric:tabular-nums;user-select:none;white-space:nowrap;
+}
+.cenaT:hover{color:var(--tinta);text-decoration:underline}
+.cenaPlay{
+  border:0;background:none;cursor:pointer;color:#9b968d;padding:0 2px;
+  font:11px/1.7 system-ui,sans-serif;
+}
+.cenaPlay:hover{color:var(--tinta)}
+.cenaTxt{
+  font:16px/1.5 inherit;outline:none;border-radius:3px;padding:0 3px;
+  min-height:1.4em;white-space:pre-wrap;
+}
+.cenaTxt:focus{background:#fff;box-shadow:0 0 0 1px var(--tinta)}
+/* Legenda escrita a mao: o mesmo lapis azul com que a folha marca o corte
+   que uma PESSOA mandou fazer. A cor quer dizer a mesma coisa nas duas
+   telas - "isto aqui nao foi o programa". */
+.cena.mao .cenaTxt{color:var(--julga)}
+/* O texto de baixo mudou depois da edicao: ela continua valendo (e a mais
+   explicita), mas quem olha merece saber que ficou para tras. */
+.cena.velha .cenaT{color:var(--alarme)}
+
+/* ---- a metade direita: o roteiro ---- */
+#roteiro{
+  display:grid;grid-template-rows:auto auto 1fr auto;overflow:hidden;
+  font:12px/1.5 system-ui,"Segoe UI",sans-serif;color:#4a463f;
+}
+#roteiroTopo{padding:12px 14px 10px;border-bottom:1px solid var(--linha)}
+#roteiroTopo label{display:flex;gap:7px;align-items:center;cursor:pointer;
+                   color:var(--tinta)}
+#principalCaixa{margin-top:9px}
+#principalCaixa[hidden]{display:none}
+#principalNome{
+  width:100%;border:1px solid var(--linha);border-radius:4px;padding:6px 8px;
+  font:13px/1.3 inherit;background:#fff;color:var(--tinta);
+}
+#principalNome.ruim{border-color:var(--alarme);color:var(--alarme)}
+#principalDiz{display:block;margin-top:5px;color:#7d786f}
+#ajuda{
+  padding:8px 14px;border-bottom:1px solid var(--linha);color:#7d786f;
+  font:11px/1.6 system-ui,sans-serif;
+}
+#ajuda code{font:11px/1 ui-monospace,Consolas,monospace;color:var(--tinta);
+            background:#fff;border:1px solid var(--linha);border-radius:3px;
+            padding:1px 4px}
+#codigoCaixa{position:relative;overflow:hidden;background:var(--painel)}
+#codigo{
+  width:100%;height:100%;resize:none;border:0;outline:none;background:transparent;
+  padding:12px 14px;color:var(--tinta);white-space:pre;overflow:auto;
+  font:13px/1.7 ui-monospace,Consolas,monospace;
+}
+/* A lista do autocomplete. Ela vem do SERVIDOR (as 78 cartas que o
+   `baralho.catalogo()` leu da pasta) - nunca de uma lista escrita aqui:
+   o dia em que uma carta entrasse na pasta, a tela ofereceria carta que o
+   export recusa, ou pior, deixaria de oferecer uma que existe. */
+#sugestao{
+  position:absolute;z-index:44;background:var(--painel);
+  border:1px solid var(--linha);border-radius:5px;max-height:230px;
+  overflow:auto;display:none;min-width:200px;
+  box-shadow:0 4px 14px rgba(0,0,0,.16);font:13px/1 system-ui,sans-serif;
+}
+#sugestao div{padding:6px 10px;cursor:pointer;color:var(--tinta);white-space:nowrap}
+#sugestao div.on{background:var(--sel)}
+#roteiroFundo{
+  border-top:1px solid var(--linha);padding:9px 14px 12px;
+  max-height:46vh;overflow:auto;
+}
+.erroL{color:var(--alarme);margin-top:3px}
+.notaL{color:#6b665e;margin-top:3px}
+.evL{margin-top:3px;color:#57534b;font-variant-numeric:tabular-nums}
+.evL b{color:var(--tinta);font-weight:600}
+.evL .diz{color:#9b968d;font-style:italic}
+#exportarCartas{margin-top:9px;padding-top:9px;border-top:1px solid var(--linha)}
+#exportarCartas button{
+  border:1px solid var(--linha);background:#fff;border-radius:4px;
+  padding:5px 9px;font:11px/1 inherit;cursor:pointer;color:#4a463f;
+  margin:0 4px 4px 0;
+}
+#exportarCartas button:hover:not(:disabled){background:var(--tinta);color:var(--papel)}
+#exportarCartas label{display:inline-flex;gap:5px;align-items:center;
+                      cursor:pointer;color:#7d786f}
+#logCartas{
+  margin-top:6px;max-height:140px;overflow:auto;white-space:pre-wrap;
+  font:11px/1.45 ui-monospace,Consolas,monospace;color:#57534b;
+}
+#salvo{color:#7d786f;font:11px/1 system-ui,sans-serif}
 </style>
 </head>
 <body>
@@ -228,6 +349,8 @@ body{
        Quem traduz e o servidor. -->
   <input id="emPrevia" placeholder="1:29" spellcheck="false"
          title="tempo que você anotou ouvindo a prévia; enter leva até a palavra">
+  <span id="salvo" title="o autosave nao e mais mudo"></span>
+  <button id="btCartas" title="cartas e legenda: a tela partida ao meio">cartas</button>
   <button id="btPainel" title="avisos, achados e exportar">painel</button>
 </div>
 
@@ -235,6 +358,52 @@ body{
   <canvas id="onda"></canvas>
   <div id="dica"></div>
   <div id="legenda"></div>
+</div>
+
+<!-- O modo cartas. A esquerda o que sobrou (vira .srt), a direita o que
+     entra por cima. Ver o comentario do CSS sobre por que as duas metades
+     falam o mesmo relogio. -->
+<div id="cartas">
+  <div id="cenas"></div>
+
+  <div id="roteiro">
+    <div id="roteiroTopo">
+      <label><input type="checkbox" id="temPrincipal">
+        este vídeo é sobre uma carta</label>
+      <div id="principalCaixa" hidden>
+        <input id="principalNome" list="listaCartas" spellcheck="false"
+               autocomplete="off" placeholder="comece a digitar o nome da carta">
+        <span id="principalDiz"></span>
+      </div>
+    </div>
+
+    <div id="ajuda">
+      uma carta por linha: <code>[1:29] Rainha de Copas; direita; 12s</code><br>
+      o lado e o tempo são opcionais · sem tempo a carta fica até o fim ·
+      clique num tempo da esquerda para trazê-lo para cá
+    </div>
+
+    <div id="codigoCaixa">
+      <textarea id="codigo" spellcheck="false" autocomplete="off"
+                placeholder="[1:29] Rainha de Copas; direita; 12s"></textarea>
+      <div id="sugestao"></div>
+    </div>
+
+    <div id="roteiroFundo">
+      <div id="roteiroAviso" class="aviso"></div>
+      <div id="roteiroMsgs"></div>
+      <div id="roteiroEventos"></div>
+      <div id="exportarCartas">
+        <button id="btPrevia">prévia lo-res</button>
+        <button id="btFinal">vídeo final</button>
+        <label><input type="checkbox" id="comLegenda" checked> .srt junto</label>
+        <b id="logCartasTit"></b>
+        <div id="logCartas"></div>
+      </div>
+    </div>
+  </div>
+
+  <datalist id="listaCartas"></datalist>
 </div>
 
 <aside id="painel" hidden>
@@ -373,6 +542,9 @@ async function acao(nome, extra) {
   if (!est.pecas) est.pecas = S.est.pecas;
   S.est = est;
   S.sel = est.sel;
+  // o autosave deixa de ser mudo tambem aqui: o relogio no canto e a unica
+  // prova, na tela, de que o gesto chegou ao disco.
+  if (est.mudou) marcaSalvo("salvo " + hora());
   pinta();
   return est;
 }
@@ -899,6 +1071,11 @@ function desenhaToque() {
 
 function desenha() {
   if (!S.est || !S.doc) return;
+  /* No modo cartas a faixa esta escondida, e o canvas continua com o
+     tamanho que tinha: sem esta linha, tocar uma legenda redesenharia a
+     onda inteira 60 vezes por segundo para ninguem ver. Quem volta para a
+     folha redesenha (`alternaCartas`). */
+  if (emCartas()) return;
   if (!hachura) hachura = fazHachura();
   g.clearRect(0, 0, LARG, ALT);
   g.fillStyle = "#f3f1ec";
@@ -1184,7 +1361,12 @@ function andaToken(passo, estende) {
 }
 
 document.addEventListener("keydown", (ev) => {
-  if (ev.target && ev.target.tagName === "INPUT") return;
+  // Quem esta escrevendo manda na propria tecla: o modo cartas tem uma
+  // caixa de codigo e uma legenda editavel por cartao, e `backspace` ali e
+  // apagar letra, nunca ocultar palavra.
+  const alvo = ev.target;
+  if (alvo && (alvo.tagName === "INPUT" || alvo.tagName === "TEXTAREA"
+               || alvo.isContentEditable)) return;
   if (!$("abrirVeu").hidden) {
     if (ev.key === "Escape") { fechaVeu(); ev.preventDefault(); }
     return;
@@ -1252,6 +1434,7 @@ function para() {
   for (const f of A.fontes) { try { f.stop(); } catch (e) {} }
   A.fontes = []; A.mapa = null;
   if (A.rot) cancelAnimationFrame(A.rot), A.rot = 0;
+  paraCena();
   for (const el of S.els) if (el) el.classList.remove("toca");
   S.toque = null;
   desenha();
@@ -1349,6 +1532,8 @@ function segue() {
 
 let ultimoAceso = -1;
 function acende(t) {
+  // no modo cartas quem mostra "aqui" e a legenda, e a folha esta escondida
+  if (emCartas()) { acendeCena(t); return; }
   const toks = S.est.pecas.tokens;
   let achou = -1;
   for (let i = 0; i < toks.length; i++)
@@ -1398,8 +1583,12 @@ function tocaOriginal() {
 }
 
 function espaco() {
-  if (A.ctx && A.ctx.state === "running" && A.mapa) { A.ctx.suspend(); return; }
-  if (A.ctx && A.ctx.state === "suspended" && A.mapa) { A.ctx.resume(); return; }
+  if (A.ctx && A.ctx.state === "running" && A.mapa) {
+    A.ctx.suspend(); atualizaBotaoCena(); return;
+  }
+  if (A.ctx && A.ctx.state === "suspended" && A.mapa) {
+    A.ctx.resume(); atualizaBotaoCena(); return;
+  }
   tocaSelecao(true);
 }
 
@@ -1648,27 +1837,34 @@ document.addEventListener("contextmenu", async (ev) => {
 let vigia = null;
 async function roda(cmd) {
   para();
-  abrePainel();
-  $("caixaLog").hidden = false;
-  $("logTit").textContent = cmd;
-  $("log").textContent = "iniciando...";
+  // No modo cartas o painel lateral taparia justamente o roteiro; o log vai
+  // para o rodape da direita, ao lado dos botoes que o dispararam.
+  const naCartas = emCartas();
+  const log = naCartas ? $("logCartas") : $("log");
+  const tit = (txt) => {
+    (naCartas ? $("logCartasTit") : $("logTit")).textContent = txt;
+  };
+  if (!naCartas) { abrePainel(); $("caixaLog").hidden = false; }
+  tit(cmd);
+  log.textContent = "iniciando...";
   const r = await (await fetch("/rodar", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ cmd }),
   })).json();
   if (!r.ok) {                      // o servidor roda um de cada vez
-    $("logTit").textContent = "já está rodando";
+    tit("já está rodando");
     return;
   }
   if (vigia) clearInterval(vigia);
   vigia = setInterval(async () => {
     const r = await (await fetch("/log")).json();
-    $("log").textContent = r.linhas.join("\n");
-    $("log").scrollTop = 1e6;
+    log.textContent = r.linhas.join("\n");
+    log.scrollTop = 1e6;
     if (!r.rodando && r.rc !== null) {
       clearInterval(vigia); vigia = null;
-      $("logTit").textContent = cmd + (r.rc === 0 ? " · pronto" : " · falhou");
+      tit(cmd + (r.rc === 0 ? " · pronto" : " · falhou"));
       acao("nada");        // o .m4a no disco pode ter deixado de ser velho
+      if (naCartas) recarregaCartas();
     }
   }, 700);
 }
@@ -1729,6 +1925,562 @@ $("abrirFechar").onclick = fechaVeu;
 $("abrirVeu").addEventListener("click", (ev) => {
   if (ev.target.id === "abrirVeu") fechaVeu();
 });
+
+
+/* ==================================================================== */
+/*  modo cartas                                                         */
+/* ==================================================================== */
+/*
+  Duas metades da mesma coisa, outra vez - a mesma ideia da folha e da onda,
+  um passo adiante no processo. A ESQUERDA e o texto que SOBROU do corte, no
+  relogio de quem assiste, e dele sai o .srt. A DIREITA e o que vai aparecer
+  por cima: uma linha por carta.
+
+  E de novo a regra que manda em tudo o que ha aqui dentro: ESTA TELA NAO
+  DECIDE NADA. Ela nao le a sintaxe do roteiro, nao resolve nome de carta,
+  nao escolhe lado, nao calcula profundidade de pilha e nao sabe onde a
+  carta pousa no quadro. Isso tudo volta pronto do servidor, do MESMO
+  `tc.parse_roteiro` que o `exportar` chama - senao a previa mostraria uma
+  coisa e o arquivo levaria outra, que e o defeito que este programa inteiro
+  persegue. O que ela faz e escrever texto, mostrar o que voltou, e tocar.
+*/
+
+const K = {
+  est: null,      // /cartas: as 78 cartas, os eventos, os erros, a legenda
+  sig: "",        // assinatura da lista de legendas ja desenhada
+  ctx: null,      // onde o cursor esta no roteiro (linha, campo, digitado)
+  ops: [], sel: -1,
+  querPrincipal: null,   // o estado da caixinha, que e da TELA e nao do disco
+  timer: null,    // o debounce do salvamento
+  charW: 0, lineH: 0,
+  acesa: -1,
+};
+
+function emCartas() { return document.body.classList.contains("cartas"); }
+
+async function alternaCartas() {
+  if (emCartas()) {
+    document.body.classList.remove("cartas");
+    $("btCartas").classList.remove("on");
+    fechaSugestao();
+    desenha();          // a onda nao foi redesenhada enquanto estava escondida
+    return;
+  }
+  document.body.classList.add("cartas");
+  $("btCartas").classList.add("on");
+  await recarregaCartas();
+}
+
+async function recarregaCartas() {
+  K.est = await (await fetch("/cartas")).json();
+  pintaCartas(true);
+}
+
+async function postCartas(rota, corpo) {
+  const r = await fetch(rota, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(corpo),
+  });
+  if (!r.ok) return null;
+  return await r.json();
+}
+
+/* ------------------------------------------------------------- salvo */
+/* O autosave dele e silencioso, e isso da aflicao com razao: nao ha nada na
+   tela dizendo que o trabalho esta no disco. Este relogio nao some depois
+   de alguns segundos de proposito - o que tranquiliza nao e o aviso, e a
+   hora ainda estar la. */
+function hora() {
+  const d = new Date(), z = (n) => String(n).padStart(2, "0");
+  return z(d.getHours()) + ":" + z(d.getMinutes()) + ":" + z(d.getSeconds());
+}
+function marcaSalvo(txt) { $("salvo").textContent = txt; }
+
+/* ----------------------------------------------------- a metade esquerda */
+
+/* Escreve o texto do cartao em `d`. Palavra a palavra (uma `span.cenaW`
+   por palavra) quando ha o tempo de cada uma para o verde seguir tocando;
+   texto corrido quando nao ha (legenda a mao) - a mesma escolha de
+   `pintaCenas`, reaproveitada aqui para o Escape devolver o texto sem
+   perder os spans junto. */
+function montaTextoCena(d, c, comPalavras) {
+  d.textContent = "";
+  if (comPalavras) {
+    c.palavras.forEach((w, i) => {
+      if (i > 0) d.appendChild(document.createTextNode(" "));
+      const wEl = document.createElement("span");
+      wEl.className = "cenaW";
+      wEl.textContent = w.txt;
+      d.appendChild(wEl);
+    });
+    d._palavras = c.palavras;
+    d._elsPalavras = Array.from(d.querySelectorAll(".cenaW"));
+  } else {
+    d.textContent = c.txt;
+    d._palavras = null;
+    d._elsPalavras = null;
+  }
+}
+
+function pintaCenas(forca) {
+  const cx = $("cenas"), cenas = K.est.legendas;
+  // Nao repinta por baixo de quem esta escrevendo: perder o cursor no meio
+  // de uma legenda seria pior que a lista ficar um gesto atrasada.
+  const escrevendo = document.activeElement &&
+    document.activeElement.classList.contains("cenaTxt");
+  const sig = cenas.map((c) => [c.n, c.ini, c.fim, c.txt, c.mao ? 1 : 0].join(":"))
+    .join("|");
+  if (!forca && (escrevendo || sig === K.sig)) return;
+  K.sig = sig;
+  cx.textContent = "";
+
+  const topo = document.createElement("div");
+  topo.id = "cenasTopo";
+  const n = cenas.filter((c) => c.mao).length;
+  topo.textContent = `o que sobrou · ${cenas.length} legendas` +
+    (n ? ` · ${n} escritas à mão` : "") +
+    ` · o tempo é o do vídeo pronto`;
+  cx.appendChild(topo);
+
+  for (const c of cenas) {
+    // So palavra a palavra quando o texto e o automatico: legenda escrita a
+    // mao troca o texto, e a lista de palavras (tempo de cada uma da FALA)
+    // deixa de bater com ela - tocaria a palavra errada.
+    const comPalavras = !c.mao && Array.isArray(c.palavras) && c.palavras.length > 0;
+
+    const el = document.createElement("div");
+    el.className = "cena" + (c.mao ? " mao" : "") + (comPalavras ? " comPalavras" : "") +
+      (c.mao && c.orig && c.orig !== c.auto ? " velha" : "");
+    el.dataset.n = c.n;
+
+    const t = document.createElement("span");
+    t.className = "cenaT";
+    t.textContent = mmss(c.ini);
+    t.title = c.mao && c.orig && c.orig !== c.auto
+      ? "o texto automático mudou desde a sua edição: " + c.orig
+      : "clique para levar este tempo para o roteiro  ·  fonte " +
+        c.s.toFixed(2) + "s";
+    t.onclick = () => insereTempo(c.ini);
+    el.appendChild(t);
+
+    const p = document.createElement("button");
+    p.className = "cenaPlay";
+    p.textContent = "▶";
+    p.title = "ouvir este trecho";
+    p.onclick = () => {
+      // Clicar de novo no botao da MESMA frase que esta soando pausa e
+      // retoma no lugar - o mesmo gesto do espaco, so que mirado numa
+      // linha. Clicar noutra frase comeca ela do zero (`toca` para a
+      // que estava antes, como sempre fez).
+      if (K.acesa === c.n && A.ctx && A.mapa) {
+        if (A.ctx.state === "running") { A.ctx.suspend(); atualizaBotaoCena(); return; }
+        if (A.ctx.state === "suspended") { A.ctx.resume(); atualizaBotaoCena(); return; }
+      }
+      toca(recorta(c.s, c.e));
+    };
+    el.appendChild(p);
+
+    const d = document.createElement("div");
+    d.className = "cenaTxt";
+    d.contentEditable = "true";
+    d.spellcheck = false;
+    montaTextoCena(d, c, comPalavras);
+    d.title = "edite o texto da legenda · apague tudo para voltar ao automático";
+    d.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") { ev.preventDefault(); d.blur(); }
+      if (ev.key === "Escape") { montaTextoCena(d, c, comPalavras); d.blur(); }
+    });
+    d.addEventListener("blur", () => salvaCena(el, c, d.innerText));
+    el.appendChild(d);
+    cx.appendChild(el);
+  }
+}
+
+async function salvaCena(el, c, texto) {
+  if (texto.trim() === c.txt.trim()) return;
+  marcaSalvo("salvando…");
+  const est = await postCartas("/legenda", { s: c.s, e: c.e, texto });
+  if (!est) { marcaSalvo("essa legenda não existe mais — o corte mudou"); return; }
+  K.est = est;
+  marcaSalvo("salvo " + hora());
+  // So a linha mexida, e nao a lista inteira: repintar tudo tiraria o foco
+  // de onde o mouse acabou de por.
+  const novo = est.legendas.find((x) => x.n === c.n);
+  if (!novo) { pintaCenas(true); return; }
+  Object.assign(c, novo);
+  const comPalavras = !novo.mao && Array.isArray(novo.palavras) && novo.palavras.length > 0;
+  el.className = "cena" + (novo.mao ? " mao" : "") + (comPalavras ? " comPalavras" : "") +
+    (novo.mao && novo.orig && novo.orig !== novo.auto ? " velha" : "");
+  montaTextoCena(el.querySelector(".cenaTxt"), novo, comPalavras);
+  K.sig = est.legendas.map((x) =>
+    [x.n, x.ini, x.fim, x.txt, x.mao ? 1 : 0].join(":")).join("|");
+  pintaRoteiro();
+}
+
+/* A legenda que esta soando. Mesma ideia do verde da folha: o som diz onde
+   esta, e as duas telas mostram o mesmo lugar. */
+function acendeCena(t) {
+  const cenas = K.est ? K.est.legendas : [];
+  let achou = -1;
+  for (const c of cenas) if (c.s <= t && t < c.e) { achou = c.n; break; }
+  if (achou !== K.acesa) {
+    const antes = $("cenas").querySelector(".cena.soando");
+    if (antes) {
+      antes.classList.remove("soando");
+      const bAntes = antes.querySelector(".cenaPlay");
+      if (bAntes) { bAntes.textContent = "▶"; bAntes.title = "ouvir este trecho"; }
+    }
+    K.acesa = achou;
+    if (achou >= 0) {
+      const el = $("cenas").querySelector('.cena[data-n="' + achou + '"]');
+      if (el) {
+        el.classList.add("soando");
+        const r = el.getBoundingClientRect(), rc = $("cenas").getBoundingClientRect();
+        if (r.top < rc.top + 40 || r.bottom > rc.bottom - 40)
+          el.scrollIntoView({ block: "center", behavior: "smooth" });
+      }
+    }
+    atualizaBotaoCena();
+  }
+  acendePalavraCena(t, achou);
+}
+
+/* A PALAVRA que esta soando dentro da legenda ativa - o verde que se
+   desloca, igual ao `acende()` da folha. So existe onde `montaTextoCena`
+   escreveu `.cenaW` (texto automatico); numa legenda a mao nao ha tempo de
+   palavra nenhum para seguir, e a linha inteira (`.cena.soando`) continua
+   sendo o unico aviso. */
+let elPalavraCena = null;
+function acendePalavraCena(t, n) {
+  let novo = null;
+  if (n >= 0) {
+    const d = $("cenas").querySelector('.cena[data-n="' + n + '"] .cenaTxt');
+    if (d && d._palavras) {
+      const ps = d._palavras, els = d._elsPalavras;
+      for (let i = 0; i < ps.length; i++)
+        if (ps[i].s <= t && t < ps[i].e) { novo = els[i]; break; }
+    }
+  }
+  if (novo === elPalavraCena) return;
+  if (elPalavraCena) elPalavraCena.classList.remove("toca");
+  elPalavraCena = novo;
+  if (elPalavraCena) elPalavraCena.classList.add("toca");
+}
+
+/* O botao de tocar da legenda ativa - vira pausa enquanto ela soa. So mexe
+   na linha marcada em `K.acesa`; a troca de linha (acima) cuida da que
+   ficou para tras. */
+function atualizaBotaoCena() {
+  if (K.acesa < 0) return;
+  const btn = $("cenas").querySelector('.cena[data-n="' + K.acesa + '"] .cenaPlay');
+  if (!btn) return;
+  const ativo = !!(A.ctx && A.ctx.state === "running" && A.mapa);
+  btn.textContent = ativo ? "⏸" : "▶";
+  btn.title = ativo ? "pausar" : "ouvir este trecho";
+}
+
+/* Chamada por `para()` (o stop de verdade, nao a pausa): apaga o verde da
+   legenda e da palavra e devolve o botao a ▶. Enquanto o som so PAUSA
+   (espaco, ou o proprio botao) nada aqui roda de proposito - o verde
+   parado continua dizendo a verdade de onde a fala ficou, mesma regra do
+   `soltaToque` da folha. */
+function paraCena() {
+  const antes = $("cenas").querySelector(".cena.soando");
+  if (antes) {
+    antes.classList.remove("soando");
+    const b = antes.querySelector(".cenaPlay");
+    if (b) { b.textContent = "▶"; b.title = "ouvir este trecho"; }
+  }
+  if (elPalavraCena) { elPalavraCena.classList.remove("toca"); elPalavraCena = null; }
+  K.acesa = -1;
+}
+
+/* ----------------------------------------------------- a metade direita */
+
+function pintaCartas(forca) {
+  if (!K.est) return;
+  const lista = $("listaCartas");
+  if (!lista.childElementCount) {
+    for (const nome of K.est.cartas) {
+      const o = document.createElement("option");
+      o.value = nome;
+      lista.appendChild(o);
+    }
+  }
+  const cod = $("codigo");
+  if (document.activeElement !== cod && cod.value !== K.est.roteiro)
+    cod.value = K.est.roteiro;
+  const pn = $("principalNome");
+  // A caixinha e da TELA: marcar "este video e sobre uma carta" e abrir o
+  // campo, nao gravar carta nenhuma. Se ela seguisse o disco, marcar
+  // desmarcaria sozinho no primeiro salvamento - o campo abriria e fecharia
+  // antes de dar tempo de digitar o nome.
+  if (K.querPrincipal === null) K.querPrincipal = !!K.est.principal;
+  $("temPrincipal").checked = K.querPrincipal;
+  $("principalCaixa").hidden = !K.querPrincipal;
+  if (document.activeElement !== pn && pn.value !== K.est.principal)
+    pn.value = K.est.principal;
+  $("comLegenda").checked = !K.est.semLegenda;
+  pintaCenas(forca);
+  pintaRoteiro();
+}
+
+function pintaRoteiro() {
+  const est = K.est;
+  const av = $("roteiroAviso");
+  av.textContent = "";
+  if (est.caducou && est.caducou.velho)
+    av.textContent = "atenção: este roteiro foi escrito contra um corte de " +
+      mmss(est.caducou.antes) + " e o de agora tem " + mmss(est.caducou.agora) +
+      ". Os tempos daqui são os do vídeo pronto — confira o que cada linha " +
+      "diz antes de exportar.";
+  for (const o of est.orfas || [])
+    av.textContent += (av.textContent ? " " : "") +
+      "uma legenda escrita à mão não achou mais o trecho dela: " +
+      (o.novo || "").slice(0, 40);
+
+  const msgs = $("roteiroMsgs");
+  msgs.textContent = "";
+  /* A linha que ele esta digitando AGORA nao leva vermelho: uma linha pela
+     metade sempre esta errada, e um erro que pisca a cada tecla e o mesmo
+     alarme de papel de parede que este projeto ja recusou duas vezes (a
+     emenda em ponto alto, a frase pendurada). Ele volta assim que o cursor
+     sai da linha. Isso e apresentacao, nao decisao - a linha continua
+     errada, e o export continua recusando. */
+  const cod = $("codigo");
+  const digitando = document.activeElement === cod
+    ? cod.value.slice(0, cod.selectionStart).split("\n").length : -1;
+  const pd = $("principalDiz");
+  pd.textContent = "";
+  $("principalNome").classList.remove("ruim");
+  for (const e of est.erros) {
+    if (e.linha === 0) {
+      $("principalNome").classList.add("ruim");
+      pd.textContent = e.erro;
+      continue;
+    }
+    if (e.linha === digitando) continue;
+    const d = document.createElement("div");
+    d.className = "erroL";
+    d.textContent = "linha " + e.linha + ": " + e.erro;
+    msgs.appendChild(d);
+  }
+  for (const n of est.notas) {
+    const d = document.createElement("div");
+    d.className = "notaL";
+    d.textContent = "linha " + n.linha + ": " + n.nota;
+    msgs.appendChild(d);
+  }
+  if (est.principal && !pd.textContent)
+    pd.textContent = "fica à esquerda de " + mmss(est.entra) + " até " +
+      mmss(Math.max(0, est.mantido - est.rabo)) + " (os " +
+      est.rabo.toFixed(0) + "s finais são sem carta)";
+
+  const ev = $("roteiroEventos");
+  ev.textContent = "";
+  for (const e of est.eventos) {
+    const d = document.createElement("div");
+    d.className = "evL";
+    const b = document.createElement("b");
+    b.textContent = e.carta;
+    d.appendChild(document.createTextNode(mmss(e.ini) + "–" + mmss(e.fim) + "  "));
+    d.appendChild(b);
+    d.appendChild(document.createTextNode(
+      "  " + e.lado + (e.prof ? " · empilhada " + e.prof : "")));
+    if (e.diz) {
+      const s = document.createElement("span");
+      s.className = "diz";
+      s.textContent = "  «" + e.diz + "»";
+      d.appendChild(s);
+    }
+    ev.appendChild(d);
+  }
+  if (!est.eventos.length && !est.erros.length) {
+    const d = document.createElement("div");
+    d.className = "notaL";
+    d.textContent = "nenhuma carta ainda.";
+    ev.appendChild(d);
+  }
+}
+
+/* ------------------------------------------------------------ salvar */
+
+function agendaSalvar() {
+  if (K.timer) clearTimeout(K.timer);
+  marcaSalvo("salvando…");
+  K.timer = setTimeout(salvaRoteiro, 500);
+}
+
+async function salvaRoteiro() {
+  K.timer = null;
+  const est = await postCartas("/cartas", {
+    roteiro: $("codigo").value,
+    principal: $("temPrincipal").checked ? $("principalNome").value.trim() : "",
+    semLegenda: !$("comLegenda").checked,
+  });
+  if (!est) { marcaSalvo("não consegui salvar"); return; }
+  K.est = est;
+  marcaSalvo("salvo " + hora());
+  pintaCartas(false);
+}
+
+/* --------------------------------------------------------- o tempo daqui */
+/* Clicar num tempo da esquerda escreve a linha na direita, numa quebra nova
+   depois do ultimo caractere digitado. Nao ha traducao de relogio no meio:
+   os dois lados ja falam o tempo da saida. */
+function insereTempo(seg) {
+  const cod = $("codigo");
+  let v = cod.value;
+  if (v.length && !v.endsWith("\n")) v += "\n";
+  v += "[" + mmss(seg) + "] ";
+  cod.value = v;
+  cod.focus();
+  cod.setSelectionRange(v.length, v.length);
+  cod.scrollTop = cod.scrollHeight;
+  agendaSalvar();
+  mostraSugestao();
+}
+
+/* ------------------------------------------------------- autocomplete */
+/* "Será impossível errar o nome da carta nesse editor." As 78 vem do
+   servidor, que as leu da pasta - a mesma lista de onde sai a imagem do
+   overlay. Uma lista escrita aqui seria uma segunda verdade sobre o que e o
+   baralho, e o dia em que a pasta mudasse ela ofereceria carta que o export
+   recusa. */
+
+function semAcento(s) {
+  return s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+}
+
+function medeFonte() {
+  const cod = $("codigo"), st = getComputedStyle(cod);
+  const sp = document.createElement("span");
+  sp.style.cssText = "position:absolute;visibility:hidden;white-space:pre";
+  sp.style.font = st.font;
+  sp.textContent = "0".repeat(60);
+  document.body.appendChild(sp);
+  K.charW = sp.getBoundingClientRect().width / 60;
+  sp.remove();
+  K.lineH = parseFloat(st.lineHeight) || 20;
+}
+
+/* Onde o cursor esta, em termos da SINTAXE: qual linha, qual campo depois
+   do "]", e o que ja foi digitado nele. */
+function contexto() {
+  const cod = $("codigo"), pos = cod.selectionStart;
+  if (pos !== cod.selectionEnd) return null;
+  const antes = cod.value.slice(0, pos);
+  const ini = antes.lastIndexOf("\n") + 1;
+  const linha = antes.slice(ini);
+  const fecha = linha.indexOf("]");
+  if (fecha < 0) return null;              // ainda escrevendo o tempo
+  const partes = linha.slice(fecha + 1).split(";");
+  const digitado = partes[partes.length - 1];
+  return { pos, campo: partes.length - 1, digitado,
+           inicio: pos - digitado.length,
+           lin: antes.split("\n").length - 1, col: linha.length };
+}
+
+function candidatos(ctx) {
+  const q = semAcento(ctx.digitado.trim());
+  if (ctx.campo === 0)
+    return K.est.cartas.filter((n) => semAcento(n).includes(q)).slice(0, 60);
+  if (ctx.campo === 1)
+    return ["esquerda", "direita"].filter((n) => n.startsWith(q));
+  return [];                                // o tempo ninguem sugere
+}
+
+function fechaSugestao() {
+  $("sugestao").style.display = "none";
+  K.ops = []; K.sel = -1; K.ctx = null;
+}
+
+function mostraSugestao() {
+  if (!K.est) return;
+  const ctx = contexto();
+  if (!ctx) return fechaSugestao();
+  const ops = candidatos(ctx);
+  if (!ops.length) return fechaSugestao();
+  K.ctx = ctx; K.ops = ops; K.sel = 0;
+  const cx = $("sugestao");
+  cx.textContent = "";
+  ops.forEach((op, i) => {
+    const d = document.createElement("div");
+    d.textContent = op;
+    if (i === 0) d.className = "on";
+    // mousedown, e nao click: o click viria depois do blur do textarea e a
+    // posicao do cursor ja teria se perdido.
+    d.addEventListener("mousedown", (ev) => { ev.preventDefault(); aceita(op); });
+    cx.appendChild(d);
+  });
+  const cod = $("codigo"), st = getComputedStyle(cod);
+  if (!K.charW) medeFonte();
+  const x = parseFloat(st.paddingLeft) + ctx.col * K.charW - cod.scrollLeft;
+  const y = parseFloat(st.paddingTop) + (ctx.lin + 1) * K.lineH - cod.scrollTop;
+  cx.style.display = "block";
+  cx.style.left = Math.max(4, Math.min(x, cod.clientWidth - 210)) + "px";
+  cx.style.top = Math.max(0, y) + "px";
+  cx.scrollTop = 0;
+}
+
+function andaSugestao(passo) {
+  if (!K.ops.length) return;
+  const cx = $("sugestao");
+  cx.children[K.sel].className = "";
+  K.sel = (K.sel + passo + K.ops.length) % K.ops.length;
+  const el = cx.children[K.sel];
+  el.className = "on";
+  el.scrollIntoView({ block: "nearest" });
+}
+
+function aceita(op) {
+  const ctx = K.ctx;
+  if (!ctx) return;
+  const cod = $("codigo"), v = cod.value;
+  // depois do nome da carta vem o lado, entao ja deixa o ";" pronto - a
+  // sugestao seguinte abre sozinha.
+  const sufixo = ctx.campo === 0 ? "; " : "";
+  const novo = v.slice(0, ctx.inicio) + " " + op + sufixo;
+  cod.value = novo + v.slice(ctx.pos);
+  cod.focus();
+  cod.setSelectionRange(novo.length, novo.length);
+  fechaSugestao();
+  agendaSalvar();
+  if (sufixo) mostraSugestao();
+}
+
+/* ------------------------------------------------------------ ligacoes */
+
+$("codigo").addEventListener("input", () => { agendaSalvar(); mostraSugestao(); });
+$("codigo").addEventListener("click", mostraSugestao);
+$("codigo").addEventListener("blur", () => {
+  fechaSugestao();
+  if (K.timer) { clearTimeout(K.timer); salvaRoteiro(); }
+});
+$("codigo").addEventListener("scroll", () => { if (K.ops.length) mostraSugestao(); });
+$("codigo").addEventListener("keydown", (ev) => {
+  if (K.ops.length) {
+    if (ev.key === "ArrowDown") { andaSugestao(+1); ev.preventDefault(); return; }
+    if (ev.key === "ArrowUp") { andaSugestao(-1); ev.preventDefault(); return; }
+    if (ev.key === "Enter" || ev.key === "Tab") {
+      aceita(K.ops[K.sel]); ev.preventDefault(); return;
+    }
+    if (ev.key === "Escape") { fechaSugestao(); ev.preventDefault(); return; }
+  }
+  if (ev.ctrlKey && ev.key === " ") { mostraSugestao(); ev.preventDefault(); }
+});
+
+$("temPrincipal").addEventListener("change", () => {
+  K.querPrincipal = $("temPrincipal").checked;
+  $("principalCaixa").hidden = !K.querPrincipal;
+  if (K.querPrincipal) $("principalNome").focus();
+  salvaRoteiro();
+});
+$("principalNome").addEventListener("change", salvaRoteiro);
+$("comLegenda").addEventListener("change", salvaRoteiro);
+$("btCartas").onclick = alternaCartas;
+$("btPrevia").onclick = () => roda("exportar-previa");
+$("btFinal").onclick = () => roda("exportar");
 
 /* ==================================================================== */
 /*  partida                                                             */

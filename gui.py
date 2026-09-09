@@ -320,6 +320,15 @@ class App(tk.Tk):
         bt("Simular", lambda: self.roda(["render", "--dry-run"],
                                         "simulação"))
         bt("4. Renderizar", lambda: self.roda(["render"], "render"))
+        # O outro fim de linha, o que passa pelas cartas: mesmo corte,
+        # mesmo audio, mais o overlay do roteiro escrito no modo cartas
+        # do editor e o .srt ao lado. Com roteiro vazio ele e o
+        # "Renderizar" com legenda - por isso os dois ficam aqui, e nao
+        # um no lugar do outro.
+        bt("Prévia com cartas",
+           lambda: self.roda(["exportar", "--previa"], "prévia com cartas"))
+        bt("Exportar com cartas",
+           lambda: self.roda(["exportar"], "export com cartas"))
 
         self.b_cancela = ttk.Button(bar, text="Cancelar",
                                     command=self.cancelar, state="disabled")

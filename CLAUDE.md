@@ -33,6 +33,9 @@ mesmos comandos.
 | `editor.html` | a tela: a transcrição em cima, a onda embaixo, o motor de áudio |
 | `teste_editor.py` | as promessas do editor que quebram em silêncio |
 | `teste_revisao.py` | as promessas do passe de julgamento que quebram em silêncio |
+| `teste_cartas.py` | as promessas das cartas: o agrupamento por menção, o roteiro escrito à mão e a legenda |
+| `baralho.py` | o catálogo das 78 e o casador de menção na fala |
+| `rosto.py` | onde o rosto anda — é dele que sai o reenquadramento |
 | `lexico.py` | gera `lexicon/terms.txt` a partir do livro do Yala |
 | `.claude/commands/revisar.md` | o passe de julgamento: o que o Claude lê e o que ele tem de conferir depois |
 | `.claude/commands/preparar.md` | run + revisar + conferir + audio num comando só, pronto pro editor de texto |
@@ -47,7 +50,9 @@ Estado por vídeo em `work/<video>/`: `meta.json`, `audio.wav`, `words.json`,
 `conferir.txt`, `entendimento.md` (o que o passe de julgamento entendeu da
 aula), `ouvido.md` (o que ele anotou ouvindo o `.m4a`, colado literal, uma
 seção por rodada), `anotacoes.json`, `respostas.json`, `montagem.json`,
-`correcoes.json`.
+`correcoes.json`, `cartas-roteiro.json` (a carta principal e o roteiro
+escrito à mão) e `legendas.json` (o texto de cada cartão que uma pessoa
+reescreveu).
 
 As três camadas de decisão humana empilham nesta ordem, que é a ordem em
 que foram tomadas: `transcript.md` (apagar texto) → `anotacoes.json` (o
@@ -94,6 +99,14 @@ sobrevive a `run --force` de propósito. **`respostas.json` é da mesma
 família** e vale a mesma regra: um diz o que sai, o outro diz o que a
 pessoa decidiu sobre cada pendência — inclusive as que ficam, que não
 deixam marca em lugar nenhum.
+
+**`jdump` grava trocando o arquivo, não sobrescrevendo.** `open(w)` TRUNCA
+antes de escrever: um travamento no meio — ou um `render` lendo no instante
+errado — deixava `anotacoes.json`, `montagem.json` ou `respostas.json`
+vazios ou pela metade. Escreve ao lado e troca com `os.replace`, que é
+atômico: ou o arquivo antigo está lá inteiro, ou o novo está. A janela
+existe de verdade, e ficou maior com o modo cartas, que grava a cada meio
+segundo de digitação.
 
 **Anotação que some em silêncio é o pior defeito que este programa tem.**
 Já apareceu por quatro caminhos: o `_funde` juntando a anotação a um token
@@ -779,11 +792,167 @@ pra decisão de casamento de texto.
 MEDIDO no IMG_0246: uma camada por MENÇÃO (26 no vídeo de teste, sem
 juntar repetição de carta) renderizou a 0,6 fps — quase 50 min para 2 min
 de prévia em 360p/15fps, contra "minutos" do modo padrão (1-3 camadas).
-`_agrupa_camadas_enumeracao` junta menções que caem na MESMA posição de
+`_agrupa_camadas` junta menções que caem na MESMA posição de
 pilha (lado+profundidade+carta) numa camada só, com uma ocorrência (e um
 fade de saída) por menção — 11 camadas no mesmo vídeo. Se `--sem-principal`
 voltar a ficar lento, é aqui que se conta quantas camadas o vídeo pediu
 antes de mexer em qualquer outra coisa.
+
+**O roteiro de cartas é escrito à mão, e fala no relógio da SAÍDA.** É o
+segundo autor das cartas (`parse_roteiro`, `cartas-roteiro.json`), ao lado
+do `cmd_cartas` que adivinha pela fala. A diferença entre os dois não é de
+mecanismo — a geometria, a pilha e o reenquadramento são os MESMOS
+(`grafo_cartas_pilhas`, uma função só, servindo os dois) — é de quem
+decide: lá é regra, aqui é gente. Uma linha é `[1:29] Rainha de Copas;
+direita; 12s`, e todo tempo dela é tempo de saída, o mesmo do `.m4a`, do
+`.srt` e do vídeo exportado. Corte novo depois do roteiro escrito escorrega
+todos os tempos de uma vez — a família do selo do `transcript.md`, por mais
+um caminho.
+
+A defesa contra isso NÃO é o aviso de caducidade (`roteiro_caducou`, mesmo
+número e mesma cegueira do `previa_no_disco`); é o `diz` de cada evento: o
+editor mostra, ao lado de cada carta aceita, **o que se ouve naquele
+instante**, tirado do próprio cartão de legenda. Um `[1:29]` que escorregou
+passa a mostrar outra frase, na linha, na hora. O aviso continua existindo
+para o caso que a tela não cobre: escrever o roteiro, voltar para a folha,
+cortar, e exportar sem reabrir o modo cartas.
+
+**Linha que o programa não sabe desenhar RECUSA o export inteiro**, e não
+pula a linha. Meio roteiro renderizado calado é decisão humana sumindo pelo
+caminho novo. São erros, não avisos: carta fora do baralho, linha sem
+tempo, tempo dentro dos `rabo_final` segundos finais, a mesma carta na tela
+duas vezes ao mesmo tempo, duas cartas na mesma posição da pilha. Aparar
+uma carta que passava do fim do vídeo é o único caso que segue em frente —
+e vira NOTA na linha, porque encurtar o pedido de alguém em silêncio é o
+mesmo defeito com outra roupa.
+
+**A pilha se conta, não se digita.** "Carta adicionada ao mesmo lado
+enquanto houver outra dá stack nessa carta" é uma regra sobre o que JÁ ESTÁ
+NA TELA, então a profundidade se calcula: quem entra pega a MENOR VAGA
+LIVRE daquele lado. Não é "quantas há" nem "a mais funda + 1" — é a vaga
+livre que faz a pilha DESCER quando a de baixo sai, em vez de marchar para
+o centro a cada carta nova de um vídeo comprido, e sem mexer na posição de
+quem ficou. A carta principal é a âncora: esquerda, profundidade 0, do
+`principal_entra` ao `rabo_final`, e primeira da lista mesmo que uma linha
+comece antes dela.
+
+Isso obrigou a ordenar a cadeia de overlay por PROFUNDIDADE
+(`_agrupa_camadas`), e não por ordem de chegada: com a pilha descendo, uma
+camada rasa pode nascer depois de uma funda, e pela ordem antiga ela seria
+desenhada por cima, invertendo a ilusão de profundidade. Na enumeração
+automática os dois critérios dão a mesma lista (lá a profundidade só
+cresce), e o sort é estável — o grafo daquele modo sai idêntico.
+
+**O reenquadramento nunca aconteceu, e ninguém sabia.** O layout 3 (Mariana
+ao centro) era um `crop` só, com `w`/`h` como expressão de `t` alternando
+entre o quadro inteiro e a janela do rosto. MEDIDO (09/09/2026) com o
+próprio ffmpeg 9.0.1 deste projeto: um
+`crop=w='if(between(t\,2\,4),320,640)':h='...'` sobre um `testsrc2` de
+640x360 sai **640x360 do primeiro ao último quadro**. O `crop` reavalia `x`
+e `y` a cada quadro, mas `w` e `h` UMA vez, na configuração do filtro — em
+t=0, quando a condição ainda é falsa — e não poderia ser diferente: quadro
+de tamanho variável não passa por `overlay` nem por encoder. O docstring
+afirmava o contrário ("o ffmpeg 9.x reavalia sozinho quadro a quadro"), e o
+`x`/`y` variável também não movia nada, porque com `w` igual à largura
+inteira o próprio filtro prende o `x` em 0.
+
+`_reenquadra` conserta com a única forma que funciona: o quadro
+reenquadrado como uma SEGUNDA imagem, de tamanho constante, ligada por cima
+quando a janela manda (`split` → `crop` → `scale` → `overlay ... enable=`).
+Fora das janelas sai idêntico ao layout 1. **O preço é um `scale` por
+quadro do vídeo inteiro**, e não só dentro das janelas — o ramo do `split`
+recebe todos os quadros —, e é por isso que quem chama só passa janelas
+quando existe carta à direita de verdade, e por isso `_reenquadra` desiste
+quando a janela é o quadro inteiro (MEDIDO no IMG_0246: `l` = 1,00; montar
+split+crop+scale para copiar o quadro custaria um scale por quadro para não
+mudar um pixel).
+
+**A cabeça inteira ganha da faixa livre.** `_janela_layout3` também nunca
+tinha sido olhada, porque o crop dela não rodava: ela devolvia a janela que
+cobre o VAIVÉM do rosto com folga, e na primeira prévia em que o
+reenquadramento de fato aconteceu ela **cortou a testa da Mariana** e ainda
+a deixou encostada na carta. `cy` é o CENTRO do rosto, e uma janela montada
+em volta dele passa a lâmina na altura dos olhos. As perguntas certas são
+duas, e nesta ordem:
+
+- **cabe a cabeça?** Do `topo_min` (o ponto mais alto que ela alcança) ao
+  queixo, com folga. `rosto.resumo` passou a medir `topo_min` e `alt_med`
+  por causa disso — a `suaviza` joga fora `w`/`h` no caminho, então a
+  defesa contra detecção ruim ali é percentil sobre as amostras cruas.
+- **o rosto fica na faixa que as cartas não cobrem?** A janela é a MAIOR
+  possível (o menor zoom) que ainda deixa `cx_p05..cx_p95` dentro dela —
+  três desigualdades com solução fechada. Contra p05/p95 e não min/max: um
+  segundo de inclinação máxima não manda no quadro do vídeo inteiro.
+
+Quando as duas se contradizem, ganha a cabeça: rosto encostando na borda da
+carta é feio, rosto cortado é defeito. MEDIDO no "2 de espadas": zoom 1,71x
+(a restrição que manda é a cabeça), rosto atrás de uma carta em 9% do
+tempo. A faixa livre não é número escrito à mão — sai de `faixa_livre()`,
+que lê a largura da carta do próprio arquivo (`aspecto_carta`, 0,5609 nas
+78, medido por ffprobe porque o `imread` do OpenCV não abre caminho com
+acento no Windows). Mexer em `carta_altura` aperta a faixa e o
+enquadramento responde sozinho.
+
+E o `exportar` IMPRIME o zoom escolhido e a fração do tempo em que o rosto
+passa atrás de uma carta. É a única parte deste programa que não se
+justifica sozinha na tela: quem olha a prévia vê um enquadramento e não tem
+como saber se era o melhor que a geometria permitia.
+
+**A legenda sai do CORTE, nunca do `transcript.md`.** Aquele arquivo é a
+transcrição ipsis litteris da fonte, com o que foi cortado ainda dentro; a
+legenda é o que SOBROU, no relógio de quem assiste. Uma palavra entra
+quando MAIS DA METADE dela sobrevive — não é número novo, é a mesma regra
+da metade do token com que o editor decide o que um arrasto pegou, e ela se
+paga aqui pelo mesmo motivo. Rótulo do programa (`hesitação`, `?? N.Ns`)
+não entra: é etiqueta, não palavra dita. Fala recuperada de lacuna entra: é
+fala, e está no vídeo.
+
+**`legendas.json` é a terceira camada de julgamento humano, e casa pelo
+TEMPO DE FONTE.** Um corte novo no meio do vídeo renumera todos os cartões
+de baixo, e a legenda escrita para um passaria a valer para outro — mesma
+regra do `s`/`e` do `montagem.json` e da resposta de pendência, pela mesma
+razão. Edição que não acha mais cartão nenhum volta como ÓRFÃ e é dita em
+voz alta, no editor e no export: sumir com o texto que alguém escreveu,
+calado, é o defeito de sempre. O `orig` guardado serve para o editor marcar
+quando o texto de BAIXO mudou depois da edição (uma correção de palavra, um
+corte novo) — a edição continua valendo, por ser a mais explícita, mas quem
+olha merece saber que ela ficou para trás.
+
+Ela é irmã do `correcoes.json` e não a mesma coisa: aquele é sobre o que a
+PALAVRA diz, este é sobre o que o CARTÃO diz. Um cartão são muitas palavras
+e a volta não é decomponível.
+
+**O editor grava o corte antes de qualquer subprocesso.** O `_cumpre_carga`
+completa, AO ABRIR, a decisão de palavra que a geometria deixou pela metade
+— e isso só entrava no disco no primeiro gesto. Quem abrisse o editor e
+clicasse direto em "exportar" (ou em "vídeo", que já existia) recebia um
+arquivo com o corte de ANTES da correção, e a tela mostrando outro. MEDIDO
+no "2 de espadas": a tela dizia 2min18 e o disco tinha 2min16. `Sessao.grava`
+mora no caminho do `/rodar` por isso, e o que vai para o disco é exatamente
+o que está na tela — a diferença que a carga corrigiu já está no `aviso`
+desde que a sessão abriu.
+
+**O autosave deixou de ser mudo.** Não muda uma linha do que é salvo: o
+relógio no canto (`salvo 14:03:22`) é a única prova, na tela, de que o gesto
+chegou ao disco, e ele não some depois de alguns segundos de propósito — o
+que tranquiliza não é o aviso, é a hora ainda estar lá.
+
+**A tela do modo cartas não decide nada**, pela mesma razão que ela não
+calcula corte: ela não lê a sintaxe do roteiro, não resolve nome de carta,
+não escolhe lado, não calcula profundidade e não sabe onde a carta pousa no
+quadro. Tudo volta pronto do `parse_roteiro`, o MESMO que o `exportar`
+chama. As 78 cartas do autocomplete vêm do servidor, que as leu da pasta —
+uma lista escrita em JS seria uma segunda verdade sobre o que é o baralho, e
+no dia em que a pasta mudasse ela ofereceria carta que o export recusa.
+
+**A prévia lo-res tem o ÁUDIO FINAL**, e é um lugar só que a gera
+(`_previa_lores`, para o `cartas` e para o `exportar --previa`). O loudnorm
+de duas passadas custa uma medição e um remux com `-c:v copy`, poucos
+segundos, e é o que a faz valer como julgamento do que vai sair — a mesma
+razão pela qual `trecho_audio` mora num lugar só. `_corta_final` é o irmão
+dela do lado do arquivo de qualidade, extraído do `cmd_render` para que
+vídeo com carta e vídeo sem carta não tenham duas receitas de codificação.
+
 
 ## Verificar uma mudança
 
@@ -819,6 +988,19 @@ Foi este teste que achou a `[disputa]` sumindo quando caía num token
 cortado. Nele mora também a promessa invertida: a pergunta sobre trecho
 que **já saiu** continua sendo cobrada até alguém restaurar ou responder,
 e uma vogal sustentada conta como um som e não como 200 letras.
+
+Mexeu nas cartas ou na legenda? **`venv\Scripts\python.exe
+teste_cartas.py`**, o terceiro irmão, e o único que não precisa de vídeo
+nenhum: ele inventa menções e roteiros com tempos fabricados e cobra a
+regra direto na função. Dos dois lados — o agrupamento por menção
+(`cartas`) e o roteiro escrito à mão (`exportar`): a principal como âncora,
+`Xs` como tempo VISÍVEL, a pilha que desce quando a de baixo sai, a ordem
+do overlay por profundidade, a janela de reenquadramento saindo só das
+cartas da direita, e as cinco recusas que impedem meio roteiro de sair
+calado. E a legenda: o relógio da saída depois da emenda, a palavra cortada
+pela metade que não entra, o rótulo do programa que não vira texto, a fala
+recuperada que vira, e a edição à mão que casa pelo tempo de fonte — ou
+volta como órfã, se o corte a levou embora.
 
 **Rode `conferir` antes de ouvir.** Ele lê o corte pela mesma função do
 `render` e lista só o suspeito: pendência sem resposta, anotação
