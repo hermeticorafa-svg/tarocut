@@ -3057,6 +3057,119 @@ def rosto_atras_da_carta(doc, janela, livre):
     return fora / len(sv)
 
 
+def saida_hlg(meta):
+    """A saida deste video sai marcada BT.2020/HLG (a cor do iPhone)?
+
+    Um lugar so porque a resposta serve a DUAS perguntas que tem de dar a
+    mesma: que tags de cor o `_corta_final` escreve, e em que espaco de
+    cor `_img_para_hlg` poe a imagem. Se as duas divergissem, o arquivo
+    diria "isto e HLG" sobre uma imagem que nao e - que e exatamente o
+    defeito de 09/09/2026 (ver `_img_para_hlg`), so que reintroduzido pela
+    porta de tras."""
+    return "hevc" in meta.get("vcodec", "")
+
+
+def _img_para_hlg(hlg):
+    """O que uma imagem sRGB (carta, midia) precisa atravessar para virar
+    quadro de um video HLG/BT.2020. Devolve o trecho de filtro que vai
+    depois do `scale` do ramo da imagem - vazio quando a saida e SDR.
+
+    Converte as PRIMARIAS (bt709 -> bt2020) e NAO converte a curva. Sao
+    dois botoes independentes, e so um deles estava errado; mexer nos
+    dois de uma vez foi o erro de 09/09/2026.
+
+    O defeito (achado do Rafael em 09/09/2026, no "3 de espadas"): "as
+    cores das imagens estao muito gritantes, como se alguem tivesse
+    aumentado a saturacao e o contraste". A causa nao era o `overlay`,
+    era o ROTULO. O `scale` do ffmpeg converte matriz e faixa, e NAO
+    converte primarias nem funcao de transferencia: os valores sRGB do
+    JPEG entravam no arquivo intactos e saiam de la marcados BT.2020/HLG
+    pelo `-color_trc arib-std-b67` que o `_corta_final` escreve. O player
+    le "BT.2020" e estica para o gamut da tela - e o que estava dentro ja
+    era sRGB. Dai o gritante.
+
+    A primeira correcao converteu as duas coisas, primarias E curva, com
+    `npl=203`. Resposta do Rafael: "as cartas estao acinzentadas,
+    dessaturadas" - errou para o outro lado. O metodo e que estava
+    errado: a conferencia decodificava o quadro com a INVERSA exata da
+    conversao que tinha acabado de ser aplicada, e isso devolve o
+    original por construcao. Ela nunca mediu o player, media a si mesma.
+    Nao repita esse teste - ele passa sempre.
+
+    MEDIDO (10/09/2026) com o unico instrumento que serve, o olho no
+    player onde o defeito aparece: `teste-cor-5-variantes.mov` poe a
+    mesma carta cinco vezes lado a lado, um caminho de cor em cada, e o
+    Rafael escolheu a 5a. Valores GRAVADOS por cada caminho, medidos
+    contra o JPEG original (saturacao HSV, luma 709, desvio do luma):
+
+      nada (o de ate 09/09)        sat    0%   luma    0%   contr    0%
+      primarias + curva, npl=203        -33%         -0%         -22%
+      primarias + curva, npl alto       -37%        +28%          -8%
+      so curva, npl=203                 -18%         -3%         -22%
+      SO PRIMARIAS (esta)               -21%         +3%          -0%
+
+    Por que so as primarias: o HLG foi feito para ser compativel com SDR
+    - a curva dele e proxima o bastante da gama de uma tela comum para o
+    sinal aparecer quase certo sem conversao nenhuma -, e um player de
+    SDR aproveita isso: passa o valor pela curva da tela e converte so o
+    gamut. Nesse caminho a imagem sRGB ja esta certa DE CURVA, e
+    converte-la para HLG antes so faz o player aplicar a curva da tela
+    sobre valor HLG - que e o que escurece e achata. O gamut, ao
+    contrario, ele converte de verdade, e por isso e o unico que tem de
+    sair pre-convertido: assim o estica do player cai de volta em cima da
+    cor original.
+
+    A prova de que essa e a leitura certa esta no proprio video: ele e
+    HLG/BT.2020 do iPhone e aparece CERTO nesse player. O player e o
+    instrumento de medida e o video e o controle; o que falta a imagem e
+    o mesmo tratamento que o video ja recebe. E por isso os tags do
+    `_corta_final` continuam dizendo HLG: quem e HLG de verdade e o
+    VIDEO, e mexer no rotulo dele para acomodar a imagem seria mudar a
+    cor do video, exatamente o que o pedido proibia.
+
+    O que isto NAO cobre, e vale saber antes de estranhar: num player que
+    aplique a EOTF do HLG de verdade (tela HDR, ou Windows com HDR
+    ligado) a imagem sai para o outro lado, clara demais. Nao existe
+    arquivo que acerte nos dois, porque a diferenca esta no player e nao
+    no arquivo; existe a escolha de qual acertar, e ela e a tela em que o
+    curso e julgado e assistido.
+
+    Nao ha ponto livre nenhum aqui, e por isso nao ha nada disto no
+    `config.toml`. O `npl_grafico = 203` que morava la era o ponto livre
+    da conversao de CURVA; sem ela o `npl` nao decide mais nada (o zscale
+    so o usa em HLG/PQ), entao foi apagado e nao mudado de lugar - numero
+    que nao decide mais nada e o comeco de um segundo lugar decidindo.
+
+    `tin=iec61966-2-1` (sRGB de verdade), nao `bt709`: JPEG e PNG sao
+    sRGB, a curva do bt709 e outra, e aqui a entrada e a saida usam a
+    MESMA curva - dize-la errado converteria curva sem querer, que e
+    justamente o que esta funcao deixou de fazer.
+
+    `format=gbrp16` antes do zscale: em RGB nao ha matriz para errar - o
+    JPEG chega marcado `bt470bg`, e deixar essa conversao para o swscale,
+    que sabe le-la, e mais seguro que redizer a matriz para o zscale.
+    Depois, `m=bt2020nc:r=tv` fecha matriz e faixa aqui, de uma vez, em
+    vez de depender de o `-color_range tv` da saida se propagar de volta
+    pelo grafo.
+
+    Vazio quando `hlg` e falso, e e isso que mantem o video SDR byte a
+    byte como sempre foi - inclusive a previa lo-res, que sai em h264: la
+    o arquivo ja e bt709 e a imagem sRGB ja esta certa dos dois lados.
+
+    O PRECO, MEDIDO (10/09/2026, carta de 918 px de altura): o ramo da
+    imagem sozinho cai de 190 para 131 fps, 1,45x. Esse ramo nunca foi o
+    gargalo - 131 fps contra os 3 a 7 fps do pipeline inteiro -, e o que
+    ele soma sao ~2,4 ms por quadro. Nao vale pre-converter a imagem em
+    arquivo para economizar isso: seria um JPEG com valores BT.2020
+    dentro que ninguem consegue reler nem conferir a olho, e uma segunda
+    verdade sobre qual imagem entra no video."""
+    if not hlg:
+        return ""
+    return (",format=gbrp16,"
+            "zscale=pin=bt709:tin=iec61966-2-1:min=bt709:rin=full:"
+            "p=bt2020:t=iec61966-2-1:m=bt2020nc:r=tv")
+
+
 def _reenquadra(L, entrada, janelas, resumo, w, h, margem, livre,
                 margem_lateral=0.0):
     """Poe a Mariana no CENTRO durante `janelas` (o layout 3) e devolve o
@@ -3113,7 +3226,8 @@ def _reenquadra(L, entrada, janelas, resumo, w, h, margem, livre,
 
 
 def grafo_cartas(iv, C, cartas, resumo_rosto, w_fonte, h_fonte,
-                  secundarias_imgs, escala=None, fps=None, hw=False):
+                  secundarias_imgs, escala=None, fps=None, hw=False,
+                  hlg=False):
     """Estende _grafo_corte com o overlay das cartas e o reenquadramento
     da Mariana - so os layouts 1 e 3 (ver escopo combinado no plano:
     zoom e empilhamento ficam de fora por enquanto).
@@ -3204,7 +3318,8 @@ def grafo_cartas(iv, C, cartas, resumo_rosto, w_fonte, h_fonte,
     y_carta = (h_trab - altura_px) // 2
     fade = cc["fade"]
 
-    L.append(f"[1:v]scale=-2:{altura_px},format=yuva420p,"
+    cor = _img_para_hlg(hlg)
+    L.append(f"[1:v]scale=-2:{altura_px}{cor},format=yuva420p,"
              f"fade=t=in:st=0:d={fade}:alpha=1[cartaP];")
     L.append(f"[{base}][cartaP]overlay=x={margem_px}:y={y_carta}[c0];")
 
@@ -3212,7 +3327,7 @@ def grafo_cartas(iv, C, cartas, resumo_rosto, w_fonte, h_fonte,
     for i, (nome, _) in enumerate(secundarias_imgs, start=2):
         janela = _janela_ativa([s for s in secs if s["carta"] == nome])
         prox = f"c{i - 1}"
-        L.append(f"[{i}:v]scale=-2:{altura_px}[carta{i}];")
+        L.append(f"[{i}:v]scale=-2:{altura_px}{cor}[carta{i}];")
         L.append(f"[{ult}][carta{i}]overlay=x=W-{margem_px}-w:"
                   f"y={y_carta}:enable='{janela}'[{prox}];")
         ult = prox
@@ -3294,7 +3409,7 @@ def _agrupa_camadas(eventos):
 
 def grafo_cartas_pilhas(iv, C, camadas, janelas_sessao, resumo_rosto,
                          w_fonte, h_fonte, imgs, cheios=None, imgs_full=None,
-                         escala=None, fps=None, hw=False):
+                         escala=None, fps=None, hw=False, hlg=False):
     """O overlay em PILHAS: sem carta fixa embutida, duas pilhas que
     crescem para o centro, e o crop do layout 3 nas janelas que quem chama
     disser.
@@ -3408,6 +3523,7 @@ def grafo_cartas_pilhas(iv, C, camadas, janelas_sessao, resumo_rosto,
     # vira passthrough e quem aparece por baixo e o `format=yuva420p` de
     # base (alfa 255 constante) - e o `enable` do PROPRIO overlay, nao
     # este alfa, quem decide se a camada e desenhada fora dali.
+    cor = _img_para_hlg(hlg)
     ult = base
     for i, (camada, img) in enumerate(zip(camadas, imgs), start=1):
         # `camadas` ja vem ordenada por PROFUNDIDADE (`_agrupa_camadas`),
@@ -3432,7 +3548,7 @@ def grafo_cartas_pilhas(iv, C, camadas, janelas_sessao, resumo_rosto,
                           f"enable='{janela_oc}'")
             janelas.append(janela_oc)
 
-        L.append(f"[{i}:v]scale=-2:{altura_px},format=yuva420p,"
+        L.append(f"[{i}:v]scale=-2:{altura_px}{cor},format=yuva420p,"
                   f"{','.join(fades)}[carta{i}];")
         L.append(f"[{ult}][carta{i}]overlay=x={xpos}:y={y_base}:"
                   f"enable='{'+'.join(janelas)}'[{prox}];")
@@ -3455,7 +3571,8 @@ def grafo_cartas_pilhas(iv, C, camadas, janelas_sessao, resumo_rosto,
         for j, (cheio, img) in enumerate(zip(cheios, imgs_full), start=base_idx):
             janela_oc = _janela(cheio["ini"], cheio["fim"])
             L.append(f"[{j}:v]scale=w={maxw}:h={maxh}:"
-                      f"force_original_aspect_ratio=decrease,format=yuva420p,"
+                      f"force_original_aspect_ratio=decrease{cor},"
+                      f"format=yuva420p,"
                       f"fade=t=in:st={cheio['ini']:.3f}:"
                       f"d={cheio['fade_in']:.3f}:alpha=1:enable='{janela_oc}',"
                       f"fade=t=out:st={cheio['fade_ini']:.3f}:"
@@ -5789,13 +5906,15 @@ def cmd_cartas(a):
         gscript_hw.write_text(
             grafo_cartas_pilhas(iv, C, camadas, janelas_sessao,
                                  resumo_rosto, w_fonte, h_fonte, imgs,
-                                 escala=360, fps=15, hw=True),
+                                 escala=360, fps=15, hw=True,
+                                 hlg=saida_hlg(meta)),
             encoding="utf-8")
         gscript_sw = d / "graph_cartas.txt"
         gscript_sw.write_text(
             grafo_cartas_pilhas(iv, C, camadas, janelas_sessao,
                                  resumo_rosto, w_fonte, h_fonte, imgs,
-                                 escala=360, fps=15, hw=False),
+                                 escala=360, fps=15, hw=False,
+                                 hlg=saida_hlg(meta)),
             encoding="utf-8")
 
         mantido = sum(b - x for x, b in iv)
@@ -5853,12 +5972,14 @@ def cmd_cartas(a):
     gscript_hw = d / "graph_cartas_qsv.txt"
     gscript_hw.write_text(
         grafo_cartas(iv, C, cartas, resumo_rosto, w_fonte, h_fonte,
-                     secundarias_imgs, escala=360, fps=15, hw=True),
+                     secundarias_imgs, escala=360, fps=15, hw=True,
+                     hlg=saida_hlg(meta)),
         encoding="utf-8")
     gscript_sw = d / "graph_cartas.txt"
     gscript_sw.write_text(
         grafo_cartas(iv, C, cartas, resumo_rosto, w_fonte, h_fonte,
-                     secundarias_imgs, escala=360, fps=15, hw=False),
+                     secundarias_imgs, escala=360, fps=15, hw=False,
+                     hlg=saida_hlg(meta)),
         encoding="utf-8")
 
     mantido = sum(b - x for x, b in iv)
@@ -5891,7 +6012,7 @@ def _corta_final(d, C, meta, g_hw, g_sw, entradas, mantido, saida, rotulo,
     `-hwaccel`."""
     cr = C["render"]
     corte = d / "_corte.mov"
-    hevc = "hevc" in meta.get("vcodec", "")
+    hevc = saida_hlg(meta)
     enc = ["-c:v", "hevc_qsv" if hevc else "h264_qsv",
            "-global_quality", str(cr["qualidade"]),
            "-pix_fmt", "p010le" if hevc else "nv12"]
@@ -6155,7 +6276,8 @@ def cmd_exportar(a):
                 grafo_cartas_pilhas(iv, C, camadas, janelas, resumo,
                                     meta["w"], meta["h"], imgs,
                                     cheios=cheios, imgs_full=imgs_full,
-                                    escala=escala, fps=fps, hw=hw),
+                                    escala=escala, fps=fps, hw=hw,
+                                    hlg=saida_hlg(meta)),
                 encoding="utf-8")
         entradas = (["-i", str(meta["src"])]
                     + [x for img in imgs for x in ("-loop", "1", "-i", str(img))]

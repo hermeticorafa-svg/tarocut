@@ -33,7 +33,7 @@ mesmos comandos.
 | `editor.html` | a tela: a transcrição em cima, a onda embaixo, o motor de áudio |
 | `teste_editor.py` | as promessas do editor que quebram em silêncio |
 | `teste_revisao.py` | as promessas do passe de julgamento que quebram em silêncio |
-| `teste_cartas.py` | as promessas das cartas: o agrupamento por menção, o roteiro escrito à mão e a legenda |
+| `teste_cartas.py` | as promessas das cartas: o agrupamento por menção, o roteiro escrito à mão, a legenda e a cor com que a imagem entra no vídeo |
 | `baralho.py` | o catálogo das 78 e o casador de menção na fala |
 | `midias/` | foto/gráfico avulso (não carta) que o roteiro à mão pode pôr na tela — `catalogo_midias()` em `tarocut.py`, não é módulo próprio |
 | `rosto.py` | onde o rosto anda — é dele que sai o reenquadramento |
@@ -791,6 +791,91 @@ original: é dali que vem o nome de arquivo que casa mencão na fala, e
 misturar as duas pastas faria decisão de estilo visual (a borda) vazar
 pra decisão de casamento de texto.
 
+**A imagem entra sRGB e o vídeo é HLG: alguém tem que converter, e não é
+o `scale`.** Achado do Rafael em 09/09/2026, no "3 de espadas": "as cores
+das imagens estão muito gritantes, como se alguém tivesse aumentado a
+saturação e o contraste". Estava certo, e a causa não era o `overlay` —
+era o RÓTULO. O `scale` do ffmpeg converte matriz e faixa, e **não**
+converte primárias nem função de transferência: os valores sRGB do JPEG
+entravam no arquivo intactos e saíam de lá marcados BT.2020/HLG pelo
+`-color_trc arib-std-b67` que o `_corta_final` escreve. O player lê
+"BT.2020" e ESTICA para o gamut da tela — e o que estava dentro já era
+sRGB. Nada disso tocava um pixel do vídeo.
+
+**São dois botões, e só um estava errado.** A primeira correção, de
+09/09, converteu os dois — primárias E curva, com `npl=203`. A resposta
+do Rafael foi "as cartas estão acinzentadas, dessaturadas": errou para o
+outro lado. E o erro não foi de número, foi de MÉTODO. A conferência
+decodificava o quadro com a INVERSA exata da conversão que tinha acabado
+de ser aplicada, e isso devolve o original por construção. Ela nunca
+mediu o player; mediu a si mesma. **Não repita esse teste — ele passa
+sempre**, com qualquer conversão que se invente.
+
+**Quem mede o player é o olho.** `teste-cor-5-variantes.mov` (na pasta
+`Vídeos`) põe a mesma carta cinco vezes lado a lado, um caminho de cor em
+cada, com os mesmos tags e o mesmo encoder do `exportar`. O Rafael abriu
+no player dele em 10/09/2026 e escolheu a 5ª — **só primárias**. É a
+única medição que existe sobre o que aquele player faz com HLG, e as
+outras quatro dizem para que lado ajustar se um dia mudar.
+
+Os valores GRAVADOS por cada caminho, contra o arquivo original de cada
+imagem — saturação HSV / luma 709 / desvio-padrão do luma, em %:
+
+| caminho de cor | carta | cura-bh |
+|---|---|---|
+| nada (o de até 09/09) | 0 / 0 / 0 | 0 / 0 / 0 |
+| primárias + curva, npl=203 | −28 / −3 / −23 | −40 / −15 / −31 |
+| primárias + curva, npl alto | −37 / +28 / −8 | — |
+| só curva, npl=203 | −18 / −3 / −22 | — |
+| **só primárias (hoje)** | **−14 / +1 / −1** | **−24 / −1 / −3** |
+
+**Por que só as primárias:** o HLG foi feito para ser compatível com SDR
+— a curva dele é próxima o bastante da gama de uma tela comum para o
+sinal aparecer quase certo sem conversão nenhuma —, e um player de SDR
+aproveita isso: passa o valor pela curva da tela e converte só o gamut.
+Nesse caminho a imagem sRGB já está certa DE CURVA, e convertê-la para
+HLG antes só faz o player aplicar a curva da tela sobre valor HLG, que é
+o que escurece e achata. O gamut, ao contrário, ele converte de verdade —
+por isso é o único que tem de sair pré-convertido, para o estica do
+player cair de volta em cima da cor original.
+
+**A prova de que essa é a leitura certa está no próprio vídeo:** ele é
+HLG/BT.2020 do iPhone e aparece CERTO nesse player. O player é o
+instrumento de medida e o vídeo é o controle; o que falta à imagem é o
+mesmo tratamento que o vídeo já recebe. É por isso, também, que os tags
+do `_corta_final` continuam dizendo HLG: quem é HLG de verdade é o VÍDEO,
+e mexer no rótulo dele para acomodar a imagem seria mudar a cor do vídeo
+— exatamente o que o pedido proibia.
+
+O que isto **não** cobre, e vale saber antes de estranhar: num player que
+aplique a EOTF do HLG de verdade (tela HDR, ou Windows com HDR ligado) a
+imagem sai para o outro lado, clara demais. Não existe arquivo que acerte
+nos dois, porque a diferença está no player e não no arquivo. Existe a
+escolha de qual acertar, e ela é a tela em que o curso é julgado e
+assistido.
+
+**O `npl_grafico` (203) foi apagado, não mudado de lugar.** Ele era o
+ponto livre da conversão de CURVA: o npl em que o branco difuso do sRGB
+pousava em 75% do sinal HLG. Sem essa conversão o `npl` não decide mais
+nada — o zscale só o usa em HLG/PQ —, e a conversão que ficou não tem
+ponto livre nenhum. Por isso não há linha dela no `config.toml`: número
+que não decide mais nada é o começo de um segundo lugar decidindo.
+
+`saida_hlg` existe para a conversão e os tags de cor não poderem
+divergir: quem decide "esta saída é HLG" é uma função só, e as duas
+perguntas a fazem. Duas respostas diferentes seriam o arquivo dizendo
+"isto é HLG" sobre uma imagem que não é — este mesmo defeito, reentrando
+pela porta de trás.
+
+E na saída SDR `_img_para_hlg` devolve string vazia, de propósito: lá a
+imagem já está no espaço de cor do arquivo e converter estragaria o que
+estava certo. Vale para a prévia lo-res, que sai em h264. MEDIDO no grafo
+do "3 de espadas": das 119 linhas, mudam 2 — os dois ramos de imagem. As
+117 do vídeo saem byte a byte iguais, e o único pixel de vídeo que muda
+no quadro pronto é a linha y=80, uma só, logo acima de cada imagem: o
+croma do 4:2:0 é compartilhado entre as linhas 80 e 81, e o overlay
+começa em y ímpar. É costura de borda de imagem, não cor do vídeo.
+
 **`overlay` é caro por CAMADA, não só por pixel, nesta versão do ffmpeg.**
 MEDIDO no IMG_0246: uma camada por MENÇÃO (26 no vídeo de teste, sem
 juntar repetição de carta) renderizou a 0,6 fps — quase 50 min para 2 min
@@ -1025,6 +1110,91 @@ relógio no canto (`salvo 14:03:22`) é a única prova, na tela, de que o gesto
 chegou ao disco, e ele não some depois de alguns segundos de propósito — o
 que tranquiliza não é o aviso, é a hora ainda estar lá.
 
+E ele deixou de mentir junto: `NÃO SALVOU` sai em vermelho e **fica**. Até
+10/09/2026 "não consegui salvar" saía com a mesma tinta cinza de 11 px do
+`salvo 14:03` — a mesma cara para "está no disco" e para "não está".
+
+**O servidor tem UMA sessão e várias abas podem estar olhando para ela — e
+até 10/09/2026 nenhuma das duas pontas perguntava de qual sessão vinha o
+gesto.** O `POST /abrir` troca a sessão debaixo das abas abertas (o botão
+"Abrir", e a linha de comando quando o `3. Editor` da `gui.py` acha a porta
+ocupada). A aba de ontem continuava mandando `ocultar i0=412`, e o servidor
+obedecia: o token 412 do vídeo de HOJE sumia, e ia para o disco. MEDIDO com
+dois POSTs num servidor de teste — a aba aberta no IMG_0246 teve o gesto
+dela atendido pela sessão do IMG_0248. É a família de defeito de sempre,
+decisão humana entrando onde ninguém pediu, e o navegador do Rafael acumula
+essas abas porque `webbrowser.open` abre uma nova a cada `3. Editor`.
+
+`Sessao.posse` fecha isso com duas metades, e as duas são necessárias:
+
+- **`sid` diz que SESSÃO é esta.** Muda a cada `Sessao(...)` — troca de
+  vídeo e reinício do processo. É o que impede o gesto de atravessar de um
+  vídeo para outro.
+- **`dono` diz que ABA está com ela.** Muda a cada `GET /doc`, isto é, a
+  cada página que nasce: a última a abrir é a dona. Duas abas no mesmo
+  vídeo não corrompem nada (o servidor é a fonte da verdade e tem tranca),
+  mas divergem na TELA — `enxuga` só manda as `pecas` para quem ainda não
+  as tem, e essa conta é por SESSÃO, então a segunda aba recebe
+  `pecas: None` para uma mudança que a primeira fez e ela nunca viu, e fica
+  mostrando um riscado que não existe mais. Uma dona por vez desfaz isso
+  pela raiz.
+
+Todo POST que muda alguma coisa (`/acao`, `/cartas`, `/legenda`, `/rodar`,
+`/abrir`) leva a senha e é **recusado** com 409 quando ela não é a do
+momento — recusa e não aviso, mesma regra do selo do `transcript.md` e do
+`confere_montagem`, e pela mesma razão: o que vem depois de um casamento
+errado não é risco, é decisão trocada gravada no disco. A ÚNICA exceção é
+`/abrir` com o campo AUSENTE, que é o `_troca_no_editor_aberto` da linha de
+comando — ele não tem aba atrás dele. O navegador sempre manda a senha, e
+senha errada é recusada em toda rota.
+
+**Recusar impede o estrago; não impede a aflição.** A pergunta "qual destas
+abas está salvando o quê?" nasce ANTES do gesto, olhando para duas telas
+parecidas. Por isso a aba velha se declara morta sozinha: `GET /vida` (dois
+campos, sem tranca) de 2 em 2 segundos enquanto ela está visível, ao voltar
+para a tela, e **no primeiro dedo** — `pointerdown`/`keydown`, que é o único
+sinal que não mente sobre "tem gente olhando para esta aba agora"
+(`visibilityState` mente: MEDIDO no painel do navegador, uma aba em que se
+digita pode reportar `hidden`). Aí ela vira lápide: um véu que não fecha,
+dizendo o que aconteceu e em que vídeo o editor está, com um botão que
+recarrega. O `document.title` vira `✖ aba velha`, porque a dúvida nasce na
+tira de abas e a resposta tem de aparecer lá, sem clicar em nada. Não há
+botão de "continuar assim mesmo" de propósito — continuar assim mesmo é
+exatamente o defeito.
+
+**Legenda que só grava no `blur` é legenda que às vezes não grava**, e "às
+vezes" era a queixa. Eram três caminhos, todos silenciosos:
+
+- `pintaCenas(true)` limpava o `#cenas` inteiro, e **tirar do DOM um
+  `contenteditable` que está com o foco NÃO dispara `blur`**. Bastava um
+  `audio`/`exportar` terminar enquanto se digitava — o vigia do log chama
+  `recarregaCartas`, que força — para o texto ir embora sem uma linha de
+  aviso. Hoje o `forca` não fura mais a guarda de "não repinta por baixo de
+  quem escreve": fica marcado em `K.repintaDepois` e acontece quando a
+  gravação volta.
+- O `blur` também não dispara quando a JANELA perde o foco antes do
+  elemento. MEDIDO no próprio navegador: com a janela em segundo plano,
+  `focus()` muda o `activeElement` e `blur()` não dispara evento nenhum.
+  Hoje a legenda tem o mesmo autosave por debounce que o roteiro já tinha
+  (800 ms), e `salvaCena` não reescreve o texto por baixo de um cursor que
+  continua ali — jogaria a pessoa para o começo da caixa a cada 800 ms.
+- `pintaCartas` reescrevia `cod.value` com o roteiro do SERVIDOR sempre que
+  o textarea não estivesse com o foco, e o debounce dura 500 ms: um
+  `exportar` terminando nessa janela apagava o que tinha acabado de ser
+  digitado. Hoje `K.timer`/`K.salvando` entram na conta junto com o foco.
+
+**`guardaTudo` põe no disco AGORA o que só iria mais tarde**, e é chamada
+antes de tudo que lê o disco por fora da tela: `/rodar` (o subprocesso lê o
+`montagem.json` e o `cartas-roteiro.json`), trocar de vídeo, sair do modo
+cartas, a aba sumir e a janela perder o foco. Sem ela, "exportei e saiu o
+roteiro de antes" era um caminho aberto: clicar em `exportar` com o cursor
+ainda no textarea dispara o `blur` (que grava) e o clique (que roda) em
+conexões diferentes do `ThreadingHTTPServer`, sem ordem nenhuma entre as
+duas — mesma família do defeito que o `salvaRoteiro` já tinha resolvido
+para dois POSTs `/cartas`, só que entre endpoints. Fechar a aba é o único
+gesto que ela não alcança (o navegador não espera um `fetch`), e lá só se
+pergunta, e só quando há de verdade o que perder.
+
 **A tela do modo cartas não decide nada**, pela mesma razão que ela não
 calcula corte: ela não lê a sintaxe do roteiro, não resolve nome de carta,
 não escolhe lado, não calcula profundidade e não sabe onde a carta pousa no
@@ -1053,6 +1223,14 @@ trecho, ocultar na onda risca a palavra no texto, restaurar devolve o token
 inteiro seja ele palavra, hesitação ou silêncio, restaurar arrastando
 responde a pendência sem responder as outras, e o corte que a tela mostrou é
 byte a byte o que o `render` relê do disco.
+
+Ele ganhou em 10/09/2026 uma parte que não é de geometria e sim do FIO
+(`roda_posse`, uma vez só, num servidor de verdade na porta 8796): a aba que
+pede o `/doc` é a dona, a que nasce depois assume, a velha é recusada em
+TODAS as cinco rotas que mudam alguma coisa, a dona continua sendo atendida,
+o `/abrir` sem senha (a linha de comando) passa, e depois de trocar de vídeo
+a recusa diz em que vídeo o editor está. Não toca em disco: tudo o que ele
+testa é recusado antes de chegar à `Sessao`.
 
 Ele foi reescrito em 08/09/2026 junto com o editor. As promessas dos botões
 de mais e menos saíram com eles; a garantia por trás de cada uma — **nunca
@@ -1097,7 +1275,14 @@ da direita, `full` exigindo `Xs`, duas imagens `full` não podem se
 sobrepor, e o coração do recorte — uma carta viva antes de uma imagem
 `full` some com fade terminando exatamente onde ela começa, e volta com
 fade começando exatamente onde ela acaba, nunca com folga somada nos dois
-lados ao mesmo tempo.
+lados ao mesmo tempo. E a COR da imagem, que já quebrou nos dois
+sentidos — sem conversão nenhuma sai gritante, com a curva convertida
+junto sai acinzentada —, então os dois lados são cobrados: numa saída HLG
+as QUATRO entradas de imagem convertem as PRIMÁRIAS (uma só que escape
+sai gritando ao lado das outras, que é pior que todas erradas juntas) e
+nenhuma converte a CURVA, numa saída SDR nenhuma converte coisa alguma, e
+nos dois casos o ramo do vídeo sai idêntico linha por linha — o pedido
+era consertar a imagem sem tocar na cor do vídeo.
 
 **Rode `conferir` antes de ouvir.** Ele lê o corte pela mesma função do
 `render` e lista só o suspeito: pendência sem resposta, anotação

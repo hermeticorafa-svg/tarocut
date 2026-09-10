@@ -356,6 +356,30 @@ body.cartas #cartas{display:grid}
   font:11px/1.45 ui-monospace,Consolas,monospace;color:#57534b;
 }
 #salvo{color:#7d786f;font:11px/1 system-ui,sans-serif}
+/* Nao e cor de aviso: e cor de "o que voce acabou de fazer NAO esta no
+   disco". Fica ate um salvamento de verdade apaga-la. */
+#salvo.ruim{color:#fff;background:#b03028;padding:3px 7px;border-radius:4px;
+            font-weight:600}
+
+/* A lapide da aba velha. Cobre tudo, inclusive o modo cartas (z-index acima
+   do veu de "abrir outro video"), porque o que ela diz vale para a tela
+   inteira. */
+#lapideVeu{
+  position:fixed;inset:0;z-index:9999;background:rgba(28,26,23,.93);
+  display:flex;align-items:center;justify-content:center;padding:24px;
+}
+#lapideVeu .lapideCx{
+  max-width:520px;background:var(--papel);border-radius:8px;padding:22px 24px;
+  font:13px/1.55 system-ui,sans-serif;color:#3a3630;
+}
+#lapideVeu .lapideTit{font-size:15px;font-weight:600;margin-bottom:9px;
+                      color:#b03028}
+#lapideVeu .lapideTxt{margin-bottom:14px}
+#lapideVeu button{
+  border:1px solid var(--linha);background:var(--tinta);color:var(--papel);
+  border-radius:4px;padding:7px 13px;font:12px/1 inherit;cursor:pointer;
+}
+#lapideVeu .lapideRod{margin-top:14px;font-size:11px;color:#7d786f}
 </style>
 </head>
 <body>
@@ -524,6 +548,8 @@ const S = {
   gesto: null,        // {modo, ...} enquanto o mouse esta apertado na faixa
   toque: null,        // tempo da fonte que esta soando, ou null
   visto: null,        // a selecao que a janela ja centrou
+  posse: "",          // a senha desta aba (ver `Sessao.posse` no editor.py)
+  morta: false,       // virou lapide: nao manda mais nada, nao salva mais nada
 };
 
 const $ = (id) => document.getElementById(id);
@@ -550,6 +576,133 @@ function mmss(seg) {
 /*  conversa com o servidor                                             */
 /* ==================================================================== */
 
+/* ------------------------------------------------------------- a lapide */
+/* Uma aba que perdeu o editor nao pode continuar parecendo viva. Ate
+   10/09/2026 ela parecia: o servidor atendia o gesto dela com a sessao que
+   tinha AGORA, e um "ocultar i0=412" da aba do "3 de espadas" ia ocultar o
+   token 412 do "4 de espadas" - e ia para o disco. MEDIDO com dois POSTs
+   num servidor de teste.
+
+   Agora todo POST que muda alguma coisa leva a senha desta aba
+   (`Sessao.posse`), e uma aba sem a senha do momento vira isto: um veu que
+   nao se fecha, dizendo o que aconteceu e onde o editor esta. Nao ha botao
+   de "continuar assim mesmo" de proposito - continuar assim mesmo e
+   exatamente o defeito. */
+function lapide(txt, video) {
+  if (S.morta) return;
+  S.morta = true;
+  try { para(); } catch (e) {}
+  // a tira de abas do navegador e onde a duvida nasce ("qual destas esta
+  // salvando?"), entao a resposta tem de aparecer LA, sem clicar em nada.
+  document.title = "✖ aba velha";
+  if (batida) { clearInterval(batida); batida = null; }
+  const v = document.createElement("div");
+  v.id = "lapideVeu";
+  const cx = document.createElement("div");
+  cx.className = "lapideCx";
+  const h = document.createElement("div");
+  h.className = "lapideTit";
+  h.textContent = "esta aba não está mais editando nada";
+  const p = document.createElement("div");
+  p.className = "lapideTxt";
+  p.textContent = txt;
+  const b = document.createElement("button");
+  b.textContent = video ? "recarregar nesta aba (abre " + video + ")"
+                        : "recarregar nesta aba";
+  b.onclick = () => location.reload();
+  const f = document.createElement("div");
+  f.className = "lapideRod";
+  f.textContent = "o que você fez aqui antes disso já está no disco — "
+    + "o editor grava a cada gesto. O que estava sendo digitado agora, não.";
+  cx.append(h, p, b, f);
+  v.appendChild(cx);
+  document.body.appendChild(v);
+}
+
+/* A batida de coracao. Recusar o gesto da aba velha ja impede o estrago,
+   mas nao a aflicao: a pergunta "qual destas abas esta salvando o que?"
+   nasce ANTES do gesto, olhando para duas telas parecidas. Entao a aba
+   velha se declara morta sozinha - dois campos de /vida, sem tranca no
+   servidor.
+
+   So enquanto a aba esta VISIVEL, e na hora em que ela volta a ser: uma
+   aba de ontem em segundo plano nao precisa de nada, e a pessoa que
+   alterna para ela ve a lapide antes de o dedo chegar ao teclado. */
+let batida = null, ultimaOlhada = 0;
+async function olhaPosse(forca) {
+  if (S.morta) return;
+  if (!forca && document.visibilityState !== "visible") return;
+  if (forca) {
+    // no dedo: throttle, senao um arrasto na onda viraria uma rajada de
+    // /vida. 1,5 s e menos que o proprio intervalo da batida.
+    if (Date.now() - ultimaOlhada < 1500) return;
+    ultimaOlhada = Date.now();
+  }
+  let v;
+  try { v = await (await fetch("/vida")).json(); } catch (e) {
+    lapide("o editor fechou (o servidor não responde mais). Nada que você "
+           + "fizer aqui é salvo.", "");
+    return;
+  }
+  if (v.posse !== S.posse)
+    lapide(v.posse.split(".")[0] === S.posse.split(".")[0]
+      ? "outra aba assumiu este editor. Nada que você fizer aqui é salvo."
+      : "esta aba não é mais deste editor: ele está no vídeo “" + v.video
+        + "” agora. Nada que você fizer aqui é salvo.", v.video);
+}
+function vigiaPosse() {
+  if (batida) clearInterval(batida);
+  batida = setInterval(olhaPosse, 2000);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") olhaPosse();
+    else guardaTudo();   // saindo da tela: o que estava sendo digitado vai
+  });                    // ao disco agora, nao daqui a 500 ms
+  window.addEventListener("focus", () => olhaPosse());
+  // e no dedo, sem depender do `visibilityState`: e o unico sinal que nao
+  // mente sobre "tem gente olhando para esta aba AGORA". Existe porque a
+  // batida e o `visibilitychange` sao os dois a mesma aposta - a de que o
+  // navegador conta a verdade sobre quem esta na tela.
+  document.addEventListener("pointerdown", () => olhaPosse(true), true);
+  document.addEventListener("keydown", () => olhaPosse(true), true);
+  // sair do navegador (alt-tab para a janela do tarocut, por exemplo) nao
+  // esconde a aba, entao o `visibilitychange` acima nao dispara - e e
+  // exatamente o gesto de quem vai clicar "3. Editor" outra vez, que
+  // troca a sessao debaixo desta aba. Grava tambem aqui: `guardaTudo` nao
+  // faz nada quando nao ha nada pendente.
+  window.addEventListener("blur", () => { guardaTudo(); });
+}
+
+/* A resposta de posse recusada vem com `motivo` (o /legenda e o /abrir tem
+   409 proprio, sem esse campo - por isso a checagem e pelo campo e nao
+   pelo codigo). */
+function conferePosse(r, corpo) {
+  if (r.status !== 409 || !corpo || !corpo.motivo) return false;
+  lapide(corpo.erro, corpo.video);
+  return true;
+}
+
+/* A UNICA porta de saida para POST. Poe a senha, reconhece a recusa de
+   posse e nunca deixa um erro de rede virar silencio: quem chama recebe
+   `null` e o relogio do canto fica vermelho. */
+async function postar(rota, corpo) {
+  if (S.morta) return null;
+  let r, dados = null;
+  try {
+    r = await fetch(rota, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(Object.assign({ posse: S.posse }, corpo)),
+    });
+  } catch (e) {
+    lapide("o editor fechou (o servidor não responde mais). Nada que você "
+           + "fizer aqui é salvo.", "");
+    return null;
+  }
+  try { dados = await r.json(); } catch (e) { dados = null; }
+  if (conferePosse(r, dados)) return null;
+  if (!r.ok) return null;
+  return dados;
+}
+
 let vez = 0;
 async function acao(nome, extra) {
   // Gesto de gente e o fim da posicao pausada do som - ver `soltaToque`.
@@ -558,12 +711,10 @@ async function acao(nome, extra) {
   const meu = ++vez;
   const corpo = Object.assign(
     { acao: nome, sel: { i0: S.sel.i0, i1: S.sel.i1 } }, extra || {});
-  const r = await fetch("/acao", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(corpo),
-  });
-  const est = await r.json();
+  const est = await postar("/acao", corpo);
+  // `null` e aba morta ou servidor mudo: a lapide (ou o vermelho do
+  // relogio) ja esta na tela, e insistir aqui repintaria por cima dela.
+  if (!est) { if (!S.morta) marcaSalvo("NÃO SALVOU — o editor não respondeu", true); return S.est; }
   if (meu !== vez) return est;      // chegou tarde: outro gesto ja mandou
   // `pecas` vem `null` quando nada nelas mudou: sao 330 KB dos 338 da
   // resposta, e andar a selecao nao mexe numa letra do riscado. Quem decide
@@ -1891,6 +2042,10 @@ document.addEventListener("contextmenu", async (ev) => {
 let vigia = null;
 async function roda(cmd) {
   para();
+  // o subprocesso le o DISCO. O que estiver sendo digitado tem de chegar la
+  // ANTES dele comecar - ver `guardaTudo`.
+  await guardaTudo();
+  if (S.morta) return;
   // No modo cartas o painel lateral taparia justamente o roteiro; o log vai
   // para o rodape da direita, ao lado dos botoes que o dispararam.
   const naCartas = emCartas();
@@ -1901,11 +2056,8 @@ async function roda(cmd) {
   if (!naCartas) { abrePainel(); $("caixaLog").hidden = false; }
   tit(cmd);
   log.textContent = "iniciando...";
-  const r = await (await fetch("/rodar", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ cmd }),
-  })).json();
-  if (!r.ok) {                      // o servidor roda um de cada vez
+  const r = await postar("/rodar", { cmd });
+  if (!r || !r.ok) {                // o servidor roda um de cada vez
     tit("já está rodando");
     return;
   }
@@ -1965,11 +2117,14 @@ async function abreVeu() {
 
 async function escolheVideo(nome) {
   const lista = $("abrirLista");
+  lista.textContent = "salvando o que estava aberto...";
+  // trocar de video joga fora esta Sessao inteira: o que estiver sendo
+  // digitado tem de ir ao disco antes. Ver `guardaTudo`.
+  await guardaTudo();
+  if (S.morta) return;
   lista.textContent = "abrindo " + nome + "...";
-  const r = await (await fetch("/abrir", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ video: nome }),
-  })).json();
+  const r = await postar("/abrir", { video: nome });
+  if (!r) return;                   // a lapide ja esta na tela
   if (r.ok) { location.reload(); return; }
   lista.textContent = "não consegui abrir: " + (r.erro || "erro desconhecido");
 }
@@ -2009,6 +2164,9 @@ const K = {
   ops: [], sel: -1,
   querPrincipal: null,   // o estado da caixinha, que e da TELA e nao do disco
   timer: null,    // o debounce do salvamento
+  salvando: null, pendente: false,  // no maximo um POST /cartas em voo por vez
+  repintaDepois: false,  // um repinte que a edicao em curso adiou (pintaCenas)
+  timerCena: null,       // o debounce da legenda que esta sendo digitada
   charW: 0, lineH: 0,
   acesa: -1,
   geral: false,   // tocando pelo botao de cima (o audio inteiro), nao uma cena so
@@ -2018,6 +2176,10 @@ function emCartas() { return document.body.classList.contains("cartas"); }
 
 async function alternaCartas() {
   if (emCartas()) {
+    // sair do modo cartas esconde a metade que estava sendo escrita; o
+    // `display:none` tira o foco do contenteditable sem `blur` em alguns
+    // navegadores, e o texto ia junto. Ver `guardaTudo`.
+    await guardaTudo();
     document.body.classList.remove("cartas");
     $("btCartas").classList.remove("on");
     fechaSugestao();
@@ -2034,14 +2196,7 @@ async function recarregaCartas() {
   pintaCartas(true);
 }
 
-async function postCartas(rota, corpo) {
-  const r = await fetch(rota, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(corpo),
-  });
-  if (!r.ok) return null;
-  return await r.json();
-}
+async function postCartas(rota, corpo) { return postar(rota, corpo); }
 
 /* ------------------------------------------------------------- salvo */
 /* O autosave dele e silencioso, e isso da aflicao com razao: nao ha nada na
@@ -2052,7 +2207,14 @@ function hora() {
   const d = new Date(), z = (n) => String(n).padStart(2, "0");
   return z(d.getHours()) + ":" + z(d.getMinutes()) + ":" + z(d.getSeconds());
 }
-function marcaSalvo(txt) { $("salvo").textContent = txt; }
+/* `erro` pinta de vermelho e nao volta a cinza sozinho. Ate 10/09/2026 o
+   "nao consegui salvar" saia com a mesma tinta de 11 px do "salvo 14:03" -
+   a mesma cara para "esta no disco" e para "nao esta". */
+function marcaSalvo(txt, erro) {
+  const el = $("salvo");
+  el.textContent = txt;
+  el.classList.toggle("ruim", !!erro);
+}
 
 /* ----------------------------------------------------- a metade esquerda */
 
@@ -2084,11 +2246,22 @@ function pintaCenas(forca) {
   const cx = $("cenas"), cenas = K.est.legendas;
   // Nao repinta por baixo de quem esta escrevendo: perder o cursor no meio
   // de uma legenda seria pior que a lista ficar um gesto atrasada.
+  //
+  // E o `forca` NAO fura mais essa guarda, que era por onde a legenda
+  // sumia calada: `pintaCenas(true)` limpa o `#cenas` inteiro, e tirar do
+  // DOM um contenteditable que esta com o foco NAO dispara `blur` - o
+  // unico lugar que grava a legenda. Bastava um `audio`/`exportar`
+  // terminar enquanto a pessoa digitava (o vigia do log chama
+  // `recarregaCartas`, que forca) para o texto ir embora sem uma linha de
+  // aviso. Fica marcado para repintar assim que o `blur` gravar.
   const escrevendo = document.activeElement &&
+    document.activeElement.classList &&
     document.activeElement.classList.contains("cenaTxt");
   const sig = cenas.map((c) => [c.n, c.ini, c.fim, c.txt, c.mao ? 1 : 0].join(":"))
     .join("|");
-  if (!forca && (escrevendo || sig === K.sig)) return;
+  if (escrevendo) { K.repintaDepois = true; return; }
+  if (!forca && sig === K.sig) return;
+  K.repintaDepois = false;
   K.sig = sig;
   cx.textContent = "";
 
@@ -2156,17 +2329,52 @@ function pintaCenas(forca) {
       if (ev.key === "Enter") { ev.preventDefault(); d.blur(); }
       if (ev.key === "Escape") { montaTextoCena(d, c, comPalavras); d.blur(); }
     });
-    d.addEventListener("blur", () => salvaCena(el, c, d.innerText));
+    // quem esta sendo editado precisa ser alcancavel de FORA do fecho:
+    // `guardaTudo` grava a legenda em curso quando a aba some, quando um
+    // subprocesso vai comecar e quando a pessoa troca de video.
+    d._cena = c;
+    d._cx = el;
+    d.addEventListener("blur", () => {
+      if (K.timerCena) { clearTimeout(K.timerCena); K.timerCena = null; }
+      salvaCena(el, c, d.innerText);
+    });
+    // O `blur` deixou de ser o unico gatilho, e essa e a metade do
+    // conserto que nao se ve. Ele nao dispara quando o elemento sai do DOM
+    // com o foco dentro (a outra metade: `pintaCenas` nao tira mais), nem
+    // quando a JANELA perde o foco antes do elemento - MEDIDO no proprio
+    // navegador: com a janela em segundo plano, `focus()` muda o
+    // `activeElement` e `blur()` nao dispara evento nenhum. Uma legenda
+    // que so grava no blur e uma legenda que as vezes nao grava, e "as
+    // vezes" foi exatamente a queixa. Agora ela grava sozinha 800 ms
+    // depois da ultima tecla, como o roteiro faz desde sempre.
+    d.addEventListener("input", () => {
+      if (K.timerCena) clearTimeout(K.timerCena);
+      marcaSalvo("salvando…");
+      K.timerCena = setTimeout(() => {
+        K.timerCena = null;
+        salvaCena(el, c, d.innerText);
+      }, 800);
+    });
     el.appendChild(d);
     cx.appendChild(el);
   }
 }
 
 async function salvaCena(el, c, texto) {
-  if (texto.trim() === c.txt.trim()) return;
+  if (texto.trim() === c.txt.trim()) {
+    if (K.repintaDepois) pintaCenas(true);
+    return;
+  }
   marcaSalvo("salvando…");
+  // guardado ANTES do await: se o servidor recusar, o texto digitado ainda
+  // esta na tela e a pessoa pode copia-lo. Sumir com ele seria trocar um
+  // defeito por outro.
   const est = await postCartas("/legenda", { s: c.s, e: c.e, texto });
-  if (!est) { marcaSalvo("essa legenda não existe mais — o corte mudou"); return; }
+  if (!est) {
+    if (!S.morta)
+      marcaSalvo("NÃO SALVOU esta legenda — o corte mudou por baixo dela", true);
+    return;
+  }
   K.est = est;
   marcaSalvo("salvo " + hora());
   // So a linha mexida, e nao a lista inteira: repintar tudo tiraria o foco
@@ -2174,13 +2382,45 @@ async function salvaCena(el, c, texto) {
   const novo = est.legendas.find((x) => x.n === c.n);
   if (!novo) { pintaCenas(true); return; }
   Object.assign(c, novo);
+  const txtEl = el.querySelector(".cenaTxt");
   const comPalavras = !novo.mao && Array.isArray(novo.palavras) && novo.palavras.length > 0;
   el.className = "cena" + (novo.mao ? " mao" : "") + (comPalavras ? " comPalavras" : "") +
     (novo.mao && novo.orig && novo.orig !== novo.auto ? " velha" : "");
-  montaTextoCena(el.querySelector(".cenaTxt"), novo, comPalavras);
+  // reescrever o texto por baixo de um cursor que continua ali jogaria a
+  // pessoa para o comeco da caixa a cada 800 ms do autosave. O texto que
+  // esta na tela E o que acabou de ser gravado; nao ha o que atualizar.
+  if (document.activeElement !== txtEl)
+    montaTextoCena(txtEl, novo, comPalavras);
   K.sig = est.legendas.map((x) =>
     [x.n, x.ini, x.fim, x.txt, x.mao ? 1 : 0].join(":")).join("|");
   pintaRoteiro();
+  // o repinte que a edicao adiou (ver `pintaCenas`) acontece agora que ela
+  // acabou de ir para o disco. Se o foco ainda estiver la - o
+  // `guardaTudo` grava sem tirar o foco -, ele se adia de novo sozinho.
+  if (K.repintaDepois) pintaCenas(true);
+}
+
+/* Poe no disco AGORA tudo o que so iria mais tarde: a legenda que esta
+   sendo digitada (que so grava no `blur`) e o roteiro que espera os 500 ms
+   do debounce. Chamada antes de tudo que le o disco por fora da tela - um
+   subprocesso (`/rodar`), trocar de video - e quando a aba some.
+
+   Sem ela, "exportei e saiu o roteiro de antes" era um caminho aberto:
+   clicar em `exportar` com o cursor ainda no textarea dispara o `blur`
+   (que grava) e o clique (que roda) em conexoes diferentes do
+   ThreadingHTTPServer, sem ordem nenhuma entre as duas. Mesma familia do
+   defeito que o `salvaRoteiro` ja tinha resolvido para dois POSTs
+   /cartas, so que entre endpoints. */
+async function guardaTudo() {
+  const d = document.activeElement;
+  const ps = [];
+  if (K.timerCena) { clearTimeout(K.timerCena); K.timerCena = null; }
+  if (d && d.classList && d.classList.contains("cenaTxt") && d._cena)
+    ps.push(salvaCena(d._cx, d._cena, d.innerText));
+  if (K.timer) { clearTimeout(K.timer); K.timer = null; salvaRoteiro(); }
+  if (K.salvando) ps.push(K.salvando);
+  await Promise.all(ps);
+  if (K.salvando) await K.salvando;   // o do/while pode ter reenfileirado
 }
 
 /* A legenda que esta soando. Mesma ideia do verde da folha: o som diz onde
@@ -2306,7 +2546,13 @@ function pintaCartas(forca) {
     }
   }
   const cod = $("codigo");
-  if (document.activeElement !== cod && cod.value !== K.est.roteiro)
+  // `K.timer`/`K.salvando` na conta junto com o foco: o que a pessoa
+  // digitou e ainda nao foi ao disco NAO pode ser apagado pelo roteiro que
+  // o servidor tem. Acontecia com um `exportar` terminando dentro dos
+  // 500 ms do debounce - o vigia do log chama `recarregaCartas`, que
+  // repinta com o valor de la.
+  if (document.activeElement !== cod && !K.timer && !K.salvando &&
+      cod.value !== K.est.roteiro)
     cod.value = K.est.roteiro;
   const pn = $("principalNome");
   // A caixinha e da TELA: marcar "este video e sobre uma carta" e abrir o
@@ -2412,18 +2658,45 @@ function agendaSalvar() {
   K.timer = setTimeout(salvaRoteiro, 500);
 }
 
-async function salvaRoteiro() {
+/* Clicar o checkbox "pronto" enquanto o cursor ainda esta no textarea do
+   roteiro dispara DOIS POSTs quase juntos: o `blur` do `codigo` (linha
+   abaixo) grava na hora se havia debounce pendente, e o `change` do
+   `pronto` grava de novo logo em seguida - o blur acontece ANTES do clique
+   marcar o checkbox, entao aquele primeiro POST ainda le `pronto` como
+   estava (desmarcado). Os dois POSTs viajam em conexoes/threads
+   separadas do `ThreadingHTTPServer`, e nada garantia que o de cima
+   terminasse de gravar por ultimo: MEDIDO reproduzindo o clique, o
+   `cartas-roteiro.json` as vezes ficava com `pronto:false` mesmo com o
+   checkbox marcado na tela - decisao sumindo em silencio, so que pelo
+   lado do salvamento e nao da geometria.
+
+   O conserto e nunca deixar dois POSTs em voo ao mesmo tempo: uma
+   gravacao que chega enquanto outra ainda nao voltou so marca
+   `K.pendente` e espera a de cima terminar, que dispara mais uma -
+   sempre lendo o DOM na hora de partir, entao a ultima a sair carrega o
+   estado mais novo. Sem isso o servidor podia processar os dois fora da
+   ordem em que o navegador mandou; com isso so ha um por vez, e a ordem
+   deixa de importar. */
+function salvaRoteiro() {
   K.timer = null;
-  const est = await postCartas("/cartas", {
-    roteiro: $("codigo").value,
-    principal: $("temPrincipal").checked ? $("principalNome").value.trim() : "",
-    semLegenda: !$("comLegenda").checked,
-    pronto: $("pronto").checked,
-  });
-  if (!est) { marcaSalvo("não consegui salvar"); return; }
-  K.est = est;
-  marcaSalvo("salvo " + hora());
-  pintaCartas(false);
+  if (K.salvando) { K.pendente = true; return; }
+  K.salvando = (async () => {
+    do {
+      K.pendente = false;
+      const est = await postCartas("/cartas", {
+        roteiro: $("codigo").value,
+        principal: $("temPrincipal").checked ? $("principalNome").value.trim() : "",
+        semLegenda: !$("comLegenda").checked,
+        pronto: $("pronto").checked,
+      });
+      if (!est) {
+        // a lapide ja explica quando a aba morreu; aqui e o outro caso,
+        // o servidor que respondeu errado. Vermelho e fica.
+        if (!S.morta) marcaSalvo("NÃO SALVOU o roteiro — tente de novo", true);
+      } else { K.est = est; marcaSalvo("salvo " + hora()); pintaCartas(false); }
+    } while (K.pendente);
+    K.salvando = null;
+  })();
 }
 
 /* --------------------------------------------------------- o tempo daqui */
@@ -2606,11 +2879,30 @@ $("btFinal").onclick = () => roda("exportar");
 new ResizeObserver(redimensiona).observe($("faixa"));
 document.addEventListener("mouseup", () => { S.arrastando = false; });
 
+/* Fechar a aba e o unico gesto que o `guardaTudo` nao alcanca: o navegador
+   nao espera um fetch. Entao aqui so se PERGUNTA - e so quando ha de
+   verdade o que perder (uma legenda com o cursor dentro, um debounce de
+   roteiro no ar, um POST ainda voando). O `visibilitychange` ja gravou na
+   maioria dos caminhos; este e a rede embaixo. */
+window.addEventListener("beforeunload", (ev) => {
+  const d = document.activeElement;
+  const editando = d && d.classList && d.classList.contains("cenaTxt") &&
+    d._cena && d.innerText.trim() !== d._cena.txt.trim();
+  if (!S.morta && (editando || K.timer || K.timerCena || K.salvando)) {
+    ev.preventDefault();
+    ev.returnValue = "";
+  }
+});
+
 (async function () {
   S.doc = await (await fetch("/doc")).json();
+  // buscar o /doc E assumir o editor sao o mesmo gesto, no servidor: a
+  // pagina que nasce e a dona. Ver `Sessao.posse`.
+  S.posse = S.doc.posse;
   S.est = S.doc.estado;
   S.sel = S.est.sel;
   document.title = "tarocut · " + S.doc.nome;
+  vigiaPosse();
   redimensiona();
   pinta();
   // o aviso de carga (montagem caduca, garantia cumprida ao abrir) so

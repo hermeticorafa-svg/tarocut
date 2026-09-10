@@ -746,6 +746,98 @@ jan = tc.janelas_reenquadra(ev, CC["junta_janela"])
 diz(len(jan) == 0, f"55: imagem full nao abre janela de reenquadramento "
     f"(veio {len(jan)})")
 
+# ---- a cor da imagem que entra no video -------------------------------
+# A promessa de 09/09/2026: imagem sRGB posta num video HLG passa pela
+# conversao de cor, e num video SDR nao passa por nada. Quebra CALADA nos
+# dois sentidos - o arquivo sai, o ffmpeg nao reclama, e so o olho de
+# quem conhece a imagem original percebe (foi assim que o defeito viveu
+# ate o Rafael ver a carta "gritando" no "3 de espadas").
+print()
+print("== cor da imagem no overlay")
+
+RESUMO = {"cx_p05": 0.4, "cx_p95": 0.6, "topo_min": 0.1, "alt_med": 0.3,
+          "n": 100}
+CAMADAS = [{"lado": "esquerda", "prof": 0, "carta": "A Torre", "tipo": "carta",
+            "ocorrencias": [{"ini": 3.0, "fim": 18.0, "fade_in": 0.4,
+                             "fade_ini": 17.6, "fade_dur": 0.4}]}]
+CHEIOS = [{"ini": 5.0, "fim": 9.0, "fade_in": 0.05, "fade_ini": 8.95,
+           "fade_dur": 0.05}]
+CARTAS_1 = {"principal": "A Torre", "fade_entrada": 2.0,
+            "secundarias": [{"ini": 3.0, "fim": 8.0, "carta": "O Sol"}]}
+
+
+def ramos_img(g):
+    """So os ramos que comecam numa ENTRADA DE IMAGEM ([1:v], [2:v]...).
+    O ramo do video e [0:v], e e justamente o que nao pode mudar."""
+    return [l for l in g.splitlines()
+            if l.startswith("[") and l[1:2].isdigit() and not l.startswith("[0:")]
+
+
+def grafos(hlg):
+    """Os dois construtores, com as quatro entradas de imagem que
+    existem: principal e secundaria (layouts 1/3), pilha e tela cheia."""
+    from pathlib import Path
+    return {
+        "grafo_cartas": tc.grafo_cartas(
+            IV_SEM_CORTE, CC_TODO, CARTAS_1, RESUMO, 3840, 2160,
+            [("O Sol", Path("s.jpg"))], hlg=hlg),
+        "grafo_cartas_pilhas": tc.grafo_cartas_pilhas(
+            IV_SEM_CORTE, CC_TODO, CAMADAS, [(3.0, 18.0)], RESUMO, 3840, 2160,
+            [Path("a.jpg")], cheios=CHEIOS, imgs_full=[Path("b.jpg")], hlg=hlg),
+    }
+
+
+# 56. Saida HLG: TODA entrada de imagem converte. Uma so que escape sai
+#     gritando ao lado das outras, que e pior que todas erradas juntas.
+for nome, g in grafos(True).items():
+    r = ramos_img(g)
+    n = sum(1 for l in r if "zscale=" in l)
+    diz(r and n == len(r), f"56: {nome}: as {len(r)} imagens tem a cor "
+        f"convertida (converteram {n})")
+
+# 57. Saida SDR: NENHUMA converte - la a imagem ja esta no espaco de cor
+#     do arquivo, e mexer estragaria o que estava certo.
+for nome, g in grafos(False).items():
+    r = ramos_img(g)
+    diz(not any("zscale=" in l for l in r),
+        f"57: {nome}: em SDR nenhuma das {len(r)} imagens e convertida")
+
+# 58. O ramo do VIDEO nunca e tocado, nos dois modos: o pedido do Rafael
+#     foi consertar a imagem SEM mexer na cor do video.
+for nome in ("grafo_cartas", "grafo_cartas_pilhas"):
+    com, sem = grafos(True)[nome], grafos(False)[nome]
+    v_com = [l for l in com.splitlines() if l not in ramos_img(com)]
+    v_sem = [l for l in sem.splitlines() if l not in ramos_img(sem)]
+    diz(v_com == v_sem, f"58: {nome}: o grafo do video sai identico com e "
+        f"sem a conversao ({len(v_com)} linhas)")
+
+# 59. Sao dois botoes independentes, e a promessa e mexer em UM: converte
+#     as PRIMARIAS e nao converte a CURVA. Ja quebrou nos dois sentidos -
+#     sem conversao nenhuma a imagem sai gritante, com a curva convertida
+#     junto sai acinzentada -, entao os dois lados sao cobrados aqui.
+cor = tc._img_para_hlg(True)
+diz("tin=iec61966-2-1" in cor,
+    "59: a entrada e lida como sRGB de verdade, nao bt709")
+diz("p=bt2020" in cor and "m=bt2020nc" in cor and "r=tv" in cor,
+    "59: as primarias saem convertidas para BT.2020 (e a matriz e a faixa "
+    "do arquivo, fechadas aqui)")
+diz("t=iec61966-2-1" in cor and "arib-std-b67" not in cor,
+    "59: e a CURVA nao e convertida - a saida continua na curva sRGB")
+diz("npl" not in cor,
+    "59: sem `npl`: ele so vale em HLG/PQ, e converter curva acabou")
+
+# 59b. E o numero apagado nao volta pela porta de tras: `npl_grafico` era
+#      o ponto livre da conversao de curva, e sem ela nao decide mais nada.
+diz("npl_grafico" not in CC,
+    "59b: `npl_grafico` nao voltou ao config.toml")
+
+# 60. `saida_hlg` e quem decide as DUAS coisas - os tags do arquivo e a
+#     conversao da imagem. Duas respostas diferentes seriam o arquivo
+#     dizendo "isto e HLG" sobre uma imagem que nao e.
+diz(tc.saida_hlg({"vcodec": "hevc"}) and not tc.saida_hlg({"vcodec": "h264"}),
+    "60: saida_hlg responde hevc=HLG, h264=SDR")
+diz(not tc.saida_hlg({}), "60: e sem vcodec nenhum nao inventa HLG")
+
 print()
 if falhas:
     for f in falhas:

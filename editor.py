@@ -47,6 +47,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 import webbrowser
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -88,6 +89,10 @@ class Sessao:
     a cada clique poria meio segundo entre o clique e o som."""
 
     def __init__(self, video):
+        # Quem e esta sessao, e de que aba ela e. Ver `posse`: e o unico
+        # jeito de uma aba de ONTEM nao gravar por cima do video de HOJE.
+        self.sid = uuid.uuid4().hex[:8]
+        self.dono = ""
         d = tc.WORK / Path(video).stem
         if not (d / "stream.json").exists():
             sys.exit(f"[editor] {Path(video).stem} ainda nao foi analisado. "
@@ -1419,6 +1424,41 @@ class Sessao:
                      self.d / "legendas.json")
             return self.cartas_estado()
 
+    # --------------------------------------------------------- de quem e
+
+    def posse(self):
+        """A senha que uma aba tem de mostrar para MUDAR alguma coisa aqui.
+
+        Duas metades, e as duas sao necessarias:
+
+        `sid` diz QUE SESSAO e esta. Muda a cada `Sessao(...)` - ou seja,
+        quando o editor troca de video (POST /abrir) e quando o processo
+        reinicia. Sem ele, uma aba do "3 de espadas" esquecida no navegador
+        continuava mandando `ocultar i0=412` para um servidor que ja estava
+        no "4 de espadas", e o servidor obedecia: o indice 412 do OUTRO
+        video sumia e ia para o disco, calado. MEDIDO (10/09/2026) com dois
+        POSTs num servidor de teste - a aba aberta no IMG_0246 teve o gesto
+        dela atendido pela sessao do IMG_0248.
+
+        `dono` diz QUE ABA esta com ele. Muda a cada GET /doc, isto e, a
+        cada pagina que nasce. Duas abas vivas no mesmo video nao corrompem
+        nada (o servidor e a fonte da verdade e tem tranca), mas divergem na
+        TELA: `enxuga` so manda as pecas para quem ainda nao as tem, e essa
+        conta e por SESSAO, entao a segunda aba recebe `pecas: None` para
+        uma mudanca que a primeira fez e ela nunca viu - fica mostrando um
+        riscado que nao existe mais, e a pessoa decide olhando para ele. Uma
+        dona por vez desfaz isso pela raiz.
+
+        Nao e seguranca: e a mesma familia de defeito que este programa
+        persegue desde sempre, decisao humana entrando ou sumindo sem
+        ninguem perguntar."""
+        return f"{self.sid}.{self.dono}"
+
+    def assume(self):
+        """Esta aba passa a ser a dona. Chamado por quem serve o /doc."""
+        self.dono = uuid.uuid4().hex[:8]
+        return self.posse()
+
     # ------------------------------------------------------------ documento
 
     def doc(self):
@@ -1430,6 +1470,9 @@ class Sessao:
             "selo": self.selo,
             "aviso": self.aviso,
             "fade": self.C["audio"]["fade"],
+            # a pagina nasce dona (ver `posse`): quem serve o /doc chama o
+            # `assume` antes de montar isto.
+            "posse": self.posse(),
             "blocos": tc.blocos(self.stream),
             "anot": self.anot,
             # inteiro: a pagina esta nascendo e nao tem peca nenhuma para
@@ -1545,6 +1588,38 @@ class Handler(BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length") or 0)
         return json.loads(self.rfile.read(n) or b"{}")
 
+    def _posse_ok(self, b, cli=False):
+        """None quando o POST veio da aba que e dona do editor AGORA; a
+        recusa pronta (dict) quando nao veio. Ver `Sessao.posse`.
+
+        Recusa em vez de avisar, pela mesma razao do selo do
+        `transcript.md` e do `confere_montagem`: o que vem depois de um
+        casamento errado nao e um risco, e uma decisao trocada gravada no
+        disco. A recusa diz QUAL das duas coisas aconteceu, porque a saida
+        e diferente - a aba que perdeu o video precisa saber que video o
+        editor tem agora.
+
+        `cli` liga a unica excecao: o `/abrir` que o `editor.py` da linha
+        de comando manda (`_troca_no_editor_aberto`) nao tem aba nenhuma
+        atras dele e nao manda `posse`. Corpo SEM o campo, so ali, passa; o
+        navegador sempre manda, e um `posse` errado e recusado do mesmo
+        jeito."""
+        S = self.server.sessao
+        veio = b.get("posse") if isinstance(b, dict) else None
+        if veio == S.posse():
+            return None
+        if cli and veio is None:
+            return None
+        if str(veio or "").split(".")[0] != S.sid:
+            motivo = "video"
+            txt = (f"esta aba nao e mais deste editor: ele esta no video "
+                   f"{S.nome!r} agora. Nada que voce fizer aqui e salvo.")
+        else:
+            motivo = "aba"
+            txt = ("outra aba assumiu este editor. Nada que voce fizer "
+                   "aqui e salvo.")
+        return {"erro": txt, "motivo": motivo, "video": S.nome}
+
     def do_GET(self):
         rota = urlparse(self.path).path
         S, T = self.server.sessao, self.server.tarefa
@@ -1553,7 +1628,20 @@ class Handler(BaseHTTPRequestHandler):
                 return self._envia(PAGINA.read_text(encoding="utf-8"),
                                    "text/html; charset=utf-8")
             if rota == "/doc":
+                # a pagina que nasce assume o editor. E aqui, e nao no
+                # `Sessao.__init__`, porque quem tem de ser dona e a ABA -
+                # ver `Sessao.posse`.
+                S.assume()
                 return self._envia(S.doc())
+            if rota == "/vida":
+                # A batida de coracao da aba: dois campos e nada de tranca.
+                # Serve para uma aba velha VIRAR LAPIDE sozinha, antes de a
+                # pessoa digitar nela - descobrir que a aba estava morta
+                # pela recusa do primeiro gesto ja e tarde, porque a
+                # aflicao ("qual aba esta salvando o que?") existe antes do
+                # gesto.
+                return self._envia({"posse": S.posse(), "video": S.nome,
+                                    "rodando": T.rodando})
             if rota == "/log":
                 return self._envia({"linhas": list(T.linhas),
                                     "rodando": T.rodando, "rc": T.rc,
@@ -1588,6 +1676,15 @@ class Handler(BaseHTTPRequestHandler):
         S, T = self.server.sessao, self.server.tarefa
         try:
             b = self._corpo()
+            # Tudo o que MUDA alguma coisa - o corte, o roteiro, a legenda,
+            # o video aberto, um subprocesso que le o disco - passa por
+            # aqui primeiro. O `/em` e os GET ficam de fora de proposito:
+            # ler nao troca decisao de lugar, e uma aba velha continuar
+            # navegando ate a pessoa fechar nao machuca ninguem.
+            if rota in ("/acao", "/cartas", "/legenda", "/rodar", "/abrir"):
+                recusa = self._posse_ok(b, cli=(rota == "/abrir"))
+                if recusa is not None:
+                    return self._envia(recusa, codigo=409)
             if rota == "/acao":
                 return self._envia(S.acao(b))
             if rota == "/em":

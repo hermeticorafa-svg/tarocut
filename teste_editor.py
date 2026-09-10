@@ -25,12 +25,21 @@ equivalente do modelo novo:
 
 import json
 import sys
+import threading
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import editor
 import tarocut as tc
 
 CALIBRACAO = ["IMG_0246", "IMG_0247", "IMG_0248"]
+
+# porta so deste teste: 8731 e a do editor de verdade, e derrubar o editor
+# que a pessoa tem aberto para rodar um teste seria o proprio defeito que
+# este arquivo persegue.
+PORTA_TESTE = 8796
 
 
 def jload_lacunas(d):
@@ -460,6 +469,101 @@ def roda(video):
     return falhas
 
 
+def roda_posse(video, outro):
+    """A promessa da ABA, que e do FIO e nao da geometria: so a aba que e
+    dona do editor agora muda alguma coisa.
+
+    Ela existe porque o contrario existia e era invisivel. O servidor
+    guarda UMA sessao e a troca sob os pes das abas abertas (POST /abrir,
+    do botao ou da linha de comando), e ate 10/09/2026 nada nas duas pontas
+    perguntava de que sessao vinha o gesto: uma aba esquecida no navegador
+    mandava `ocultar i0=412` do video de ontem e o servidor ocultava o
+    token 412 do video de hoje - e gravava. MEDIDO com dois POSTs num
+    servidor de teste, antes do conserto.
+
+    O que se cobra aqui e o par: a recusa no servidor (uma aba velha nao
+    consegue mudar nada, por rota nenhuma) e a excecao unica que faz o
+    `tarocut.bat` continuar funcionando (o /abrir da linha de comando nao
+    tem aba atras dele e nao manda senha).
+
+    Nao mexe em disco: todos os gestos testados sao recusados antes de
+    chegar a `Sessao`, e o unico que passa e um /abrir, que so troca o
+    video que o servidor tem na memoria."""
+    falhas = []
+
+    def diz(ok, txt):
+        print(("  ok    " if ok else "  FALHA ") + txt)
+        if not ok:
+            falhas.append(f"posse: {txt}")
+
+    srv = editor._abre_porta(PORTA_TESTE)
+    if srv is None:
+        print(f"  (porta {PORTA_TESTE} ocupada, pulado)")
+        return []
+    srv.sessao, srv.tarefa = editor.Sessao(video), editor.Tarefa()
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{PORTA_TESTE}/"
+
+    def bate(rota, corpo=None):
+        if corpo is None:
+            with urllib.request.urlopen(url + rota, timeout=5) as r:
+                return r.status, json.loads(r.read())
+        req = urllib.request.Request(
+            url + rota, data=json.dumps(corpo).encode("utf-8"),
+            method="POST", headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    try:
+        print(f"\n== posse da aba | {video} na porta {PORTA_TESTE}")
+        primeira = bate("doc")[1]["posse"]
+        diz(bate("vida")[1]["posse"] == primeira,
+            "a aba que pede /doc e a dona do editor")
+
+        # a segunda aba nasce e assume; a primeira nao pode mais nada.
+        segunda = bate("doc")[1]["posse"]
+        diz(segunda != primeira, "a aba que nasce depois assume o editor")
+
+        gestos = [("acao", {"acao": "alterna", "sel": {"i0": 3, "i1": 4}}),
+                  ("cartas", {"roteiro": "[0:10] Rainha de Copas"}),
+                  ("legenda", {"s": 1.0, "e": 2.0, "texto": "x"}),
+                  ("rodar", {"cmd": "audio"}),
+                  ("abrir", {"video": outro})]
+        for rota, corpo in gestos:
+            cod, resp = bate(rota, dict(corpo, posse=primeira))
+            diz(cod == 409 and resp.get("motivo") == "aba",
+                f"/{rota} da aba velha e recusado ({cod})")
+
+        # e a dona continua podendo. `nada` nao muda nada e nao grava.
+        cod, _ = bate("acao", {"acao": "nada", "posse": segunda,
+                               "sel": {"i0": 3, "i1": 4}})
+        diz(cod == 200, "a aba dona continua sendo atendida")
+
+        # a excecao: a linha de comando (`_troca_no_editor_aberto`) nao tem
+        # aba nenhuma e nao manda senha. Sem isso o "3. Editor" da gui.py
+        # deixaria de trocar de video.
+        cod, resp = bate("abrir", {"video": outro})
+        diz(cod == 200 and resp.get("ok"),
+            "o /abrir da linha de comando (sem senha) passa")
+
+        # e trocar de video mata a senha de TODA aba, inclusive a dona:
+        # e outra sessao, com outros indices de token.
+        cod, resp = bate("acao", {"acao": "alterna", "posse": segunda,
+                                  "sel": {"i0": 3, "i1": 4}})
+        diz(cod == 409 and resp.get("motivo") == "video"
+            and resp.get("video") == outro,
+            f"depois do /abrir, a aba do video anterior e recusada e a "
+            f"recusa diz onde o editor esta ({resp.get('video')})")
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        time.sleep(0.1)
+    return falhas
+
+
 if __name__ == "__main__":
     alvos = sys.argv[1:] or CALIBRACAO
     todas = []
@@ -468,6 +572,16 @@ if __name__ == "__main__":
             print(f"== {v}: sem stream.json, pulado")
             continue
         todas += roda(Path(v).stem)
+    # uma vez so: a promessa da posse e do FIO, nao do video. Precisa de
+    # dois videos prontos para poder trocar de um para o outro.
+    prontos = [d.name for d in sorted(tc.WORK.iterdir())
+               if (d / "stream.json").exists() and (d / "audio.wav").exists()]
+    if len(prontos) >= 2:
+        v = Path(alvos[0]).stem if alvos else prontos[0]
+        v = v if v in prontos else prontos[0]
+        todas += roda_posse(v, next(x for x in prontos if x != v))
+    else:
+        print("\n== posse da aba: precisa de dois videos em work/, pulado")
     print()
     if todas:
         for f in todas:
