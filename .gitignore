@@ -27,3 +27,18 @@ venv/
 
 # Baralho com borda: derivado de tarodeyala/, regerado por bordar_cartas.py
 baralho completo/tarodeyala-borda/
+
+# Midia nao entra no repositorio, nem a de calibracao. As fotos e videos
+# de midias/ ficam so na maquina de quem edita (o README explica a pasta),
+# e os brutos, o audio e as previas moram fora daqui ou em work/. A lista
+# de extensoes e a segunda trava: um video solto em qualquer pasta do
+# projeto tambem fica de fora.
+midias/*
+!midias/README.md
+*.mov
+*.MOV
+*.mp4
+*.MP4
+*.m4a
+*.wav
+*.mkv

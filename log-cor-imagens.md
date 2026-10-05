@@ -231,7 +231,7 @@ O trecho de filtro entra logo depois do `scale=-2:ALTURA` no ramo da imagem:
 
 ## 9. Onde está cada coisa no código
 
-Tudo no working tree, **não commitado**. Último commit: `676992a`.
+Tudo no working tree, **não commitado**. Último commit: `53fdfdd` (era `676992a` antes de as mídias saírem do histórico, em 05/10/2026).
 
 | arquivo | o que mudou |
 |---|---|
