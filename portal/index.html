@@ -1,0 +1,620 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Portal do tarocut</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Literata:ital,opsz,wght@0,7..72,400;0,7..72,600;1,7..72,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a folha do editor. Indice fixo a esquerda, texto numa coluna de leitura,
+   figuras e tabelas podem alargar. As cores sao as do proprio editor.html:
+   cinza e regra, azul e gente, marrom e fala que ninguem leu. */
+:root{
+  --papel:#e9e7e2;      /* fundo: o papel cinza quente do editor */
+  --folha:#f5f4f0;      /* paineis e figuras */
+  --tinta:#221f1b;
+  --apagado:#625c53;    /* texto secundario */
+  --fora:#a39d92;       /* o que sai: legivel, mas apagado */
+  --risco:#aaa398;      /* corte por regra */
+  --julga:#4f6382;      /* corte por gente: lapis azul */
+  --voz:#8a6534;        /* fala que o Whisper nao leu */
+  --alarme:#8c3b2e;
+  --devolve:#3f6b46;
+  --linha:#d3cfc6;
+  --sel:#ddd4ad;
+  --f-texto:"Literata", Georgia, "Times New Roman", serif;
+  --f-mono:"IBM Plex Mono", ui-monospace, Consolas, "Courier New", monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --papel:#191816; --folha:#22201d; --tinta:#e8e4db; --apagado:#a8a296;
+    --fora:#6f6a60; --risco:#615b52; --julga:#93a8c8; --voz:#c99f66;
+    --alarme:#de8775; --devolve:#8bbd92; --linha:#36332e; --sel:#4b452f;
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --papel:#191816; --folha:#22201d; --tinta:#e8e4db; --apagado:#a8a296;
+  --fora:#6f6a60; --risco:#615b52; --julga:#93a8c8; --voz:#c99f66;
+  --alarme:#de8775; --devolve:#8bbd92; --linha:#36332e; --sel:#4b452f;
+  color-scheme:dark;
+}
+
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;-webkit-text-size-adjust:100%}
+@media (prefers-reduced-motion: reduce){html{scroll-behavior:auto}}
+body{
+  margin:0; background:var(--papel); color:var(--tinta);
+  font-family:var(--f-texto); font-size:16.5px; line-height:1.62;
+  font-optical-sizing:auto;
+}
+::selection{background:var(--sel)}
+a{color:var(--julga); text-underline-offset:.18em}
+a:focus-visible, button:focus-visible{outline:2px solid var(--julga); outline-offset:2px; border-radius:2px}
+code, .mono{font-family:var(--f-mono); font-size:.86em}
+code{background:var(--folha); border:1px solid var(--linha); border-radius:3px; padding:.05em .3em; white-space:nowrap}
+pre{margin:0}
+pre code{white-space:pre; border:0; padding:0; background:none; font-size:.82rem; line-height:1.55}
+h1,h2,h3{font-weight:600; line-height:1.2; text-wrap:balance; margin:0}
+p{margin:0}
+
+.pagina{
+  max-width:76rem; margin:0 auto;
+  padding-inline:clamp(16px, 4vw, 40px); padding-block:0 4rem;
+  display:grid; grid-template-columns:minmax(0,1fr); gap:0 3.5rem;
+}
+@media (min-width: 980px){
+  .pagina{grid-template-columns:12.5rem minmax(0,1fr)}
+}
+
+/* indice */
+nav.indice{padding-block:1.25rem .5rem; border-bottom:1px solid var(--linha)}
+nav.indice .rot{display:block; margin-bottom:.5rem}
+nav.indice ol{list-style:none; margin:0; padding:0; display:flex; flex-wrap:wrap; gap:.35rem .9rem}
+nav.indice a{font-family:var(--f-mono); font-size:.78rem; color:var(--apagado); text-decoration:none; padding-block:.1rem; display:inline-block}
+nav.indice a:hover{color:var(--tinta)}
+nav.indice a.aqui{color:var(--tinta); text-decoration:underline; text-decoration-color:var(--julga); text-decoration-thickness:2px}
+@media (min-width: 980px){
+  nav.indice{position:sticky; top:env(safe-area-inset-top, 0px); align-self:start; border-bottom:0; padding-block:3.2rem 1rem; max-height:100vh; overflow-y:auto}
+  nav.indice ol{flex-direction:column; gap:.2rem}
+}
+
+.rot{font-family:var(--f-mono); font-size:.7rem; letter-spacing:.09em; text-transform:uppercase; color:var(--apagado)}
+
+main{min-width:0}
+section{padding-block:3.2rem 0; scroll-margin-top:1rem}
+section > h2{font-size:1.65rem; margin-bottom:1rem}
+section > h2 .num{font-family:var(--f-mono); font-size:.8rem; font-weight:400; color:var(--apagado); margin-right:.6rem; vertical-align:.2em}
+.coluna{max-width:42rem; display:flex; flex-direction:column; gap:1rem}
+h3{font-size:1.08rem; margin-top:1.6rem; margin-bottom:.1rem}
+.nota{font-size:.9rem; color:var(--apagado)}
+
+/* abertura */
+.abertura{padding-block:3rem 0; display:flex; flex-direction:column; gap:1.25rem}
+.marca{font-size:clamp(2.8rem, 7vw, 4.4rem); font-weight:600; letter-spacing:-.02em; line-height:1}
+.tese{font-size:clamp(1.25rem, 2.6vw, 1.6rem); font-style:italic; line-height:1.3}
+.tese s{text-decoration-color:var(--julga); text-decoration-thickness:2px; color:var(--fora)}
+.abertura .lede{max-width:42rem; display:flex; flex-direction:column; gap:.8rem}
+
+/* a folha de exemplo */
+figure.folha{margin:.5rem 0 0; background:var(--folha); border:1px solid var(--linha); border-radius:6px; overflow:hidden}
+.folha .texto{padding:1.1rem 1.25rem 1rem; font-size:1.06rem; line-height:1.9}
+.r-regra{color:var(--fora); text-decoration:line-through; text-decoration-color:var(--risco); text-decoration-thickness:1.5px}
+.r-gente{color:var(--fora); text-decoration:line-through; text-decoration-color:var(--julga); text-decoration-thickness:1.5px}
+.pausa{display:inline-block; height:2px; background:var(--risco); vertical-align:.3em; margin-inline:.15em}
+.voz{display:inline-block; width:2.4em; height:0; border-bottom:2px dotted var(--voz); vertical-align:.3em; margin-inline:.15em}
+.folha .onda{display:block; width:100%; height:128px; border-top:1px solid var(--linha)}
+.folha figcaption{padding:.7rem 1.25rem .9rem; border-top:1px solid var(--linha); display:flex; flex-wrap:wrap; gap:.4rem 1.2rem; font-size:.8rem; color:var(--apagado); font-family:var(--f-mono)}
+.leg{display:inline-flex; align-items:center; gap:.45rem}
+.leg i{display:inline-block; width:1.4em; height:0; border-bottom:2px solid}
+.leg .l-regra{border-color:var(--risco)}
+.leg .l-gente{border-color:var(--julga)}
+.leg .l-voz{border-bottom-style:dotted; border-color:var(--voz)}
+
+dl.fatos{margin:1.2rem 0 0; display:grid; grid-template-columns:repeat(auto-fit, minmax(12rem, 1fr)); gap:1rem 1.5rem; border-top:1px solid var(--linha); padding-top:1rem}
+dl.fatos div{display:flex; flex-direction:column; gap:.15rem; min-width:0}
+dl.fatos dd{margin:0; font-size:.95rem}
+
+/* tabelas */
+.tabela{overflow-x:auto; margin-top:.4rem; border:1px solid var(--linha); border-radius:6px; background:var(--folha)}
+table{border-collapse:collapse; width:100%; font-size:.9rem; line-height:1.5}
+th, td{text-align:left; vertical-align:top; padding:.6rem .8rem; border-bottom:1px solid var(--linha)}
+tr:last-child td{border-bottom:0}
+th{font-family:var(--f-mono); font-weight:500; font-size:.7rem; letter-spacing:.08em; text-transform:uppercase; color:var(--apagado); white-space:nowrap}
+td.n{font-family:var(--f-mono); font-variant-numeric:tabular-nums; text-align:right; white-space:nowrap; color:var(--apagado)}
+td.etapa{font-family:var(--f-mono); font-size:.84rem; white-space:nowrap}
+td .grava{font-family:var(--f-mono); font-size:.78rem; color:var(--apagado)}
+table.fluxo td:first-child{font-family:var(--f-mono); color:var(--apagado); width:2rem}
+table.fluxo td.faz{min-width:18rem}
+
+/* quem decide */
+.quem{display:inline-block; font-family:var(--f-mono); font-size:.7rem; letter-spacing:.04em; padding:.08rem .45rem; border-radius:3px; white-space:nowrap; border:1px solid}
+.q-maq{color:var(--apagado); border-color:var(--risco)}
+.q-jul{color:var(--julga); border-color:var(--julga)}
+.q-pes{color:var(--papel); background:var(--julga); border-color:var(--julga)}
+
+/* listas com titulo em negrito */
+ul.itens{list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:1rem; max-width:42rem}
+ul.itens li{padding-left:1rem; border-left:2px solid var(--linha)}
+ul.itens li b{font-weight:600}
+ul.itens li .onde{display:block; margin-top:.25rem; font-size:.82rem; color:var(--apagado)}
+
+/* pilha de camadas */
+ol.camadas{list-style:none; margin:.4rem 0 0; padding:0; display:flex; flex-direction:column; gap:.4rem; max-width:42rem}
+ol.camadas li{display:grid; grid-template-columns:2rem minmax(0,1fr); gap:.2rem .8rem; background:var(--folha); border:1px solid var(--linha); border-radius:6px; padding:.7rem .9rem}
+ol.camadas .k{font-family:var(--f-mono); color:var(--apagado); grid-row:span 2}
+ol.camadas .arq{font-family:var(--f-mono); font-size:.88rem; font-weight:500}
+ol.camadas .d{font-size:.9rem; color:var(--apagado)}
+ol.camadas li:last-child{border-color:var(--julga)}
+
+/* seguranca */
+.selo{display:inline-block; font-family:var(--f-mono); font-size:.68rem; letter-spacing:.06em; text-transform:uppercase; padding:.08rem .45rem; border-radius:3px; margin-right:.5rem; vertical-align:.12em; border:1px solid}
+.s-ok{color:var(--devolve); border-color:var(--devolve)}
+.s-at{color:var(--papel); background:var(--alarme); border-color:var(--alarme)}
+.s-baixo{color:var(--apagado); border-color:var(--risco)}
+.s-conf{color:var(--voz); border-color:var(--voz)}
+ul.seg{list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:.9rem; max-width:44rem}
+ul.seg li{padding-bottom:.9rem; border-bottom:1px solid var(--linha)}
+ul.seg li:last-child{border-bottom:0}
+
+ul.checar{margin:0; padding-left:1.2rem; display:flex; flex-direction:column; gap:.55rem; max-width:42rem}
+ul.checar li::marker{color:var(--alarme)}
+
+/* codigo */
+.bloco{background:var(--folha); border:1px solid var(--linha); border-radius:6px; padding:.85rem 1rem; overflow-x:auto; max-width:46rem}
+.bloco .c{color:var(--apagado)}
+
+/* cronograma */
+ol.tempo{list-style:none; margin:.4rem 0 0; padding:0; max-width:44rem; border-left:2px solid var(--linha)}
+ol.tempo li{position:relative; display:grid; grid-template-columns:5.2rem minmax(0,1fr); gap:.2rem 1rem; padding:.2rem 0 1.1rem 1.1rem}
+ol.tempo li::before{content:""; position:absolute; left:-6px; top:.62rem; width:10px; height:10px; border-radius:50%; background:var(--papel); border:2px solid var(--risco)}
+ol.tempo li.marco::before{border-color:var(--julga); background:var(--julga)}
+ol.tempo li.proximo::before{border-style:dashed; border-color:var(--julga)}
+ol.tempo time{font-family:var(--f-mono); font-size:.8rem; color:var(--apagado); padding-top:.2rem; font-variant-numeric:tabular-nums}
+ol.tempo .o{display:flex; flex-direction:column; gap:.2rem}
+ol.tempo .o b{font-weight:600}
+ol.tempo .o span{font-size:.92rem; color:var(--apagado)}
+@media (max-width: 520px){
+  ol.tempo li{grid-template-columns:minmax(0,1fr)}
+}
+
+footer{margin-top:4rem; padding-top:1rem; border-top:1px solid var(--linha); font-size:.82rem; color:var(--apagado); font-family:var(--f-mono)}
+</style>
+</head>
+<body>
+<div class="pagina">
+
+<nav class="indice" aria-label="Seções">
+  <span class="rot">tarocut</span>
+  <ol>
+    <li><a href="#faz">O que faz</a></li>
+    <li><a href="#nao-faz">O que não faz</a></li>
+    <li><a href="#codigo">O código</a></li>
+    <li><a href="#dados">Os dados</a></li>
+    <li><a href="#regras">O que não quebrar</a></li>
+    <li><a href="#rodar">Como rodar</a></li>
+    <li><a href="#seguranca">Segurança</a></li>
+    <li><a href="#motor">Curso ou motor</a></li>
+    <li><a href="#cronograma">Cronograma</a></li>
+    <li><a href="#ler">Para ler depois</a></li>
+  </ol>
+</nav>
+
+<main>
+
+<header class="abertura">
+  <span class="rot">Portal de passagem · outubro de 2026</span>
+  <h1 class="marca">tarocut</h1>
+  <p class="tese">Apagar o texto apaga o vídeo.</p>
+  <div class="lede">
+    <p>O tarocut é o pré-editor do curso <i>Tarô Fora da Caixa</i>. Ele transcreve a gravação bruta, propõe o que cortar e mostra o vídeo como texto. O que sai aparece riscado. Quem edita mexe no texto, e o corte acompanha.</p>
+    <p>Esta página é para o Gabriel, que assume a programação e a segurança. Ela resume o que o programa faz, o que fica de fora, como o código se organiza, as regras que não podem quebrar e o que já foi feito. A especificação completa, com o motivo de cada decisão, está no <code>CLAUDE.md</code>.</p>
+  </div>
+
+  <figure class="folha" aria-label="Ilustração do editor: texto riscado em cima, onda do áudio embaixo">
+    <div class="texto">
+      <span class="r-gente" title="passe de julgamento: tentativa abandonada">As rainhas elas fecham ou</span>
+      <span class="r-regra" title="regra: alongamento">abrem…</span>
+      <span class="pausa" style="width:2.4em" title="pausa de 2,4 s encurtada para 0,45 s"></span>
+      <span class="r-gente" title="passe de julgamento: interrupção">O que é isso, Juno?</span>
+      <span class="pausa" style="width:4.6em" title="pausa de 6,4 s encurtada para 0,45 s"></span>
+      As rainhas elas fecham ou abrem os naipes,
+      <span class="voz" title="0,8 s de voz sem texto: continua no vídeo"></span>
+      dependendo de…
+    </div>
+    <canvas class="onda" id="onda" aria-hidden="true"></canvas>
+    <figcaption>
+      <span class="leg"><i class="l-regra"></i>uma regra cortou</span>
+      <span class="leg"><i class="l-gente"></i>o passe de julgamento cortou</span>
+      <span class="leg"><i class="l-voz"></i>fala que o Whisper não leu</span>
+      <span>fonte 16,8 s → prévia 5,4 s</span>
+      <span>ilustração com o exemplo do README, não captura de tela</span>
+    </figcaption>
+  </figure>
+
+  <dl class="fatos">
+    <div><dt class="rot">Onde roda</dt><dd>Um notebook Windows com 7,9 GB de RAM. O programa não manda nada para a nuvem.</dd></div>
+    <div><dt class="rot">Quem usa</dt><dd>Uma pessoa, o Rafael. Um vídeo por vez.</dd></div>
+    <div><dt class="rot">Até agora</dt><dd>67 vídeos analisados. 22 marcados como prontos para exportar.</dd></div>
+    <div><dt class="rot">Tamanho</dt><dd>11 mil linhas de Python, 2,9 mil de HTML/JS e 2,3 mil de teste.</dd></div>
+  </dl>
+</header>
+
+<section id="faz">
+  <h2><span class="num">01</span>O que ele faz</h2>
+  <div class="coluna">
+    <p>Cada vídeo passa pelas mesmas etapas, nesta ordem. Cada uma grava um arquivo em <code>work/&lt;vídeo&gt;/</code> e tem cache: rodar de novo não refaz o que já está pronto, e <code>--force</code> refaz.</p>
+    <p>A coluna "quem decide" usa as cores do editor. Cinza é regra do programa. Azul é gente: o passe de julgamento ou a pessoa no editor.</p>
+  </div>
+  <div class="tabela">
+    <table class="fluxo">
+      <thead><tr><th>#</th><th>etapa</th><th>quem decide</th><th>o que faz</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td class="etapa">ingest</td><td><span class="quem q-maq">máquina</span></td><td class="faz">O ffmpeg extrai o áudio do <code>.MOV</code>.<br><span class="grava">grava meta.json, audio.wav</span></td></tr>
+        <tr><td>2</td><td class="etapa">transcribe</td><td><span class="quem q-maq">máquina</span></td><td class="faz">faster-whisper, modelo <code>small</code>, int8, na CPU, em português. Leva cerca de um terço da duração do vídeo.<br><span class="grava">grava words.json</span></td></tr>
+        <tr><td>3</td><td class="etapa">align</td><td><span class="quem q-maq">máquina</span></td><td class="faz">Um wav2vec2 em português acha onde cada palavra começa e termina. O Whisper acerta o texto e erra o tempo: 72% dos fins de palavra caem tarde (mediana +27 ms), e cortar por ele come o "s" final.<br><span class="grava">refina words.json</span></td></tr>
+        <tr><td>4</td><td class="etapa">analyze</td><td><span class="quem q-maq">máquina</span></td><td class="faz">Cruza o texto com a energia do áudio. Re-transcreve isolado o que o Whisper engoliu e marca pausas, cacoetes, gaguejadas, tentativas e retomadas.<br><span class="grava">grava stream.json, a fonte da verdade</span></td></tr>
+        <tr><td>5</td><td class="etapa">draft</td><td><span class="quem q-maq">máquina</span></td><td class="faz">Escreve a transcrição com <code>⟦ ⟧</code> em volta do que sai. Apagar texto nesse arquivo corta o vídeo.<br><span class="grava">grava transcript.md</span></td></tr>
+        <tr><td>6</td><td class="etapa">/revisar</td><td><span class="quem q-jul">julgamento</span></td><td class="faz">O Claude Code lê a aula resumida e o verbete da carta no livro do Yala, escreve o que entendeu e corta o que regra nenhuma pega: bocejo, interrupção, raciocínio refeito. Responde cada pendência numerada.<br><span class="grava">grava entendimento.md, anotacoes.json, respostas.json</span></td></tr>
+        <tr><td>7</td><td class="etapa">conferir</td><td><span class="quem q-maq">máquina</span></td><td class="faz">Verifica se o corte obedeceu às decisões. Lista só o suspeito, com o tempo da fonte e o da prévia. Não gera mídia.<br><span class="grava">grava conferir.txt</span></td></tr>
+        <tr><td>8</td><td class="etapa">editor</td><td><span class="quem q-pes">pessoa</span></td><td class="faz">Página local no navegador: o texto em cima, a onda embaixo. Cada gesto vai ao servidor e volta com o corte calculado. Também tem o modo cartas, com legenda e roteiro de imagens.<br><span class="grava">grava montagem.json, correcoes.json, legendas.json, cartas-roteiro.json</span></td></tr>
+        <tr><td>9</td><td class="etapa">audio · exportar · render</td><td><span class="quem q-maq">máquina</span></td><td class="faz">Prévia só em áudio (cerca de 50 s, 3 MB), prévia lo-res com cartas, vídeo final com cartas e legenda <code>.srt</code>, ou só o corte. Volume normalizado em duas passadas. O vídeo é renderizado pela GPU Intel.<br><span class="grava">grava em export/prévias e export/finais</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Atalhos</h3>
+  <ul class="itens">
+    <li><b><code>run</code> e <code>lote</code></b> rodam as etapas 1 a 5 de um vídeo ou de uma pasta. Cada etapa roda num processo próprio, porque os modelos empilhados no mesmo processo estouravam a memória.</li>
+    <li><b><code>/preparar</code></b> é um comando do Claude Code: <code>run</code>, <code>/revisar</code>, <code>conferir</code> e <code>audio</code> de uma vez.</li>
+    <li><b><code>/fila</code></b> roda o <code>/preparar</code> em vários vídeos, um por vez, cada um num agente novo. A máquina não aguenta dois <code>transcribe</code> ao mesmo tempo.</li>
+    <li><b><code>/anotar</code></b> recebe anotações feitas ouvindo o <code>.m4a</code> (<code>[01:29] gaguejada aqui</code>) e as traduz de volta para o tempo da fonte.</li>
+    <li><b><code>tarocut.bat</code></b> abre a janela (<code>gui.py</code>, Tk). Ela só dispara os mesmos comandos da linha de comando e mostra o estado de cada vídeo.</li>
+  </ul>
+</section>
+
+<section id="nao-faz">
+  <h2><span class="num">02</span>O que ele não faz</h2>
+  <ul class="itens">
+    <li><b>Não é um editor de vídeo completo.</b> Não tem trilhas, transições, correção de cor nem efeitos. Corta, normaliza o volume, põe carta, foto e legenda. O <code>render</code> sai pronto para o acabamento num editor como o CapCut.</li>
+    <li><b>Não decide o conteúdo sozinho.</b> O passe de julgamento é feito pelo Claude Code, por fora do programa. Sem ele o programa roda, mas só com as regras automáticas.</li>
+    <li><b>O programa não usa rede, mas o fluxo completo usa.</b> Os modelos baixam do Hugging Face na primeira vez e depois funcionam offline. O <code>/revisar</code>, o <code>/preparar</code> e o <code>/fila</code> dependem do Claude Code, que é serviço na nuvem.</li>
+    <li><b>Não é multiusuário.</b> Um servidor de editor por máquina, uma sessão por vez, uma aba dona dessa sessão. Não há login, conta nem permissão.</li>
+    <li><b>Não roda fora do Windows hoje.</b> Usa <code>taskkill</code>, <code>netstat</code> e <code>tasklist</code>, procura o ffmpeg na pasta do WinGet, renderiza pela GPU Intel (QSV) e os comandos do Claude têm <code>C:\Users\marip\Videos</code> escrito.</li>
+    <li><b>Só entende português.</b> O Whisper está fixo em <code>pt</code>, o alinhador é um modelo de português e a lista de cacoetes também.</li>
+    <li><b>Não é reproduzível.</b> Rodar o <code>analyze</code> duas vezes no mesmo vídeo pode dar cortes diferentes: trecho marginal do Whisper vira cara ou coroa. Por isso vídeo editado à mão não se reanalisa, e o programa recusa.</li>
+    <li><b>Não acerta todo o texto.</b> Nos 22 vídeos prontos, cerca de 55% dos cartões de legenda saem sem nenhuma correção. Cerca de 40% têm um erro de reconhecimento, que regra de corte não alcança.</li>
+  </ul>
+</section>
+
+<section id="codigo">
+  <h2><span class="num">03</span>Como o código se organiza</h2>
+  <div class="coluna">
+    <p>É Python puro, sem framework, e um único arquivo grande faz quase tudo. O <code>tarocut.py</code> é dividido em seções com comentário de cabeçalho: utilidades, léxico, ingest, transcribe, align, energia, guardas anti-alucinação, marcação, analyze, draft, volta da transcrição, camada do editor, montagem do corte, roteiro de cartas, legenda, lote e main.</p>
+  </div>
+  <div class="tabela">
+    <table>
+      <thead><tr><th>arquivo</th><th>linhas</th><th>o que é</th></tr></thead>
+      <tbody>
+        <tr><td><code>tarocut.py</code></td><td class="n">6.967</td><td>CLI, pipeline, marcação, geometria do corte, cartas, legenda, render.</td></tr>
+        <tr><td><code>editor.py</code></td><td class="n">1.951</td><td>Servidor HTTP do editor (biblioteca padrão). Guarda a sessão, recebe os gestos e responde com o corte.</td></tr>
+        <tr><td><code>editor.html</code></td><td class="n">2.915</td><td>A tela: transcrição, onda e motor de áudio. HTML, CSS e JS num arquivo, sem build.</td></tr>
+        <tr><td><code>gui.py</code></td><td class="n">758</td><td>Janela Tk. Só dispara comandos e mostra o estado.</td></tr>
+        <tr><td><code>fila.py</code></td><td class="n">352</td><td>O estado da <code>/fila</code>. Confere no disco o que cada rodada entregou, sem acreditar no relatório do agente.</td></tr>
+        <tr><td><code>alinhar.py</code></td><td class="n">337</td><td>Alinhamento forçado com wav2vec2.</td></tr>
+        <tr><td><code>rosto.py</code></td><td class="n">276</td><td>Rastreio de rosto com YuNet (OpenCV). É dele que sai o reenquadramento quando entra uma carta.</td></tr>
+        <tr><td><code>baralho.py</code></td><td class="n">192</td><td>Catálogo das 78 cartas e o casador de menção na fala.</td></tr>
+        <tr><td><code>lexico.py</code></td><td class="n">167</td><td>Gera <code>lexicon/terms.txt</code> a partir do livro do Yala.</td></tr>
+        <tr><td><code>bordar_cartas.py</code></td><td class="n">70</td><td>Gera a cópia das cartas com borda de 1 px.</td></tr>
+        <tr><td><code>pastas.py</code></td><td class="n">52</td><td>Decide onde cai o que se entrega. Separado porque a janela não pode importar o <code>tarocut.py</code>.</td></tr>
+        <tr><td><code>config.toml</code></td><td class="n">591</td><td>Todo número que decide corte, cada um com a medição que o justifica.</td></tr>
+        <tr><td><code>teste_*.py</code></td><td class="n">2.292</td><td>Três baterias: editor, revisão e cartas.</td></tr>
+        <tr><td><code>.claude/commands/</code></td><td class="n">—</td><td>Quatro arquivos: <code>preparar</code>, <code>revisar</code>, <code>anotar</code> e <code>fila</code>: os prompts do passe de julgamento.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Por onde começar a ler</h3>
+  <ul class="itens">
+    <li><b><code>intervalos()</code></b> em <code>tarocut.py:3172</code>. Devolve os trechos mantidos. É a mesma função para o render, o editor e o conferir, e é por isso que a tela mostra exatamente o que vai sair.</li>
+    <li><b><code>spans_corte()</code></b> em <code>tarocut.py:2913</code>. A geometria: de tokens marcados a trechos de tempo, com folga, mínimo e snap.</li>
+    <li><b><code>_base()</code></b> em <code>tarocut.py:4033</code>. Empilha as três camadas de decisão humana na ordem certa.</li>
+    <li><b><code>reconcilia()</code> e <code>le_superficie()</code></b> em <code>tarocut.py:2530</code> e <code>:2448</code>. A volta do <code>transcript.md</code> editado para o <code>stream.json</code>.</li>
+    <li><b><code>anotacoes_desobedecidas()</code>, <code>pendencias_sem_resposta()</code> e <code>achados_corte()</code></b>. As perguntas que impedem decisão de sumir.</li>
+    <li><b><code>class Sessao</code></b> em <code>editor.py:85</code>. Tudo o que o editor sabe sobre o vídeo aberto.</li>
+    <li><b><code>parse_roteiro()</code> e <code>grafo_cartas_pilhas()</code></b>. O roteiro de cartas escrito à mão e o grafo do ffmpeg que o desenha.</li>
+  </ul>
+</section>
+
+<section id="dados">
+  <h2><span class="num">04</span>Os dados de cada vídeo</h2>
+  <div class="coluna">
+    <p>Tudo o que o programa sabe sobre um vídeo mora em <code>work/&lt;vídeo&gt;/</code>, que fica fora do git. Parte disso é regenerável. Parte é julgamento humano e não tem desfazer.</p>
+  </div>
+  <div class="tabela">
+    <table>
+      <thead><tr><th>arquivo</th><th>quem escreve</th><th>se perder</th></tr></thead>
+      <tbody>
+        <tr><td><code>meta.json</code>, <code>audio.wav</code>, <code>words.json</code></td><td>ingest, transcribe, align</td><td>Regenera. Custa quase a duração do vídeo.</td></tr>
+        <tr><td><code>stream.json</code></td><td>analyze</td><td>Regenera, mas sai diferente. Tudo o que o editor guardou por palavra perde o chão.</td></tr>
+        <tr><td><code>transcript.md</code></td><td>draft, depois a pessoa</td><td>Leva um selo do <code>stream</code>. Selo que não confere é recusado.</td></tr>
+        <tr><td><code>revisao.txt</code>, <code>conferir.txt</code></td><td>revisar, conferir</td><td>Regenera em segundos.</td></tr>
+        <tr><td><code>entendimento.md</code>, <code>anotacoes.json</code>, <code>respostas.json</code></td><td>passe de julgamento</td><td><b>Não regenera.</b> Sobrevive a <code>run --force</code> de propósito.</td></tr>
+        <tr><td><code>montagem.json</code>, <code>correcoes.json</code>, <code>legendas.json</code>, <code>cartas-roteiro.json</code></td><td>editor</td><td><b>Não regenera.</b> O editor guarda <code>montagem-anterior.json</code> e <code>correcoes-anterior.json</code> antes de gravar por cima.</td></tr>
+        <tr><td><code>ouvido.md</code>, <code>relatorio.md</code></td><td>/anotar, /fila</td><td>Registro, não decide corte.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>As três camadas de decisão</h3>
+  <div class="coluna">
+    <p>Empilham na ordem em que foram tomadas. Quando duas discordam, a de baixo nesta lista vence, por ser a mais explícita.</p>
+  </div>
+  <ol class="camadas">
+    <li><span class="k">1</span><span class="arq">transcript.md</span><span class="d">Apagar texto. Casa palavra por chave normalizada.</span></li>
+    <li><span class="k">2</span><span class="arq">anotacoes.json</span><span class="d">O passe de julgamento: trechos de tempo com o motivo escrito.</span></li>
+    <li><span class="k">3</span><span class="arq">montagem.json</span><span class="d">O editor. <code>tokens</code> são decisões de palavra e passam pela geometria. <code>cortes</code> e <code>restauros</code> são trechos de tempo e entram por último, sem ajuste.</span></li>
+  </ol>
+  <div class="coluna" style="margin-top:1rem">
+    <p class="nota">O que se entrega não mora em <code>work/</code>. Vai para <code>export/prévias/</code> e <code>export/finais/</code>, dentro da pasta dos vídeos brutos. Quem decide o caminho é <code>pastas.onde()</code>, uma vez só.</p>
+  </div>
+</section>
+
+<section id="regras">
+  <h2><span class="num">05</span>O que não pode quebrar</h2>
+  <div class="coluna">
+    <p>São as regras que mais custaram para ficar de pé. Cada uma nasceu de um defeito medido num vídeo real, e o <code>CLAUDE.md</code> conta a história de cada uma.</p>
+  </div>
+  <ul class="itens" style="margin-top:1rem">
+    <li><b>Nenhuma decisão humana some em silêncio.</b> É o pior defeito que o programa pode ter, e já apareceu por quatro caminhos diferentes. Toda anotação tem de sobrar com cerca de 0 s tocando, e toda pendência tem de ter resposta. O <code>conferir</code> lista o que falta, e o <code>audio</code> e o <code>render</code> avisam antes de rodar.
+      <span class="onde">anotacoes_desobedecidas, pendencias_sem_resposta, _plano</span></li>
+    <li><b>Recusa, não aviso.</b> Quando um arquivo não bate com o que o gerou, o programa para em vez de seguir com um alerta. Vale para o selo do <code>transcript.md</code>, para decisão de palavra com tempo diferente, para aba velha do editor (HTTP 409), para reanalisar vídeo editado e para roteiro de cartas com linha inválida.
+      <span class="onde">confere_atualidade, confere_montagem, confere_correcoes, Sessao.posse, edicao_a_mao, parse_roteiro</span></li>
+    <li><b>Todo número que decide corte mora no <code>config.toml</code>.</b> Cada um tem um comentário dizendo contra o quê foi medido. Não há valor padrão de parâmetro decidindo a mesma coisa em outro lugar. Mudar um número sem medir de novo é proibido; o comentário é o valor.</li>
+    <li><b>Uma pergunta, uma função.</b> O navegador não calcula corte, nem "só para desenhar". Conversão entre os dois relógios, leitura da transcrição, caminho de saída e espaço de cor também têm uma resposta só. Uma segunda implementação sempre acaba discordando da primeira no canto em que ninguém olha.
+      <span class="onde">intervalos, somas_previa, le_superficie, pastas.onde, saida_hlg</span></li>
+    <li><b>Escrita atômica.</b> <code>jdump</code> grava ao lado e troca com <code>os.replace</code>. Um travamento no meio deixa o arquivo antigo inteiro ou o novo inteiro, nunca pela metade.</li>
+    <li><b>Decisão de palavra caduca; trecho de tempo não.</b> Índice de token muda quando a análise insere um token. Por isso cada decisão guarda o <code>s</code>/<code>e</code> da palavra em que foi tomada, e a resposta de pendência casa pelo tempo, nunca pelo número.</li>
+    <li><b>Medir antes de mudar.</b> Mudança de comportamento só está verificada depois de passar nos três vídeos de calibração (IMG_0246, IMG_0247, IMG_0248). Mudança de regra se mede contra os 22 vídeos prontos, numa cópia fora de <code>work/</code>. O <code>CLAUDE.md</code> tem uma lista de ideias testadas e recusadas, com os números, para ninguém repetir o teste.</li>
+    <li><b>Comentário explica por quê.</b> O código não descreve o que a linha faz; conta o que quebrou antes e qual medição sustenta o número. Comentários e nomes em português, quase sempre sem acento.</li>
+  </ul>
+</section>
+
+<section id="rodar">
+  <h2><span class="num">06</span>Como rodar</h2>
+  <h3>O que precisa estar instalado</h3>
+  <div class="tabela">
+    <table>
+      <thead><tr><th>o quê</th><th>versão nesta máquina</th><th>nota</th></tr></thead>
+      <tbody>
+        <tr><td>Python</td><td class="mono">3.12.10</td><td>Num <code>venv/</code> na raiz, que fica fora do git. Sempre <code>venv\Scripts\python.exe</code>, nunca <code>python</code> solto.</td></tr>
+        <tr><td>faster-whisper, ctranslate2</td><td class="mono">1.2.1, 4.8.1</td><td>Transcrição.</td></tr>
+        <tr><td>torch, torchaudio, transformers</td><td class="mono">2.13.0+cpu, 2.11.0+cpu, 5.16.1</td><td>Alinhamento. Versão só de CPU.</td></tr>
+        <tr><td>opencv-python-headless, onnxruntime</td><td class="mono">5.0.0.93, 1.29.0</td><td>Rastreio de rosto.</td></tr>
+        <tr><td>numpy, pypdf</td><td class="mono">2.5.2, 6.16.2</td><td><code>pypdf</code> só para o <code>lexico.py</code>.</td></tr>
+        <tr><td>ffmpeg, ffprobe</td><td class="mono">9.0.1</td><td>No PATH ou instalado pelo WinGet (<code>Gyan.FFmpeg</code>).</td></tr>
+        <tr><td>mpv</td><td class="mono">—</td><td>Só para o comando <code>previa</code>.</td></tr>
+        <tr><td>Modelos</td><td class="mono">—</td><td><code>Systran/faster-whisper-small</code> e <code>jonatasgrosman/wav2vec2-large-xlsr-53-portuguese</code> ficam no cache do Hugging Face. O YuNet está dentro do repositório, em <code>models/</code>.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="nota" style="margin-top:.6rem;max-width:42rem">Não existe <code>requirements.txt</code>. A lista acima saiu do <code>pip list</code> do venv em 05/10/2026.</p>
+
+  <h3>Um vídeo, do começo ao fim</h3>
+<div class="bloco"><pre><code><span class="c">rem etapas 1 a 5</span>
+venv\Scripts\python.exe tarocut.py run "C:\Users\marip\Videos\IMG_0247.MOV"
+<span class="c">rem o que merece ouvido, sem gerar mídia</span>
+venv\Scripts\python.exe tarocut.py conferir "C:\Users\marip\Videos\IMG_0247.MOV"
+<span class="c">rem ajuste fino no navegador</span>
+venv\Scripts\python.exe tarocut.py editor "C:\Users\marip\Videos\IMG_0247.MOV"
+<span class="c">rem prévia em áudio, depois o vídeo</span>
+venv\Scripts\python.exe tarocut.py audio "C:\Users\marip\Videos\IMG_0247.MOV"
+venv\Scripts\python.exe tarocut.py exportar "C:\Users\marip\Videos\IMG_0247.MOV"</code></pre></div>
+
+  <h3>Os testes</h3>
+  <ul class="itens">
+    <li><b><code>teste_cartas.py</code></b> não precisa de vídeo. Inventa menções e roteiros e cobra as regras de cartas, legenda, mídia e cor. Basta o ambiente instalado, inclusive o ffmpeg: o <code>tarocut.py</code> para na importação se não o achar.</li>
+    <li><b><code>teste_editor.py</code></b> e <b><code>teste_revisao.py</code></b> precisam dos três vídeos de calibração analisados em <code>work/</code>. Como <code>work/</code> não vai para o git, esses dois só rodam depois que esses dados chegarem por outro caminho.</li>
+  </ul>
+</section>
+
+<section id="seguranca">
+  <h2><span class="num">07</span>Segurança</h2>
+  <div class="coluna">
+    <p>O programa não tem login, não fala com servidor nenhum e não guarda segredo. A superfície que existe é pequena. Tudo abaixo foi lido no código em 05/10/2026. Nada foi testado com um ataque de verdade.</p>
+  </div>
+  <ul class="seg" style="margin-top:1rem">
+    <li><span class="selo s-ok">ok</span>O servidor do editor escuta só em <code>127.0.0.1</code> (<code>editor.py:1904</code>). Nada fora da máquina alcança.</li>
+    <li><span class="selo s-ok">ok</span>Todo subprocesso recebe lista de argumentos, nunca <code>shell=True</code>. A rota <code>/rodar</code> aceita só seis comandos fixos, e <code>/abrir</code> revalida o nome do vídeo contra a lista do próprio servidor.</li>
+    <li><span class="selo s-ok">ok</span>Nenhuma chave, senha ou token no código.</li>
+    <li><span class="selo s-at">atenção</span>O servidor não confere <code>Origin</code> nem <code>Host</code>, e lê o corpo como JSON sem olhar o <code>Content-Type</code>. Um site aberto no mesmo navegador consegue mandar um POST simples, sem preflight. As rotas que mudam o corte exigem a senha de posse e ficam protegidas. <code>/cancelar</code> (mata a tarefa em andamento) e <code>/abrir</code> sem o campo de posse não exigem. Impacto: cancelar um export ou trocar o vídeo aberto. Navegadores recentes começam a pedir permissão para sites acessarem a rede local, mas o servidor não deve contar com isso.</li>
+    <li><span class="selo s-at">atenção</span>Sem checagem de <code>Host</code>, uma página que use DNS rebinding passa a ler as respostas. A rota <code>/vida</code> devolve a senha de posse, e com ela a página grava no <code>montagem.json</code> e baixa o <code>/audio.wav</code>. A senha de posse foi feita para aba velha, não para ataque. O conserto é barato: recusar <code>Host</code> diferente de <code>127.0.0.1:porta</code> e <code>Origin</code> de fora.</li>
+    <li><span class="selo s-baixo">baixo</span>Erro 500 devolve <code>repr(e)</code>, com caminhos internos. Só a própria máquina vê.</li>
+    <li><span class="selo s-conf">a conferir</span>O código não define <code>HF_HUB_OFFLINE</code> nem <code>local_files_only</code>. Com internet, as bibliotecas do Hugging Face costumam consultar o Hub ao carregar um modelo. O programa funciona offline, mas "nenhuma chamada de rede" ainda não está garantido. Não medido.</li>
+  </ul>
+
+  <h3>Antes de subir o repositório</h3>
+  <ul class="checar">
+    <li><span class="selo s-ok">feito</span>Mídia não entra no repositório, inclusive a de calibração. De <code>midias/</code> só vai o README. Vídeo, áudio e prévia (<code>.mov</code>, <code>.mp4</code>, <code>.m4a</code>, <code>.wav</code>, <code>.mkv</code>) ficam de fora em qualquer pasta. As três fotos que estavam versionadas saíram também do histórico, em 05/10/2026.</li>
+    <li><code>material/</code> tem o PDF do livro do Yala, o texto extraído dele e um <code>tarodeyala.zip</code>. <code>baralho completo/</code> tem as 78 imagens das cartas. Tudo isso está no histórico do git: são 44 MB dos 45 MB versionados. É conteúdo de terceiros. Mantê-lo num repositório privado é uma decisão; tirá-lo depois exige reescrever o histórico.</li>
+    <li><code>work/</code> tem o áudio, as transcrições e as decisões de 67 vídeos, inclusive os três de calibração. Fica fora do repositório de propósito. Para rodar <code>teste_editor.py</code> e <code>teste_revisao.py</code>, o Gabriel precisa receber esses três por outro caminho.</li>
+    <li><code>.claude/settings.local.json</code> está versionado. O conteúdo é inofensivo (permissões do Claude Code), mas por convenção esse arquivo é local.</li>
+    <li>Falta um <code>requirements.txt</code>, e soltos na raiz há <code>p1_spec.png</code> e <code>patterns/</code>, não versionados.</li>
+  </ul>
+</section>
+
+<section id="motor">
+  <h2><span class="num">08</span>O que é do curso e o que é motor</h2>
+  <div class="coluna">
+    <p>O tarocut foi feito para um curso, uma pessoa na câmera e uma máquina. Para servir outros contextos, o que está preso a esse caso precisa virar configuração. O motor de corte e o editor já são gerais.</p>
+  </div>
+  <div class="tabela">
+    <table>
+      <thead><tr><th>área</th><th>preso ao curso hoje</th><th>já geral</th></tr></thead>
+      <tbody>
+        <tr><td>Língua</td><td>Whisper em <code>pt</code>, alinhador de português, cacoetes em <code>lexicon/fillers.txt</code>, regras que dependem de acento ("e" e "é").</td><td>A sequência transcrever, alinhar, marcar, cortar.</td></tr>
+        <tr><td>Conteúdo</td><td>O livro do Yala no <code>/revisar</code>, o vocabulário tirado dele, o baralho de 78 cartas, o casador de menção de carta.</td><td>O editor de texto e onda, as camadas de decisão, a legenda <code>.srt</code>.</td></tr>
+        <tr><td>Gravação</td><td>iPhone em 4K60, HEVC 10 bits, HLG. Câmera fixa e uma pessoa só, que o <code>rosto.py</code> segue.</td><td>O corte, a normalização de volume, o render.</td></tr>
+        <tr><td>Máquina</td><td>Windows, 7,9 GB de RAM, GPU Intel, um vídeo por vez.</td><td>O cache por etapa, uma etapa por processo.</td></tr>
+        <tr><td>Uso</td><td>Uma pessoa, um servidor local, sem conta.</td><td>A posse de aba, que já impede duas telas de gravarem por cima uma da outra.</td></tr>
+        <tr><td>Calibração</td><td>Os números do <code>config.toml</code> foram medidos contra os vídeos do Rafael.</td><td>O método: medir, comentar o número, comparar com a régua dos 22.</td></tr>
+        <tr><td>Julgamento</td><td>Claude Code operado à mão, com prompts que falam do curso.</td><td>O contrato de arquivos: <code>anotacoes.json</code> e <code>respostas.json</code>.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="cronograma">
+  <h2><span class="num">09</span>Cronograma</h2>
+  <div class="coluna">
+    <p>Tudo em 2026. São 26 commits, de 1º de setembro a 5 de outubro. Os pontos em azul são as mudanças de maior alcance.</p>
+  </div>
+  <ol class="tempo">
+    <li><time datetime="2026-08-31">31 ago</time><div class="o"><b>Medição antes de código</b><span>Padrões de edição medidos em três vídeos já editados à mão: pausas, emendas, formato. Virou <code>material/padroes-edicao.md</code>.</span></div></li>
+    <li class="marco"><time datetime="2026-09-01">1 set</time><div class="o"><b>Primeira versão funcional</b><span>Commit inicial. Oito correções feitas no mesmo dia. O editor gráfico antigo sai, e o passe de julgamento fecha o laço.</span></div></li>
+    <li><time datetime="2026-09-02">2 set</time><div class="o"><b>Editor de volta, e as cartas</b><span>Editor reescrito sobre o <code>montagem.json</code>, com camadas separadas. Cartas: casador de menção, rastreio de rosto e sobreposição no vídeo.</span></div></li>
+    <li><time datetime="2026-09-03">3 set</time><div class="o"><b>Entender antes de cortar</b><span><code>/preparar</code>. O passe de julgamento passa a escrever o que entendeu da aula. Pendências viram perguntas numeradas e cobradas. Todo número de corte vai para o <code>config.toml</code>.</span></div></li>
+    <li><time datetime="2026-09-05">5 set</time><div class="o"><b>O passe do ouvido</b><span><code>/anotar</code>. O editor fala nos dois relógios, fonte e prévia. Regra automática deixa de cortar trecho que ninguém conseguiu ler.</span></div></li>
+    <li class="marco"><time datetime="2026-09-08">8 set</time><div class="o"><b>O editor ganha a onda</b><span>Redesenho com o áudio embaixo do texto. Ocultar uma palavra passa a tirar a palavra: antes sumiam 7 de 306, depois 306 de 306. As pontas do vídeo deixam de ser cortadas no escuro (74 s de aula recuperados num vídeo).</span></div></li>
+    <li class="marco"><time datetime="2026-09-09">9 set</time><div class="o"><b>Cartas escritas à mão e render pela GPU</b><span>Roteiro de cartas, legenda editável, reenquadramento que funciona de verdade, fotos e mídia em tela cheia. Cor das imagens consertada no vídeo HLG. Render pela GPU Intel, 5,8 vezes mais rápido.</span></div></li>
+    <li><time datetime="2026-09-10">10 set</time><div class="o"><b>Uma aba dona por vez</b><span>Aba velha do editor é recusada e se declara morta. A cor das imagens é escolhida pelo olho, entre cinco variantes.</span></div></li>
+    <li><time datetime="2026-09-25">25 set</time><div class="o"><b>Entregas em <code>export/</code></b><span>Prévias e vídeos finais deixam de cair junto dos brutos.</span></div></li>
+    <li><time datetime="2026-10-01">1 out</time><div class="o"><b><code>/fila</code></b><span>Vários vídeos no <code>/preparar</code>, um por vez, cada um num agente que começa do zero.</span></div></li>
+    <li class="marco"><time datetime="2026-10-04">4 out</time><div class="o"><b>A régua dos 22 vídeos</b><span>Primeira medição do <code>/preparar</code> contra o que o Rafael terminou à mão. Fala real cortada por engano cai de 141 s para 98 s. Vídeo editado não se reanalisa mais. Cada etapa roda num processo próprio. A volta da transcrição deixa de cortar palavra sem texto.</span></div></li>
+    <li><time datetime="2026-10-05">5 out</time><div class="o"><b>Mídia fora do repositório</b><span>Fotos, vídeos e áudio deixam de entrar no git, inclusive os de calibração. As três fotos que estavam versionadas saem também do histórico.</span></div></li>
+    <li class="proximo"><time>out</time><div class="o"><b>Passagem para o Gabriel</b><span>Repositório privado, programação e segurança com ele.</span></div></li>
+  </ol>
+</section>
+
+<section id="ler">
+  <h2><span class="num">10</span>Para ler depois</h2>
+  <ul class="itens">
+    <li><b><code>CLAUDE.md</code></b> (1.470 linhas). A especificação de verdade, com o porquê de cada regra. Ler a parte "O que não quebrar" antes de mexer em qualquer coisa.</li>
+    <li><b><code>README.md</code></b>. O fluxo do ponto de vista de quem usa.</li>
+    <li><b><code>config.toml</code></b>. Cada número com a medição que o sustenta.</li>
+    <li><b><code>preparar-improvements-2026-10-04.md</code></b>. Em inglês. A medição contra os 22 vídeos, passo a passo, e o que seria preciso para chegar a 90% de legendas sem correção.</li>
+    <li><b><code>correcoes-pendentes.md</code></b>. Histórico, não pendências: as oito correções de 1º de setembro, todas feitas.</li>
+    <li><b><code>material/licoes-do-ouvido.md</code></b>, <b><code>material/padroes-edicao.md</code></b>, <b><code>log-cor-imagens.md</code></b>, <b><code>prompt-editor-onda.md</code></b> e <b><code>prompt-render-gpu.md</code></b>. Registros de medições e de projetos específicos.</li>
+  </ul>
+</section>
+
+<footer>Montado em 05/10/2026 a partir do código no commit 27aa764.</footer>
+
+</main>
+</div>
+
+<script>
+(function(){
+  // A onda da figura: ilustrativa, deterministica, com os mesmos trechos do texto acima.
+  var cv = document.getElementById('onda');
+  if (!cv || !cv.getContext) return;
+  var DUR = 16.8;
+  // corte: null fica; 'regra' cinza; 'gente' azul. voz: 'fala' | 'mudo' | 'sust'
+  var trechos = [
+    {s:0.0,  e:1.3,  voz:'fala', corte:'gente'},
+    {s:1.3,  e:2.1,  voz:'sust', corte:'regra'},
+    {s:2.1,  e:2.55, voz:'mudo', corte:null},
+    {s:2.55, e:4.5,  voz:'mudo', corte:'regra'},
+    {s:4.5,  e:5.9,  voz:'fala', corte:'gente'},
+    {s:5.9,  e:6.35, voz:'mudo', corte:null},
+    {s:6.35, e:12.3, voz:'mudo', corte:'regra'},
+    {s:12.3, e:14.6, voz:'fala', corte:null},
+    {s:14.6, e:15.4, voz:'sust', corte:null, marrom:true},
+    {s:15.4, e:16.8, voz:'fala', corte:null}
+  ];
+  function rng(seed){ return function(){ seed |= 0; seed = seed + 0x6D2B79F5 | 0; var t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+  function trechoEm(t){ for (var i = 0; i < trechos.length; i++) if (t >= trechos[i].s && t < trechos[i].e) return trechos[i]; return trechos[trechos.length-1]; }
+  function cor(nome){ return getComputedStyle(document.documentElement).getPropertyValue(nome).trim() || '#888'; }
+
+  function desenha(){
+    var dpr = window.devicePixelRatio || 1;
+    var w = cv.clientWidth, h = cv.clientHeight;
+    if (!w) return;
+    cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+    var g = cv.getContext('2d');
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, w, h);
+    var tinta = cor('--tinta'), fora = cor('--fora'), risco = cor('--risco'),
+        julga = cor('--julga'), voz = cor('--voz'), apagado = cor('--apagado'), linha = cor('--linha');
+    var regua = 20, base = regua + (h - regua) / 2, alt = (h - regua) / 2 - 8;
+    var px = function(t){ return t / DUR * w; };
+
+    // hachura dos cortes
+    trechos.forEach(function(tr){
+      if (!tr.corte) return;
+      var x0 = px(tr.s), x1 = px(tr.e);
+      g.save();
+      g.beginPath(); g.rect(x0, regua, x1 - x0, h - regua); g.clip();
+      g.strokeStyle = tr.corte === 'gente' ? julga : risco;
+      g.globalAlpha = 0.45; g.lineWidth = 1;
+      for (var x = x0 - h; x < x1 + h; x += 7){ g.beginPath(); g.moveTo(x, h); g.lineTo(x + (h - regua), regua); g.stroke(); }
+      g.restore();
+    });
+
+    // barras de amplitude
+    var r = rng(41), passo = 3;
+    for (var x = 0; x < w; x += passo){
+      var t = (x + 1) / w * DUR, tr = trechoEm(t), a;
+      if (tr.voz === 'fala') a = (0.25 + 0.75 * Math.pow(Math.abs(Math.sin(t * Math.PI * 4.1 + tr.s)), 0.7)) * (0.55 + 0.45 * r());
+      else if (tr.voz === 'sust') a = 0.42 + 0.12 * r();
+      else a = 0.03 + 0.05 * r();
+      var y = Math.max(1, a * alt);
+      g.fillStyle = tr.corte ? fora : tinta;
+      g.fillRect(x, base - y, 2, y * 2);
+    }
+
+    // emendas: onde o que fica encontra o que sai
+    g.strokeStyle = tinta; g.globalAlpha = 0.55; g.lineWidth = 1;
+    for (var i = 1; i < trechos.length; i++){
+      if (!!trechos[i].corte !== !!trechos[i-1].corte){ var xe = Math.round(px(trechos[i].s)) + 0.5; g.beginPath(); g.moveTo(xe, regua); g.lineTo(xe, h); g.stroke(); }
+    }
+    g.globalAlpha = 1;
+
+    // pontilhado marrom: voz sem texto que continua no video
+    trechos.forEach(function(tr){
+      if (!tr.marrom) return;
+      g.fillStyle = voz;
+      for (var x = px(tr.s); x < px(tr.e); x += 5) g.fillRect(x, h - 6, 2.5, 2.5);
+    });
+
+    // regua: o relogio da fonte
+    g.fillStyle = apagado; g.strokeStyle = linha; g.lineWidth = 1;
+    g.font = '10px "IBM Plex Mono", ui-monospace, monospace';
+    g.textBaseline = 'middle';
+    g.beginPath(); g.moveTo(0, regua - 0.5); g.lineTo(w, regua - 0.5); g.stroke();
+    var cada = w < 420 ? 4 : 2;
+    for (var s = 0; s <= DUR; s += cada){
+      var xs = Math.round(px(s)) + 0.5;
+      g.beginPath(); g.moveTo(xs, regua - 5); g.lineTo(xs, regua); g.stroke();
+      if (s > 0 && xs < w - 24) g.fillText(s + ' s', xs + 3, regua / 2);
+    }
+    g.fillText('fonte', 4, regua / 2);
+  }
+
+  desenha();
+  if (window.ResizeObserver) new ResizeObserver(desenha).observe(cv); else window.addEventListener('resize', desenha);
+  try { window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', desenha); } catch (e) {}
+  new MutationObserver(desenha).observe(document.documentElement, {attributes:true, attributeFilter:['data-theme']});
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(desenha);
+})();
+
+(function(){
+  // indice: sublinha em azul a secao que esta na tela
+  var links = Array.prototype.slice.call(document.querySelectorAll('nav.indice a'));
+  if (!('IntersectionObserver' in window) || !links.length) return;
+  var porId = {};
+  links.forEach(function(a){ porId[a.getAttribute('href').slice(1)] = a; });
+  var io = new IntersectionObserver(function(es){
+    es.forEach(function(e){
+      if (!e.isIntersecting) return;
+      links.forEach(function(a){ a.classList.remove('aqui'); });
+      var a = porId[e.target.id]; if (a) a.classList.add('aqui');
+    });
+  }, {rootMargin:'-20% 0px -70% 0px'});
+  Object.keys(porId).forEach(function(id){ var el = document.getElementById(id); if (el) io.observe(el); });
+})();
+</script>
+</body>
+</html>
