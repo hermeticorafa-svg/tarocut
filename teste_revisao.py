@@ -19,6 +19,7 @@ import io
 import contextlib
 import json
 import sys
+import tempfile
 from pathlib import Path
 
 import tarocut as tc
@@ -731,6 +732,98 @@ def teste_borda_muda():
         "palavra arrastada fica inteira para a poda de cauda")
 
 
+def teste_palavra_sem_texto():
+    """A correcao de frase que muda o numero de palavras ("Wait" + "Smith,"
+    -> "Waite-Smith" + "") deixa o segundo token com texto vazio, e mantido
+    ele nao escreve nada no transcript.md. O `reconcilia` nao achava par
+    para ele e o cortava como "apagado no texto": o "-Smith" saia do video
+    sem ninguem ter apagado nada, e sem pendencia - nao ha texto para o
+    passe de julgamento ler.
+
+    Um caso de verdade: 153,20-153,88s do "6 de paus", que so voltou ao
+    video por um restauro a mao. Por isso o teste passa pelo `draft` e pelo
+    `parse_transcript` de verdade, e nao por uma copia deles: o defeito
+    morava na VOLTA do texto, e uma copia do escritor esconderia justamente
+    uma diferenca entre os dois."""
+    print()
+    print("== palavra sem texto (reconcilia)")
+
+    def fluxo(dono_cut=False, dono_why="", vazia_cut=False, vazia_why="",
+              dono="Waite-Smith"):
+        return [tok("palavra", "No", 150.0, 150.3),
+                tok("palavra", "baralho", 150.3, 150.8),
+                tok("palavra", "do", 150.8, 150.9),
+                tok("palavra", dono, 150.9, 151.2, dono_cut, dono_why),
+                tok("palavra", "", 151.2, 151.88, vazia_cut, vazia_why),
+                tok("palavra", "em", 152.0, 152.2),
+                tok("palavra", "uma", 152.2, 152.3),
+                tok("palavra", "leitura,", 152.3, 153.0)]
+
+    def volta(st, mexe=None):
+        """escreve o transcript.md pelo `draft`, deixa `mexe` editar o texto
+        como uma pessoa editaria, e le de volta pelo `reconcilia` - numa
+        pasta temporaria, nunca em work/"""
+        velho = tc.WORK
+        with tempfile.TemporaryDirectory() as tmp:
+            tc.WORK = Path(tmp)
+            try:
+                tc.jdump({"stream": st, "cadeias": [], "dur": 160.0},
+                         tc.wdir("teste") / "stream.json")
+                with contextlib.redirect_stdout(io.StringIO()):
+                    tc.cmd_draft(argparse.Namespace(video="teste"))
+                md = tc.WORK / "teste" / "transcript.md"
+                if mexe:
+                    md.write_text(mexe(md.read_text(encoding="utf-8")),
+                                  encoding="utf-8")
+                tc.reconcilia(st, tc.parse_transcript(md))
+            finally:
+                tc.WORK = velho
+        return st
+
+    st = volta(fluxo())
+    diz(st[4]["cut"] is False and st[4]["why"] != "apagado no texto",
+        "a palavra vazia mantida continua mantida: o texto nao apagou nada")
+    diz(not any(t["cut"] for t in st),
+        "e nenhuma vizinha muda por causa dela")
+    iv = tc.intervalos(st, tc.cfg(), 160.0)
+    vivo = sum(max(0.0, min(151.88, y) - max(151.2, x)) for x, y in iv)
+    diz(abs(vivo - 0.68) < 1e-6,
+        f"o audio do '-Smith' fica no video inteiro ({vivo:.2f} de 0,68s)")
+
+    st = volta(fluxo(), lambda s: s.replace("Waite-Smith", "", 1))
+    diz(st[3]["cut"] and st[4]["cut"] and st[4]["why"] == "apagado no texto",
+        "apagar 'Waite-Smith' no texto apaga a palavra inteira, o '-Smith' "
+        "junto - senao sobraria um 'Smith' solto no video")
+
+    st = volta(fluxo(dono_cut=True, dono_why="anotado: nome repetido"))
+    diz(st[4]["cut"] and st[4]["why"] == "anotado: nome repetido",
+        "cortada a primeira metade, a vazia sai com ela e pelo mesmo motivo")
+    st = volta(fluxo(dono_cut=True, dono_why="anotado: nome repetido"),
+               lambda s: s.replace("⟦Waite-Smith⟧", "⟨Waite-Smith⟩"))
+    diz(st[3]["cut"] is False and st[4]["cut"] is False,
+        "trazida de volta com ⟨ ⟩, volta a palavra inteira")
+
+    # a vazia que a analise CORTOU escreve `⟦⟧` e tem superficie: quem
+    # decide e a marca dela, nao o dono. E o 589,89s do "modulo de
+    # tiragens 3", dentro de uma anotacao.
+    st = volta(fluxo(vazia_cut=True, vazia_why="anotado: tentativa"))
+    diz(st[3]["cut"] is False and st[4]["cut"] is True
+        and st[4]["why"] == "anotado: tentativa",
+        "a vazia cortada pela analise continua decidida pela propria `⟦⟧`")
+
+    # o caso irmao, que ainda nao aconteceu: o lexico faz "Tarô de Yala"
+    # num token so de "tarodiala" e de "Tarou Diálamas", e o texto devolve
+    # tres palavras onde o fluxo tem uma.
+    st = volta(fluxo(dono="Tarô de Yala"))
+    diz(not any(t["cut"] for t in st),
+        "'Tarô de Yala' num token so volta inteiro do texto, com a vazia "
+        "que vem atras dele")
+    st = volta(fluxo(dono="Tarô de Yala"),
+               lambda s: s.replace("Tarô de Yala", "", 1))
+    diz(st[3]["why"] == "apagado no texto" and st[4]["cut"],
+        "e apagado do texto, sai inteiro")
+
+
 def main():
     alvos = sys.argv[1:] or CALIBRACAO
     teste_gaguejada()
@@ -740,6 +833,7 @@ def main():
     teste_parte_ponta()
     teste_retomada()
     teste_borda_muda()
+    teste_palavra_sem_texto()
     teste_vocabulario()
     teste_respostas()
     teste_texto_explica_o_tempo()

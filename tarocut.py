@@ -417,7 +417,15 @@ def corrige_frases(words, frase):
     """Troca erros de varias palavras no lugar. Quando a correcao tem o
     mesmo numero de palavras, substitui uma a uma; quando nao tem, poe o
     texto inteiro no primeiro token e esvazia os demais - os tempos
-    continuam certos de qualquer jeito."""
+    continuam certos de qualquer jeito.
+
+    O token esvaziado e CONTINUACAO do primeiro, e mantido ele nao escreve
+    nada no transcript.md. Quem le o texto de volta tem de saber disso: ate
+    28/09/2026 o `reconcilia` o cortava como "apagado no texto", e o
+    "-Smith" de "Waite-Smith" saia do video calado. Juntar os dois num
+    token so seria mais limpo so no papel: os fluxos ja gravados continuam
+    com o token vazio, e reanalisar tira um token do fluxo - toda decisao de
+    palavra do `montagem.json` depois dele caducaria."""
     if not frase:
         return 0
     ordem = sorted(frase, key=len, reverse=True)
@@ -2424,13 +2432,6 @@ TOKEN_RE = re.compile(r"⟦([^⟧]*)⟧|⟨([^⟩]*)⟩|([^\s⟦⟧⟨⟩]+)")
 RE_PAUSA = re.compile(r"^pausa\s+([\d.]+)s$")
 
 
-def chave_token(t):
-    if t["k"] == "palavra":
-        return chave(t["t"])
-    dur = t["e"] - t["s"]
-    return (f"§pausa{dur:.1f}" if t["k"] == "silencio" else f"§hes{dur:.1f}")
-
-
 def _chave_superficie(conteudo):
     m = RE_PAUSA.match(conteudo.strip())
     if m:
@@ -2444,6 +2445,27 @@ def _chave_superficie(conteudo):
     return chave(conteudo)
 
 
+def le_superficie(txt):
+    """Um pedaco do transcript.md -> [(chave, estado)], com estado em
+    cortar/manter/normal.
+
+    E o LEITOR do round-trip, e mora fora do `parse_transcript` porque o
+    `reconcilia` precisa dele tambem: a chave de cada token do fluxo e lida
+    da superficie que o `texto_token` escreveu, por esta mesma funcao. Um
+    segundo leitor ali seria uma segunda opiniao sobre o que o draft quis
+    dizer - e a que diverge calada e sempre a que ninguem esta olhando."""
+    saida = []
+    for m in TOKEN_RE.finditer(txt):
+        cortar, manter, cru = m.groups()
+        if cortar is not None:
+            saida.append((_chave_superficie(cortar), "cortar"))
+        elif manter is not None:
+            saida.append((_chave_superficie(manter), "manter"))
+        else:
+            saida.append((chave(cru), "normal"))
+    return saida
+
+
 def parse_transcript(path):
     """Le o .md editado -> [(chave, estado)] com estado em
     cortar/manter/normal."""
@@ -2454,14 +2476,7 @@ def parse_transcript(path):
             continue
         if not dentro or ln.startswith(("#", "<!--", "-->", "---")):
             continue
-        for m in TOKEN_RE.finditer(ln):
-            cortar, manter, cru = m.groups()
-            if cortar is not None:
-                saida.append((_chave_superficie(cortar), "cortar"))
-            elif manter is not None:
-                saida.append((_chave_superficie(manter), "manter"))
-            else:
-                saida.append((chave(cru), "normal"))
+        saida += le_superficie(ln)
     return saida
 
 
@@ -2514,28 +2529,72 @@ def confere_atualidade(md, stream):
 
 def reconcilia(stream, editado):
     """Alinha o fluxo original com o texto editado. O que sumiu do texto
-    vira corte; o que voltou para ⟨ ⟩ vira manutencao."""
+    vira corte; o que voltou para ⟨ ⟩ vira manutencao.
+
+    A chave de cada token e lida da SUPERFICIE que o draft escreveu para
+    ele, pelo mesmo leitor do transcript.md. Ate 28/09/2026 ela era
+    calculada a parte, do texto do token, por uma `chave_token` - apagada,
+    nao mudada de lugar: era uma segunda opiniao sobre o que o draft
+    escreve. As duas davam a mesma coisa em quase todo token - MEDIDO nos
+    38 fluxos de work/, 34.376 tokens, iguais em todos menos 2 - e os 2
+    eram o defeito: palavra MANTIDA de texto vazio. Quando a correcao de
+    frase muda o numero de palavras, `corrige_frases` poe a frase no
+    primeiro token e esvazia o seguinte ("Wait" + "Smith," ->
+    "Waite-Smith" + ""), e mantida ela nao escreve nada no transcript.md:
+    la ela e so um espaco a mais. A chave a parte era "", o texto nao
+    devolvia chave nenhuma, e sem par ela caia no laco de baixo e virava
+    "apagado no texto" sem ninguem ter apagado nada. Os 2 eram o
+    "-Smith" de "Waite-Smith": 0,68 s no "6 de paus" (153,20 s), que so
+    voltou ao video por um restauro a mao, e 0,30 s no "modulo de tiragens
+    3" (597,04 s), que sobrevivia por acaso - encolhido pelas duas
+    `folga_palavra`, o corte ficava menor que `minimo`. O wav2vec2 do
+    `align`, decodificado livre, ouve "smede" e "semej" ali: e fala.
+
+    Token que nao escreve nada nao tem o que casar, e segue a PALAVRA
+    anterior que escreveu, a que carrega o texto dele. O dono, e nao a
+    proposta da analise: apagar "Waite-Smith" no texto e apagar a palavra
+    inteira, e a proposta deixaria um "Smith" solto no video. Sem dono
+    fica a proposta, que e tudo o que se sabe dele.
+
+    O mesmo leitor fecha o caso irmao, que nenhum dos 38 tem ainda: token
+    cuja superficie se le como VARIAS palavras. O lexico faz um assim de
+    "tarodiala" e de "Tarou Diálamas" - "Tarô de Yala" num token so -, e
+    pela chave a parte ele seria "taro de yala" contra "taro", "de", "yala"
+    no texto: sumiria do video do mesmo jeito. Lido pela superficie, cada
+    pedaco casa com o seu. Se os pedacos discordam (o texto deixa apagar
+    metade de um token), manter ganha: o token nao se parte, e cortar
+    tiraria a fala que alguem deixou escrita."""
     import difflib
-    ko = [chave_token(t) for t in stream]
+    # o que o draft escreveu de cada token, lido de volta: 0, 1 ou N chaves
+    lido = [[k for k, _ in le_superficie(texto_token(t))] for t in stream]
+    ko, de = [], []
+    for i, ks in enumerate(lido):
+        ko += ks
+        de += [i] * len(ks)
     ke = [k for k, _ in editado]
     sm = difflib.SequenceMatcher(None, ko, ke, autojunk=False)
-    visto = set()
+    estados = {}
     for i, j, n in sm.get_matching_blocks():
         for k in range(n):
-            estado = editado[j + k][1]
-            t = stream[i + k]
-            visto.add(i + k)
-            if estado == "manter":
-                t["cut"], t["why"] = False, "resgatado"
-            elif estado == "cortar":
-                t["cut"] = True
-            else:
-                t["cut"], t["why"] = False, ""
-    apagados = 0
+            estados.setdefault(de[i + k], []).append(editado[j + k][1])
+    apagados, dono = 0, None
     for i, t in enumerate(stream):
-        if i not in visto:
+        if not lido[i]:
+            if dono is not None:
+                t["cut"], t["why"] = dono["cut"], dono["why"]
+            continue
+        es = estados.get(i)
+        if not es:
             t["cut"], t["why"] = True, "apagado no texto"
             apagados += 1
+        elif "manter" in es:
+            t["cut"], t["why"] = False, "resgatado"
+        elif "normal" in es:
+            t["cut"], t["why"] = False, ""
+        else:
+            t["cut"] = True
+        if t["k"] == "palavra":
+            dono = t
     return apagados
 
 # ----------------------------------------------- camada do editor (montagem)

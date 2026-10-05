@@ -289,6 +289,32 @@ decisões antigas em silêncio. Foi assim que uma anotação do IMG_0246 morreu
 (o `e` de 127,93s voltou ao vídeo). Não reintroduza um "arquivo antigo,
 passa".
 
+**Palavra sem texto não é palavra apagada.** Quando a correção de frase do
+léxico muda o número de palavras ("Wait" + "Smith," → "Waite-Smith"), o
+`corrige_frases` põe a frase no primeiro token e deixa o segundo com texto
+vazio — de propósito: cada metade continua com o seu tempo. Mantido, esse
+token não escreve nada no `transcript.md` (lá ele é só um espaço a mais), e
+o `reconcilia` o cortava como "apagado no texto" sem ninguém ter apagado
+nada — e sem pendência, porque não há texto para o passe de julgamento ler.
+MEDIDO (28/09/2026) nos 38 fluxos de `work/`: 2 assim, os dois o "-Smith" de
+"Waite-Smith". 0,68 s no "6 de paus", que só voltou por um restauro à mão; e
+0,30 s no "modulo de tiragens 3", que sobrevivia por acaso (menor que
+`minimo` depois das folgas). O wav2vec2, decodificado livre, ouve "smede" e
+"semej" ali.
+
+Hoje o `reconcilia` lê a chave de cada token da SUPERFÍCIE que o draft
+escreveu, pelo mesmo leitor do arquivo (`le_superficie`), e o token que não
+escreve nada segue a palavra que carrega o texto dele. A `chave_token`, que
+calculava a chave à parte, foi apagada, não mudada de lugar: era uma segunda
+opinião sobre o que o draft escreve, e discordava da primeira justamente
+onde doía. O mesmo leitor fecha o irmão que ainda não aconteceu: "Tarô de
+Yala" num token só, que o léxico faz de "tarodiala" e de "Tarou Diálamas" e
+que o texto devolve como três palavras. MEDIDO: nos 34.376 tokens as duas
+chaves só discordavam nesses 2. Os 38 vídeos saem com o corte idêntico; 36
+saem idênticos também token por token e no `conferir.txt`, e nos outros 2
+muda só o token vazio — e some do `conferir` a linha `FALA CORTADA
+SOBREVIVE … apagado no texto | ''`, que pedia para cortar o que era fala.
+
 **O navegador não calcula corte.** Todo gesto vai ao servidor e volta com os
 trechos, vindos da mesma `intervalos()` que o `render` usa. Refazer a
 geometria em JS é mais rápido e mente em algum canto. Não porte
@@ -471,7 +497,7 @@ parágrafo acima, pela mesma razão (índice de token caduca, `s`/`e` não):
 `confere_correcoes` recusa em vez de avisar, e o editor guarda cópia em
 `correcoes-anterior.json` antes de gravar por cima. **Não vira correção
 no `transcript.md`**: aquele arquivo casa token por chave normalizada
-(`chave_token`/`reconcilia`) para decidir cortar/manter, e editar o texto
+(`le_superficie`/`reconcilia`) para decidir cortar/manter, e editar o texto
 ali mudaria a chave — a palavra corrigida ficaria sem par no fluxo
 original e o `reconcilia` a marcaria "apagado no texto", cortando-a em
 silêncio. É a mesma família de defeito que a checagem de selo do
@@ -1354,7 +1380,10 @@ mesmo com a lista renumerada, e o arrasto que a poda não levou vira medida
 (sem disparar na folga de desenho), e as duas guardas irmãs — no corte no
 escuro, regra não corta `??`; na ponta do vídeo, regra de texto não desfaz a
 fala recuperada, e nas duas anotação continua cortando e o trecho protegido
-volta a ser pendência.
+volta a ser pendência. E a volta do `transcript.md`: a palavra de texto
+vazio que a correção de frase deixa não sai como "apagado no texto", e o
+áudio dela fica no vídeo — passando pelo `draft` e pelo leitor de verdade,
+numa pasta temporária, porque o defeito morava na volta do texto.
 Foi este teste que achou a `[disputa]` sumindo quando caía num token
 cortado. Nele mora também a promessa invertida: a pergunta sobre trecho
 que **já saiu** continua sendo cobrada até alguém restaurar ou responder,
