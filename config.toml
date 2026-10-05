@@ -22,6 +22,16 @@ frac_voz_silencio   = 0.15   # abaixo disso: silencio puro
 pausa_alvo          = 0.45
 # nunca toca em pausa menor que isto (respiracao natural)
 pausa_intocavel     = 0.75
+# Silencio colado na BORDA de uma palavra, acima disto, sai da palavra e
+# vira vao (ver `encolhe_ao_som`). Quase sempre e palavra que o alinhador
+# recusou e que voltou para o tempo do Whisper, esticada por cima da pausa.
+# MEDIDO (04/10/2026) nas 52.217 palavras de work/: 574 bordas mudas de
+# 0,3 s ou mais (463 s), 98% em palavra recusada, o grosso entre 0,7 e
+# 0,9 s; em palavra que o alinhador aceitou sao 12 em 52 mil. Fonema
+# nenhum fica 0,3 s abaixo do limiar de voz - o fechamento de uma oclusiva
+# dura 50-100 ms, e o "s" final que cai abaixo do limiar e coberto pela
+# `[corte].folga_palavra` que a palavra guarda de cada lado.
+borda_muda          = 0.30
 # (aqui morava `margem = 0.06`, "margem deixada em volta de cada corte".
 #  Nunca foi lida por linha nenhuma do programa - era a unica chave morta do
 #  arquivo. O valor estava certo e o lugar errado: virou [corte].folga_palavra,
@@ -198,6 +208,34 @@ gaguejada_max = 1.5
 # mais; janela menor deixa passar o caso que criou esta funcao, o "como se
 # [como seja...] existisse uma tradicao".
 eco_janela = 6
+
+# QUAL copia da retomada sai (`retomada_antes`). Quando o trecho recuperado
+# repete pelo menos `retomada_min` palavras do que vem colado ANTES dele,
+# ele e a frase refeita - a boa - e quem sai e a tentativa de antes.
+# Abaixo disso ele e cacoete e sai ele, como sempre saiu. Palavra de 7
+# letras ou mais vale por duas.
+#
+# MEDIDO (04/10/2026) nas 78 retomadas colapsadas dos 22 videos editados a
+# mao (os de `pronto` no modo cartas). Antes, saia sempre o recuperado: o
+# Rafael desfez 30 delas, 69 s de fala, quase sempre cortando a copia de
+# antes no lugar. Acertos contra o que ele deixou:
+#   sempre corta o recuperado (antigo)   32 de 78
+#   retomada_min = 3                     51 de 78
+#   retomada_min = 2                     60 de 78
+# (com o filtro de rabisco de `_rabisco`: o recuperado que gagueja por
+# dentro - "que e o elemento que e o..." - nao e a frase refeita.) Nos 7
+# casos em que a regra nova erra onde a antiga acertava, 6 sao repeticao
+# identica ("esse aspecto" / "esse aspecto"): ficar com uma ou com outra
+# soa igual.
+retomada_min = 2
+# Duas leituras do mesmo som raramente saem identicas: "movimento" e
+# "monumento", "sincronicidade" e "sincronosidade". Acima desta semelhanca
+# (difflib, palavras de 5 letras ou mais) contam como a mesma palavra.
+# 0,75 pega os dois exemplos acima (0,78 e 0,86). Pega tambem
+# "processo"/"progresso" (0,82): o risco existe, e o que o segura e que
+# uma palavra parecida sozinha nao basta - a corrida inteira tem de casar,
+# na ordem, colada no trecho recuperado.
+retomada_parecida = 0.75
 
 [contagem]
 # A contagem corrida de cartas ("As, dois, tres... dez") tem que correr

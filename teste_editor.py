@@ -32,6 +32,7 @@ import urllib.request
 from pathlib import Path
 
 import editor
+import pastas
 import tarocut as tc
 
 CALIBRACAO = ["IMG_0246", "IMG_0247", "IMG_0248"]
@@ -388,9 +389,13 @@ def roda(video):
                     for p, (a, _) in zip(ivp, iv0)),
             f"a tabela dos dois relogios que vai para a tela ({len(ivp)} "
             f"entradas) e a mesma do `_mapa_previa`")
-        diz(S._m4a.name == f"{video}_previa.m4a"
-            and S._m4a.parent == S.src.parent,
-            f"o editor procura a previa onde o `audio` grava ({S._m4a.name})")
+        #     E onde o `audio` grava nao e a pasta dos brutos: la ela vira
+        #     item da lista de entrada da janela (ver pastas.py).
+        diz(S._m4a == pastas.onde(S.meta["src"], video, pastas.AUDIO)
+            and S._m4a.name == f"{video}_previa.m4a"
+            and S._m4a.parent != S.src.parent,
+            f"o editor procura a previa onde o `audio` grava, fora da pasta "
+            f"dos brutos ({S._m4a.parent.name}\\{S._m4a.name})")
 
         # 13. .m4a QUE NAO E MAIS ESTE CORTE. Mesmo numero da fase 0 do
         #     `/anotar` (0,15 s): abaixo disso e o padding do AAC, acima e

@@ -56,6 +56,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
+import pastas
 import tarocut as tc
 
 ROOT = Path(__file__).resolve().parent
@@ -110,10 +111,13 @@ class Sessao:
             sys.exit(f"[editor] falta {self.wav}. Rode 'tarocut.py run' antes.")
         with __import__("wave").open(str(self.wav), "rb") as w:
             self.sr = w.getframerate()
-        # O .m4a que o `audio` grava ao lado do video - o arquivo que ele
+        # O .m4a que o `audio` grava em export/prévias - o arquivo que ele
         # OUVE, e cujo relogio ele usa para anotar. Saber se esse arquivo
         # ainda e este corte faz parte de mostrar o corte (`previa_no_disco`).
-        self._m4a = self.src.parent / f"{self.nome}_previa.m4a"
+        # Pela MESMA funcao que o `audio` usa para gravar: com o caminho
+        # escrito aqui a mao, mudar a pasta da previa deixaria o editor
+        # olhando a velha e dizendo, calado, que nao ha .m4a nenhum.
+        self._m4a = pastas.onde(self.src, self.nome, pastas.AUDIO)
         self._m4a_chave, self._m4a_dur = None, None
         # o selo do stream.json COMO ESTA NO DISCO. O `_base` ja aplicou o
         # transcript.md por cima do fluxo, entao calcular o selo daqui
@@ -376,7 +380,7 @@ class Sessao:
         inteiro - MEDIDO no IMG_0248: 'Então essa não é o que é que é...'
         com 800 caracteres, num title de tooltip. Depois das primeiras
         palavras ele nao diz mais nada que a propria recusa nao diga."""
-        bruto = " ".join((bruto or "").split())
+        bruto = tc.encurta_alongamento(" ".join((bruto or "").split()))
         return bruto if len(bruto) <= 80 else bruto[:79].rstrip() + "…"
 
     @staticmethod
@@ -1110,7 +1114,11 @@ class Sessao:
             # `misto` cujo texto foi recusado (o analyze trata recusa como
             # silencio). MEDIDO no IMG_0247: 26 tracinhos de pausa e 34 de
             # voz, indistinguiveis, e o title dizia "sem som aqui" nos 34.
-            pec.append({"i": i, "txt": t["t"] if texto else "",
+            # `encurta_alongamento`: os stream.json de antes de 04/10/2026
+            # ainda trazem o "ééé..." de 200 letras, e uma palavra so
+            # passava da borda da tela.
+            pec.append({"i": i,
+                        "txt": tc.encurta_alongamento(t["t"]) if texto else "",
                         "vao": not texto, "s": round(s, 3), "e": round(e, 3),
                         "vivo": vivo, "why": t.get("why", ""),
                         "voz": self._voz[i],

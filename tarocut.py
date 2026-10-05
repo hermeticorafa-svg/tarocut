@@ -22,6 +22,8 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
 
 import tomllib
 
+import pastas
+
 ROOT = Path(__file__).resolve().parent
 WORK = ROOT / "work"
 # midias avulsas (fotos, graficos - NAO cartas do baralho) que o roteiro
@@ -86,6 +88,7 @@ def chave_ac(s):
 # ===========================================================================
 
 RE_ALONGAMENTO = re.compile(r"(.)\1{2,}")
+RE_LETRA_LONGA = re.compile(r"([^\W\d_])\1{3,}")
 
 
 def eh_alongada(txt):
@@ -106,6 +109,25 @@ def eh_alongada(txt):
     voltariam no IMG_0248 mudam um video de calibracao - isso quer ouvido,
     nao regex."""
     return bool(RE_ALONGAMENTO.search(sem_acento(txt).lower()))
+
+
+def encurta_alongamento(txt):
+    """Corrida de letra repetida vira TRES letras: "Eeeeee…" de 889
+    caracteres vira "Eee…".
+
+    E so a forma de ESCREVER, e existe por causa da tela. O Whisper
+    escreve uma vogal sustentada repetindo a letra ate o teto de tokens
+    dele - 889 caracteres no re-transcrito de lacuna, 200 no "ééé" de
+    20,5 s do "as de espadas" -, e esse texto ia inteiro para o
+    transcript.md, para o editor e para a legenda, onde uma palavra so
+    passava da borda da tela (achado do Rafael, 04/10/2026). Tres letras
+    continuam dizendo "isto e alongado" para `eh_alongada` e para o
+    lexico de cacoetes ("ééé", "eee", "queee"), e `letras_uma_vez` ja
+    contava a corrida como um som so.
+
+    So LETRA: a corrida de digito e numero ("10000"), e a de ponto e
+    reticencia."""
+    return RE_LETRA_LONGA.sub(lambda m: m.group(1) * 3, str(txt))
 
 
 def letras_faladas(txt):
@@ -163,9 +185,19 @@ def densidade_fala(txt, dur):
 
 
 def limiar_voz(db, offset_db):
-    """Piso de ruido do proprio audio + folga = limiar de fala, em dB."""
+    """Piso de ruido do proprio audio + folga = limiar de fala, em dB.
+
+    O piso e o da SALA, e audio zerado nao e sala. MEDIDO no "modulo de
+    tiragens 2": os ultimos 614 s (36% do arquivo) sao o int16 parado em
+    1 passo, -91,0 dB constante, e o percentil 10 caiu ali dentro - limiar
+    de -108 dB, e 100% da aula passava por voz (56% com o piso da sala).
+    Quadro de ate 1 passo do int16 nao e microfone nenhum, entao nao entra
+    na conta. Nao e numero de gosto, e o degrau do formato: a sala mais
+    quieta dos 28 outros videos de work/ fica em -89 dB, e nenhum deles
+    tem um quadro sequer nessa faixa - para eles o limiar sai identico."""
     import numpy as np
-    return float(np.percentile(db, 10)) + offset_db
+    sala = db[db > 20 * np.log10(1 / 32768)]
+    return float(np.percentile(sala if len(sala) else db, 10)) + offset_db
 
 
 def mede_voz(db, hop, a, b, limiar):
@@ -413,7 +445,20 @@ def corrige_frases(words, frase):
 
 def initial_prompt():
     """Prompt que (a) ancora vocabulario e (b) sinaliza ao Whisper que
-    disfluencias devem ser transcritas, nao limpas."""
+    disfluencias devem ser transcritas, nao limpas.
+
+    Testado e RECUSADO (04/10/2026): tirar daqui o exemplo "é... éé...".
+    O exemplo e o que poe o Whisper em laco por cima de fala - no "as de
+    espadas" saiu "Na sua forma mais... ééééé..." (200 letras) sobre 25 s
+    de aula, e a mesma passagem sem o exemplo sai inteira e certa. Mas
+    MEDIDO pela cadeia toda contra os videos editados a mao (mesmo codigo,
+    4 videos), o prompt sem o exemplo e com o nome da carta saiu PIOR:
+    46% de cartoes intocados contra 48%, 19 s a mais de sobra, erro de
+    palavra de 11,7% para 14,7%. O laco acontece em 3 de ~60 videos e quem
+    o resolve hoje e o `_texto_nao_cabe`, depois do fato. O Whisper
+    `large-v3-turbo` tambem foi medido e perdeu (38% de cartoes): escreve
+    "tá"/"pra" melhor, mas limpa as retomadas que este programa precisa
+    ver para cortar. Quem quiser tentar de novo, meca pela cadeia toda."""
     canon, _, _ = carrega_termos()
     vocab = ", ".join(canon[:30])
     return (f"Aula sobre tarô. Vocabulário: {vocab}. "
@@ -517,6 +562,70 @@ def envelope(wav_path, hop=0.02):
     db = 20 * np.log10(np.sqrt((fr ** 2).mean(axis=1) + 1e-12))
     return db, hop, len(pcm) / sr
 
+
+def encolhe_ao_som(words, voz, hop, C, med=None):
+    """Tira da palavra o silencio que ficou colado na borda dela.
+
+    A palavra que o alinhador RECUSA (`align_rejeitado`: deriva, score,
+    ordem) volta para o tempo do Whisper, e o Whisper estica a palavra por
+    cima da pausa vizinha: "Entao," do "5 de copas" saiu com 0,96 s, dos
+    quais 0,6 s de silencio depois da palavra. Silencio dentro de palavra
+    nao e pausa para ninguem - nem para o `analyze`, que so mede lacuna
+    ENTRE palavras, nem para o `pausa_alvo`, que so encurta token de pausa.
+    Ele chegava inteiro ao video.
+
+    MEDIDO (04/10/2026) nas 52.217 palavras dos ~60 fluxos de work/: 445
+    palavras com 0,3 s ou mais de silencio no fim (366 s) e 129 no comeco
+    (97 s) - 98% delas recusadas pelo alinhador, quase todas entre 0,7 e
+    0,9 s. Nos 40 videos preparados, o silencio de 0,7 s ou mais que
+    SOBRAVA no corte morava dentro de palavra em 106 de 150 casos.
+
+    Aqui a borda muda maior que `[silencio].borda_muda` sai da palavra, e
+    o vao que ela vira passa pelas MESMAS regras de qualquer vao: abaixo de
+    `pausa_intocavel` e respiro e fica, acima vira pausa e e encurtada. A
+    palavra guarda `folga_palavra` do silencio de cada lado - e o erro de
+    fronteira medido do alinhador, e cobre o "s" final que fica abaixo do
+    limiar de voz.
+
+    Palavra INTEIRA sem voz (7 em 52.217) fica como esta: ela esta no lugar
+    errado, e encolher ao som nao tem para onde encolher.
+
+    Palavra ARRASTADA tambem fica como esta, e isso foi medido do jeito
+    ruim. A poda de cauda (`marca_arrastadas`) ja corta, de uma vez, o
+    arrasto E o silencio colado nele ("daaas" + pausa). Encolhendo antes,
+    a palavra deixava de parecer arrastada, a poda nao acontecia, e o vao
+    que sobrava, menor que `pausa_intocavel`, ficava inteiro: nos 7
+    primeiros videos editados isso devolveu ao corte 6 s de arrasto que o
+    Rafael tinha tirado. `med` e o ritmo do video medido ANTES de
+    encolher, o mesmo que a poda vai usar."""
+    X = C["silencio"]["borda_muda"]
+    folga = C["corte"]["folga_palavra"]
+    ca = C["arrastada"]
+    n = 0
+    for w in words:
+        dur = w["e"] - w["s"]
+        if (med is not None and dur >= ca["min_dur"]
+                and dur >= med * letras_faladas(w["w"]) * ca["fator"]):
+            continue            # e da poda de cauda (ver acima)
+        a, b = int(w["s"] / hop), int(w["e"] / hop)
+        seg = voz[a:b]
+        if len(seg) < 2 or not seg.any():
+            continue
+        ini = int(seg.argmax()) * hop             # primeiro quadro com voz
+        fim = int(seg[::-1].argmax()) * hop       # quadros mudos no fim
+        s, e = w["s"], w["e"]
+        if ini >= X:
+            s = round(w["s"] + ini - folga, 3)
+        if fim >= X:
+            e = round(w["e"] - fim + folga, 3)
+        if (s, e) != (w["s"], w["e"]) and e > s:
+            # campo extra, como `align_rejeitado`: o tempo de antes fica
+            # gravado para quem quiser saber o que foi tirado e de onde.
+            w["encolhida"] = [w["s"], w["e"]]
+            w["s"], w["e"] = s, e
+            n += 1
+    return n
+
 # ------------------------------------------------- guardas anti-alucinacao
 
 HALLU = [r"^tchau", r"obrigad", r"legenda", r"amara\.org", r"inscreva",
@@ -546,7 +655,7 @@ def alucinou(txt, dur, logprob, c):
 
 # --------------------------------------------------- marcacao: cacoetes
 
-def resolve_suspeitos(stream, escuta, ch, sempre, db, hop, limiar):
+def resolve_suspeitos(stream, escuta, ch, sempre, db, hop, limiar, C=None):
     """Descobre o que ha nos trechos de duracao impossivel.
 
     Quando o Whisper deixa de transcrever alguma coisa, o alinhador nao tem
@@ -557,17 +666,32 @@ def resolve_suspeitos(stream, escuta, ch, sempre, db, hop, limiar):
 
     Corta quando o que aparece repete o que vem depois (o Whisper colapsou
     uma repeticao) ou parece cacoete. Se for conteudo novo, PRESERVA - fala
-    perdida nao pode virar corte silencioso."""
+    perdida nao pode virar corte silencioso.
+
+    TRECHO LONGO que fica volta PARTIDO (`C` presente e o trecho com
+    `[revisao].corte_por_texto_min` ou mais). E o caso do Whisper preso num
+    "ééé..." por cima de fala (ver `_texto_nao_cabe`): no "as de espadas"
+    sao 20 s de aula, com uma pausa de 5 s no meio. Um token so seria
+    indivisivel - a pausa ficaria inteira no video - e as regras de texto
+    que correm depois, calibradas em trecho de 1 a 2 s, cortariam o bloco
+    inteiro por uma palavra repetida. E o mesmo problema da ponta do video,
+    e a mesma resposta: `parte_ponta` + `poe_texto_na_ponta`, e cada pedaco
+    de fala sai marcado para `protege_pontas`."""
     novos, n = [], 0
     for t in stream:
         if not t.get("suspeito"):
             novos.append(t)
             continue
         a, b = t["suspeito"]
-        txt, lp, _ = escuta(a, b)
+        txt, lp, fatias = escuta(a, b)
         mot = alucinou(txt, b - a, lp, ch)
         t["e"] = a
         t.pop("suspeito", None)
+        if eh_alongada(t["t"]) or chave_ac(t["t"]) in sempre:
+            # a cabeca de um "ééé..." que o Whisper esticou por cima de
+            # fala (ver `_texto_nao_cabe`): o que sobra dela e o proprio
+            # cacoete, e sai como sairia sozinho.
+            t["cut"], t["why"] = True, "alongamento"
         novos.append(t)
         if mot:
             # O Whisper nao ter lido NAO e prova de que nao ha nada. Antes
@@ -582,8 +706,32 @@ def resolve_suspeitos(stream, escuta, ch, sempre, db, hop, limiar):
                 rot, cortar, why = ("hesitação", True,
                                     f"voz sem texto {b-a:.1f}s")
         else:
-            cortar, why = classifica_fala(txt, b - a, sempre, ch)
-            rot = txt        # o eco e decidido depois, por marca_ecos
+            longo = (C is not None
+                     and b - a >= C["revisao"]["corte_por_texto_min"])
+            # trecho longo tem as pausas da fala dentro: a densidade se
+            # mede contra o tempo FALADO, como na ponta (ver `ponta`)
+            falado = (b - a) * (mede_voz(db, hop, a, b, limiar)[0]
+                                if longo else 1.0)
+            cortar, why = classifica_fala(txt, falado, sempre, ch)
+            rot = encurta_alongamento(txt)   # o eco e decidido depois, por marca_ecos
+            if longo and not cortar:
+                l = {"s": a, "e": b, "texto": rot}
+                for tipo, pa, pb, tx in poe_texto_na_ponta(
+                        parte_ponta(l, db, hop, limiar, C), fatias):
+                    if tipo == "sil":
+                        novos.append({"k": "silencio", "t": "",
+                                      "s": round(pa, 3), "e": round(pb, 3),
+                                      "cut": True,
+                                      "why": f"pausa {pb - pa:.1f}s"})
+                    else:
+                        novos.append({"k": "hesitacao",
+                                      "t": encurta_alongamento(tx)
+                                      or f"?? {pb - pa:.1f}s",
+                                      "s": round(pa, 3), "e": round(pb, 3),
+                                      "cut": False, "why": why,
+                                      "ponta": "fala longa"})
+                n += 1
+                continue
         novo = {"k": "hesitacao", "t": rot, "s": round(a, 3),
                 "e": round(b, 3), "cut": cortar, "why": why}
         if mot:
@@ -595,7 +743,7 @@ def resolve_suspeitos(stream, escuta, ch, sempre, db, hop, limiar):
             # tokens nascem DEPOIS de elas serem medidas e nao tinham onde.
             # Nao entra no `selo_stream` (so k/s/e/cut), entao nao invalida
             # transcript.md nenhum.
-            novo["ouviu"], novo["recusa"] = txt, mot
+            novo["ouviu"], novo["recusa"] = encurta_alongamento(txt), mot
         novos.append(novo)
         n += 1
     if n:
@@ -661,7 +809,99 @@ def marca_instrucoes(stream, marcadores, ci):
     return n
 
 
-def marca_ecos(stream, janela):
+def _parecida(a, b, razao):
+    """Duas chaves que sao a MESMA palavra dita duas vezes, do jeito que o
+    Whisper as escreve: igual, uma dentro da outra pela ponta ("tao" e
+    "estao", "com" e "como", "esta" e "estar") ou quase igual
+    ("movimento" e "monumento", "sincronicidade" e "sincronosidade").
+    Duas leituras do mesmo som raramente saem identicas, e a retomada que
+    so casasse por igualdade perdia justamente as que ela existe para
+    achar."""
+    if a == b:
+        return True
+    if min(len(a), len(b)) >= 3 and (a.startswith(b) or b.startswith(a)
+                                     or a.endswith(b) or b.endswith(a)):
+        return True
+    import difflib
+    return (min(len(a), len(b)) >= 5
+            and difflib.SequenceMatcher(None, a, b).ratio() >= razao)
+
+
+# cacoete escrito com pontuacao colada ("É...", "é,", "E,") dentro do texto
+# recuperado: e a marca de que o PROPRIO trecho e uma tentativa baguncada,
+# e nao a frase refeita.
+HES_PONTUADA = {"e", "é", "eh", "ah", "ahn", "hum", "hm", "ã", "ãh", "uh", "oh"}
+
+
+def _rabisco(txt):
+    """O trecho recuperado e ele mesmo uma tentativa baguncada? Duas
+    reticencias ou mais ("essa... essa... que representa..."), um
+    cacoete com pontuacao colada ("é uma, é, do que a..."), ou o mesmo par
+    de palavras duas vezes dentro dele ("que é o limite, que é...") - ela
+    gaguejando DENTRO do trecho, que entao nao e a frase refeita."""
+    if txt.count("...") + txt.count("…") >= 2:
+        return True
+    ks = [chave(w) for w in txt.split() if chave(w)]
+    pares = list(zip(ks, ks[1:]))
+    if len(pares) != len(set(pares)):
+        return True
+    for w in txt.split():
+        base = w.lower().rstrip(".,!?;:…")
+        if base in HES_PONTUADA and base != w.lower():
+            return True
+    return False
+
+
+def retomada_antes(stream, i, cc):
+    """O trecho recuperado `stream[i]` e a frase REFEITA de algo que acabou
+    de ser dito? -> lista dos indices da tentativa anterior, ou [].
+
+    Mede quanto do texto recuperado repete, NA ORDEM, uma corrida de
+    palavras que termina colada nele. O trecho pode abrir com ate 3
+    palavras novas ("Quando a gente esta, mas o ponto e..." depois de
+    "mas o ponto e,") e duas palavras podem divergir no caminho ("traz de
+    um lugar subjacente" contra "traz de uma forma subjacente"). Palavra
+    longa (7 letras ou mais) vale por duas: "elaborar" e "estrategica"
+    repetidas sao a frase, "entao" e "sobre" repetidas sao cacoete."""
+    t = stream[i]
+    if _rabisco(t["t"]):
+        return []
+    rk = [chave(w) for w in t["t"].split() if chave(w)]
+    antes = [k for k in range(max(0, i - cc["eco_janela"]), i)
+             if stream[k]["k"] == "palavra" and chave(stream[k]["t"])]
+    ak = [chave(stream[k]["t"]) for k in antes]
+    if not rk or not ak:
+        return []
+    razao = cc["retomada_parecida"]
+    melhor, j_ini = 0, None
+    for i0 in range(min(4, len(rk))):
+        for j0 in range(len(ak)):
+            if not _parecida(ak[j0], rk[i0], razao):
+                continue
+            a, b, m, salto = i0, j0, 0, 0
+            while a < len(rk) and b < len(ak):
+                if _parecida(rk[a], ak[b], razao):
+                    m += 2 if len(rk[a]) >= 7 else 1
+                    a, b = a + 1, b + 1
+                elif salto < 2 and b + 1 < len(ak) and _parecida(rk[a], ak[b + 1], razao):
+                    b, salto = b + 1, salto + 1
+                elif salto < 2 and a + 1 < len(rk) and _parecida(rk[a + 1], ak[b], razao):
+                    a, salto = a + 1, salto + 1
+                elif salto < 2:
+                    a, b, salto = a + 1, b + 1, salto + 1
+                else:
+                    break
+            # a tentativa abandonada e o que vem IMEDIATAMENTE antes da
+            # retomada: a corrida tem que chegar ate a ultima palavra (ou a
+            # penultima) antes do trecho recuperado.
+            if len(ak) - b <= 1 and m > melhor:
+                melhor, j_ini = m, j0
+    if melhor < cc["retomada_min"]:
+        return []
+    return [k for k in antes[j_ini:] if not stream[k].get("prot")]
+
+
+def marca_ecos(stream, cc):
     """Trecho recuperado que REPETE uma palavra vizinha e retomada.
 
     Passa sobre o fluxo inteiro, uma vez, para todo trecho de texto
@@ -669,21 +909,66 @@ def marca_ecos(stream, janela):
     duracao impossivel. A regra ja existiu so num dos dois caminhos, e pelo
     outro escapava "como se [como seja...] existisse uma tradicao".
 
-    `janela` (quantos tokens de cada lado contam como "vizinho") vem do
-    config: e ela que decide se um trecho recuperado sai ou fica, e numero
-    que decide corte nao mora no codigo."""
+    `cc` e o bloco [cacoete] do config: `eco_janela` (quantos tokens de cada
+    lado contam como "vizinho") e os dois numeros de `retomada_antes`. Sao
+    eles que decidem se um trecho recuperado sai ou fica, e numero que
+    decide corte nao mora no codigo.
+
+    QUAL DAS DUAS COPIAS SAI. Ate 04/10/2026 saia sempre o trecho
+    recuperado, e isso estava ao contrario na metade dos casos. Quando ela
+    refaz uma frase ("que nao esta... que nao esta dominando"), o Whisper
+    escreve a frase UMA vez; o alinhador encaixa essas palavras na PRIMEIRA
+    tentativa, a abandonada, e a segunda - a boa, a que emenda na
+    continuacao - sobra como audio sem texto, e e ELA que o
+    `resolve_suspeitos` recupera. Cortar o recuperado era cortar a versao
+    final e deixar a tentativa tocando.
+
+    MEDIDO nas 78 retomadas colapsadas dos 22 videos editados a mao: o
+    Rafael desfez 30 (69 s de fala), e em quase todas cortou a copia de
+    ANTES no lugar. A regra nova - quando o recuperado repete pelo menos
+    `retomada_min` palavras do que vem colado antes dele, fica o
+    recuperado e sai a copia anterior - acerta 60 das 78, contra 32 da
+    antiga. Dos 7 casos em que ela erra onde a antiga acertava, 6 sao
+    repeticao identica ("esse aspecto" /
+    "esse aspecto"), em que ficar com uma ou outra soa igual.
+
+    Quando o recuperado repete so UMA palavra, ou o que vem DEPOIS dele,
+    ou e ele mesmo um rabisco ("É... sobre...", "essa... essa..."), nada
+    muda: ele e o cacoete e sai, como sempre saiu."""
     n = 0
+    janela = cc["eco_janela"]
     for i, t in enumerate(stream):
         if t["k"] != "hesitacao" or t["cut"] or not chave(t["t"]):
+            continue
+        if t.get("ponta"):
+            # fala recuperada longa (ponta do video, ou o "ééé..." de 20 s
+            # que o `resolve_suspeitos` partiu): com dezenas de palavras,
+            # acertar uma das 6 vizinhas e quase certo. `protege_pontas` a
+            # devolveria de qualquer jeito; aqui ela nem leva a tentativa
+            # de antes junto.
             continue
         viz = {chave(x["t"])
                for x in stream[max(0, i - janela):i + janela + 1]
                if x["k"] == "palavra" and chave(x["t"])}
         pals = [p for p in chave(t["t"]).split() if len(p) > 2]
-        if any(p in viz for p in pals):
-            t["cut"] = True
-            t["why"] = f"retomada colapsada: {t['t'][:26]}"
-            n += 1
+        if not any(p in viz for p in pals):
+            continue
+        antes = retomada_antes(stream, i, cc)
+        if antes:
+            velho = " ".join(stream[k]["t"] for k in antes)
+            for k in antes:
+                if not stream[k]["cut"]:
+                    n += 1
+                stream[k]["cut"] = True
+                stream[k]["why"] = f"tentativa antes da retomada: {t['t'][:26]}"
+            # campo extra, fora do `selo_stream` (so k/s/e/cut): e o que
+            # deixa a pendencia dizer QUAL copia saiu, para o passe de
+            # julgamento conferir a troca em vez de redescobri-la.
+            t["retomada_de"] = velho
+            continue
+        t["cut"] = True
+        t["why"] = f"retomada colapsada: {t['t'][:26]}"
+        n += 1
     return n
 
 
@@ -1202,6 +1487,18 @@ def aplica_anotacoes(stream, anot):
 
 
 
+def _texto_nao_cabe(t, med, C):
+    """Token que uma regra de TEXTO cortou num tempo que o texto nao
+    explica. Mesma pergunta - e mesmos numeros - da pendencia `texto nao
+    explica o tempo` (`[revisao].corte_por_texto_min` e `[arrastada].fator`),
+    feita antes de o corte virar fato."""
+    if med is None or not str(t.get("why", "")).startswith(CORTE_POR_TEXTO):
+        return False
+    dur = t["e"] - t["s"]
+    return (dur >= C["revisao"]["corte_por_texto_min"]
+            and dur >= med * letras_uma_vez(t["t"]) * C["arrastada"]["fator"])
+
+
 def marca_arrastadas(stream, sempre, C):
     """Alongamento detectado por DURACAO, nao por letra repetida.
 
@@ -1220,6 +1517,28 @@ def marca_arrastadas(stream, sempre, C):
     pal = [t for t in stream if t["k"] == "palavra" and chave(t["t"])]
     n = 0
     for t in pal:
+        if t["cut"] and _texto_nao_cabe(t, med, C):
+            # Cortado por TEXTO ("éé..." de alongamento, cacoete do lexico)
+            # num tempo que o texto nao explica: e o Whisper preso num laco
+            # por cima de fala de verdade. MEDIDO no "as de espadas": um
+            # "éé..." de 200 letras em 20,5 s, e por baixo dele "na sua
+            # forma mais profunda, mais potente. Entao ela fala do
+            # intelecto..." - transcrito inteiro quando o trecho e lido
+            # sozinho, sem o prompt. Tambem no "9 de espadas" (26,4 s) e
+            # na "rainha de copas" (15,6 s). Em vez de cortar no escuro, o
+            # trecho vai para a MESMA re-transcricao isolada das outras
+            # duracoes impossiveis, e o `resolve_suspeitos` decide pelo
+            # que se ouvir ali. A pendencia `texto nao explica o tempo`
+            # continua existindo para o que ainda sair por texto.
+            esperado = med * letras_uma_vez(t["t"])
+            t["cut"] = False
+            t["suspeito"] = [round(t["s"] + esperado * ca["manter"], 3),
+                             round(t["e"], 3)]
+            t["why"] = (f"duracao impossivel ({(t['e'] - t['s']) / esperado:.0f}x): "
+                        f"o texto {t['t'][:12]!r} nao explica "
+                        f"{t['e'] - t['s']:.1f}s")
+            n += 1
+            continue
         if t["cut"] or t.get("prot"):
             continue
         L = letras_faladas(t["t"])
@@ -1575,12 +1894,66 @@ def marca_tentativas(stream, cadeias):
 
 # ------------------------------------------------------------------ analyze
 
+def edicao_a_mao(d):
+    """O que, neste video, uma pessoa ja decidiu no editor e que um
+    `analyze` novo deixaria sem chao. -> lista de motivos, vazia se nada.
+
+    O `analyze` reescreve o `stream.json` inteiro, sempre, e nao e
+    reproduzivel. Tudo o que o editor guarda POR PALAVRA (`montagem.json`
+    `tokens`, `correcoes.json`) aponta para indice de token, e o
+    `confere_*` recusa a partir dai; a legenda reescrita (`legendas.json`)
+    casa pelo tempo do cartao, que muda junto. Nada se perde calado - mas
+    o video para de exportar ate alguem refazer o trabalho, e para quem
+    editou isso E perder o trabalho (pedido do Rafael, 04/10/2026: "nao
+    me faca perder o que eu ja editei").
+
+    Os trechos de TEMPO do `montagem.json` (`cortes`, `restauros`) nao
+    entram: sobrevivem a re-analise por construcao, e o proprio passe de
+    julgamento os escreve no meio do laco de `analyze --force`."""
+    motivos = []
+
+    def itens(nome, chave):
+        p = d / nome
+        if not p.exists():
+            return 0
+        try:
+            return len(jload(p).get(chave) or [])
+        except Exception:
+            return 1          # ilegivel tambem e trabalho de alguem
+    if itens("montagem.json", "tokens"):
+        motivos.append(f"{itens('montagem.json', 'tokens')} palavras "
+                       f"decididas no editor (montagem.json)")
+    if itens("correcoes.json", "itens"):
+        motivos.append(f"{itens('correcoes.json', 'itens')} correcoes de "
+                       f"texto (correcoes.json)")
+    if itens("legendas.json", "itens"):
+        motivos.append(f"{itens('legendas.json', 'itens')} legendas "
+                       f"reescritas (legendas.json)")
+    rot = d / "cartas-roteiro.json"
+    if rot.exists():
+        try:
+            if jload(rot).get("pronto"):
+                motivos.append("marcado 'pronto para exportacao' no modo "
+                               "cartas")
+        except Exception:
+            pass
+    return motivos
+
+
 def cmd_analyze(a):
     import numpy as np
     from faster_whisper import WhisperModel
     C = cfg()
     cs, ch, cw = C["silencio"], C["hesitacao"], C["whisper"]
     d = wdir(a.video)
+    ja = edicao_a_mao(d) if (d / "stream.json").exists() else []
+    if ja and not getattr(a, "apesar_da_edicao", False):
+        sys.exit("[analyze] RECUSADO: este video ja foi editado a mao -\n    "
+                 + "\n    ".join(ja) + "\n"
+                 "Refazer a analise trocaria as palavras por baixo dessas "
+                 "decisoes, e o video pararia de exportar ate tudo ser "
+                 "refeito. Nada foi alterado. Se e isso mesmo que voce "
+                 "quer, rode `analyze` com --apesar-da-edicao.")
     words = jload(d / "words.json")["words"]
     dur_total = jload(d / "meta.json")["dur"]
     db, hop, dur_wav = envelope(d / "audio.wav")
@@ -1589,6 +1962,14 @@ def cmd_analyze(a):
     voz = db > limiar
     print(f"[analyze] limiar de fala={limiar:.1f}dB  "
           f"{100*voz.mean():.0f}% dos frames com voz", flush=True)
+    # antes de medir qualquer lacuna: o silencio que mora DENTRO de uma
+    # palavra so vira lacuna - e pausa encurtavel - se sair dela primeiro.
+    med_bruto = ritmo_mediano([{"k": "palavra", "t": w["w"], "s": w["s"],
+                                "e": w["e"]} for w in words])
+    n_enc = encolhe_ao_som(words, voz, hop, C, med_bruto)
+    if n_enc:
+        print(f"[analyze] silencio tirado da borda de {n_enc} palavras",
+              flush=True)
 
     # --- classifica lacunas -------------------------------------------
     def mede_lacuna(i, ini, fim):
@@ -1723,6 +2104,9 @@ def cmd_analyze(a):
     stream = []
 
     def add(kind, texto, s, e, cortar, motivo):
+        # a corrida de letra que o Whisper escreve por uma vogal sustentada
+        # nao passa daqui com mais de tres letras (ver `encurta_alongamento`)
+        texto = encurta_alongamento(texto)
         stream.append({"k": kind, "t": texto, "s": round(s, 3),
                        "e": round(e, 3), "cut": cortar, "why": motivo})
 
@@ -1879,16 +2263,16 @@ def cmd_analyze(a):
     if n_inst:
         print(f"[analyze] marcadores verbais de corte: {n_inst} tokens "
               f"(ela pediu para cortar)")
-    n_susp = resolve_suspeitos(stream, escuta, ch, sempre, db, hop, limiar)
+    n_susp = resolve_suspeitos(stream, escuta, ch, sempre, db, hop, limiar, C)
     if n_susp:
         print(f"[analyze] trechos de duracao impossivel resolvidos: {n_susp}")
     # o `escuta` acima escreve _clip.wav a cada trecho, e `resolve_suspeitos`
     # chama de novo depois desta linha; apagar antes dela deixava o arquivo
     # para tras em toda pasta de trabalho.
     (d / "_clip.wav").unlink(missing_ok=True)
-    n_eco = marca_ecos(stream, C["cacoete"]["eco_janela"])
+    n_eco = marca_ecos(stream, C["cacoete"])
     if n_eco:
-        print(f"[analyze] retomadas colapsadas: {n_eco}")
+        print(f"[analyze] retomadas colapsadas: {n_eco} tokens cortados")
     n_prot = protege_enumeracoes(stream, C["contagem"])
     n_esc = protege_naolidos(stream)
     n_pta = protege_pontas(stream)
@@ -4183,6 +4567,12 @@ def pendencias(st, C, vocab):
             extra = ("  <== " + ", ".join(fora) + " nao existe no "
                      "material do curso: leitura provavelmente errada"
                      if fora else "")
+            if t.get("retomada_de"):
+                # a troca que `marca_ecos` fez: a pergunta tem de dizer
+                # qual copia saiu, senao quem julga ve so a que ficou e nao
+                # tem como saber que havia escolha.
+                extra += (f"  <== retomada: ficou esta, saiu a de antes "
+                          f"{t['retomada_de'][:50]!r}")
             pergunta(i, "texto reconstruido",
                      f"{t['t']!r} ({t['e']-t['s']:.1f}s){extra}")
         # so aqui o token ancora E o trecho em questao - `proprio`. E o que
@@ -4812,8 +5202,11 @@ def cmd_audio(a):
     with open(g, "w", encoding="utf-8", newline="") as f:
         f.write("\n".join(L))
 
-    saida = Path(a.out) if a.out else (
-        Path(meta["src"]).parent / f"{Path(a.video).stem}_previa.m4a")
+    # Em export/prévias e nao ao lado do bruto: ver pastas.py. O editor
+    # procura o .m4a pela mesma funcao, para dizer quando ele envelheceu.
+    saida = Path(a.out) if a.out else pastas.onde(
+        meta["src"], Path(a.video).stem, pastas.AUDIO)
+    saida.parent.mkdir(parents=True, exist_ok=True)
     bruto = d / "_previa_bruta.wav"
     mantido = sum(y - x for x, y in iv)
     print(f"[audio] {len(iv)} trechos, {hhmmss(mantido)} de {hhmmss(dur)} "
@@ -5499,8 +5892,12 @@ def _texto_legenda(t):
     Fala recuperada de lacuna entra - e fala, e esta no video. O rotulo
     "hesitação" e o `?? N.Ns` nao entram: sao etiqueta do programa, nao
     palavra dita. E a mesma pergunta que o `pecas` do editor faz para
-    decidir se um token e vao, e pela mesma razao - ali ninguem leu nada."""
-    txt = str(t.get("t") or "").strip()
+    decidir se um token e vao, e pela mesma razao - ali ninguem leu nada.
+
+    A corrida de letra sai encurtada aqui tambem, e nao so no `analyze`:
+    os `stream.json` analisados antes de 04/10/2026 ainda trazem o "ééé"
+    de 200 letras, e uma legenda nao tem como quebrar uma palavra so."""
+    txt = encurta_alongamento(str(t.get("t") or "").strip())
     if t.get("k") == "palavra":
         return txt
     if not txt or txt == "hesitação" or txt.startswith("??"):
@@ -6139,7 +6536,11 @@ def cmd_render(a):
     gscript_sw = d / "graph.txt"
     gscript_sw.write_text(grafo(iv, C, escala, fps, hw=False), encoding="utf-8")
 
-    saida = Path(a.out) if a.out else d / f"{Path(a.video).stem}_cortado.mov"
+    # Em export/finais, junto com o do `exportar`: e o mesmo video pronto,
+    # so que sem carta - ver pastas.py.
+    saida = Path(a.out) if a.out else pastas.onde(
+        meta["src"], Path(a.video).stem, pastas.CORTADO)
+    saida.parent.mkdir(parents=True, exist_ok=True)
     # `meta["src"]`, nao `a.video`: ver a mesma nota no `cmd_audio`.
     _corta_final(d, C, meta, gscript_hw, gscript_sw, ["-i", str(meta["src"])],
                  mantido, saida, "render", len(iv))
@@ -6239,9 +6640,10 @@ def cmd_exportar(a):
     elif C["render"]["perfil"] == "1080p30":
         escala, fps = 1080, 30
 
-    saida = Path(a.out) if a.out else (
-        d / f"{stem}_previa_cartas.mp4" if a.previa
-        else Path(meta["src"]).parent / f"{stem}_final.mov")
+    # A previa em export/prévias, o final em export/finais, e o .srt ao lado
+    # de cada um (ver pastas.py).
+    saida = Path(a.out) if a.out else pastas.onde(
+        meta["src"], stem, pastas.PREVIA_CARTAS if a.previa else pastas.FINAL)
     saida.parent.mkdir(parents=True, exist_ok=True)
 
     # ---- legenda ------------------------------------------------------
@@ -6315,6 +6717,35 @@ ETAPAS = [("ingest", cmd_ingest), ("transcribe", cmd_transcribe),
           ("draft", cmd_draft), ("render", cmd_render)]
 
 
+def etapa_isolada(nome, a):
+    """Roda UMA etapa num processo Python proprio. -> codigo de saida.
+
+    O `run` rodava as cinco etapas no mesmo processo, e a maquina tem 7,9
+    GB: o Whisper do `transcribe`, o wav2vec2 do `align` e o Whisper de
+    novo no `analyze` iam se empilhando, e o `mkl_malloc` matava ora o
+    `transcribe`, ora o `analyze` - com saida diferente a cada vez, e as
+    vezes (exit 255) sem mensagem nenhuma. A receita que funcionava era
+    rodar as etapas uma a uma, a mao. Processo que termina devolve toda a
+    memoria ao sistema; e isso que esta funcao faz por quem chama.
+
+    E o codigo de saida e conferido: uma etapa que morre para a fila ali,
+    em vez de o `draft` seguinte escrever um transcript.md por cima de um
+    `stream.json` velho (visto em 01/10/2026 no "arcanos menores 2")."""
+    import os
+    cmd = [sys.executable, str(Path(__file__).resolve()), nome, str(a.video)]
+    if nome == "render":
+        if getattr(a, "ignorar_transcript", False):
+            cmd.append("--ignorar-transcript")
+    else:
+        if getattr(a, "force", False):
+            cmd.append("--force")
+        if getattr(a, "model", None):
+            cmd += ["--model", a.model]
+    env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
+    sys.stdout.flush()
+    return subprocess.run(cmd, env=env).returncode
+
+
 def cmd_lote(a):
     """Processa uma pasta inteira. Pensado para rodar de madrugada:
     'ate=draft' transcreve e analisa tudo, deixando os transcript.md
@@ -6336,17 +6767,15 @@ def cmd_lote(a):
         print(f"{'='*70}\n[lote] {i}/{len(vids)}  {v.name}\n{'='*70}",
               flush=True)
         ns = argparse.Namespace(video=str(v), force=a.force, model=a.model,
-                                out=None, dry_run=False,
                                 ignorar_transcript=a.ignorar_transcript)
-        try:
-            for _, fn in ETAPAS[:ate + 1]:
-                fn(ns)
-        except SystemExit as e:
-            print(f"[lote] FALHOU em {v.name}: {e}")
-            falhas.append(v.name)
-        except Exception as e:
-            print(f"[lote] FALHOU em {v.name}: {type(e).__name__}: {e}")
-            falhas.append(v.name)
+        # cada etapa num processo proprio: ver `etapa_isolada`
+        for nome, _ in ETAPAS[:ate + 1]:
+            rc = etapa_isolada(nome, ns)
+            if rc:
+                print(f"[lote] FALHOU em {v.name}, na etapa {nome} "
+                      f"(codigo {rc})")
+                falhas.append(v.name)
+                break
         print()
     print(f"{'='*70}\n[lote] concluido. "
           f"{len(vids)-len(falhas)}/{len(vids)} ok")
@@ -6363,6 +6792,11 @@ def main():
         p.add_argument("video")
         p.add_argument("--force", action="store_true")
         p.add_argument("--model", default=None)
+        if nome == "analyze":
+            # so o `analyze` le isto, e de proposito o `run` nao repassa:
+            # quem quer refazer a analise de um video editado tem de pedir
+            # com todas as letras, uma etapa so (ver `edicao_a_mao`)
+            p.add_argument("--apesar-da-edicao", action="store_true")
         p.set_defaults(fn=fn)
     rv = sub.add_parser("revisar",
                         help="escreve revisao.txt para o passe de julgamento")
@@ -6443,8 +6877,14 @@ def main():
     p.add_argument("--model", default=None)
 
     def _todos(a):
-        for _, fn in ETAPAS[:-1]:
-            fn(a)
+        # cada etapa num processo proprio (ver `etapa_isolada`): cinco
+        # modelos empilhados no mesmo processo nao cabiam em 7,9 GB
+        for nome, _ in ETAPAS[:-1]:
+            rc = etapa_isolada(nome, a)
+            if rc:
+                sys.exit(f"[run] a etapa '{nome}' falhou (codigo {rc}). As "
+                         f"anteriores ficaram em cache: rode de novo e o "
+                         f"`run` recomeca dali.")
     p.set_defaults(fn=_todos)
 
     b = sub.add_parser("lote", help="processa uma pasta inteira")

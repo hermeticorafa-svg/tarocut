@@ -1,6 +1,6 @@
 ---
 description: Absorve as anotacoes que voce fez ouvindo o .m4a - corrige este audio e pergunta o que o programa podia ter pego sozinho
-argument-hint: <nome do .m4a em C:\Users\marip\Videos, ex. "7 de espadas_previa.m4a" - ou o nome curto do video>
+argument-hint: <nome do .m4a em C:\Users\marip\Videos\export\prévias, ex. "7 de espadas_previa.m4a" - ou o nome curto do video>
 allowed-tools: Bash(venv/Scripts/python.exe:*), Bash(grep:*), Bash(ls:*), Read, Write, Edit
 ---
 
@@ -35,8 +35,9 @@ silenciosa do mesmo defeito.
 ## Fase 0 — achar o vídeo e travar o mapa de tempo (antes de pedir nada)
 
 `$ARGUMENTS` costuma ser o nome do `.m4a` que o `audio` gerou. O `audio`
-grava em `<pasta do vídeo>\<nome>_previa.m4a`, então o caminho de volta é
-mecânico:
+grava em `<pasta do vídeo>\export\prévias\<nome>_previa.m4a` (antes de
+25/09/2026 gravava solto na pasta do vídeo, e os antigos foram movidos para
+lá), então o caminho de volta é mecânico:
 
 - tire a extensão e o sufixo `_previa` → esse é o **nome curto** (VIDEO).
   `7 de espadas_previa.m4a` → `7 de espadas`.
@@ -62,7 +63,7 @@ HH:MM:SS`. O primeiro tempo é quanto o corte de **agora** deixa. Compare
 com a duração real do `.m4a`:
 
 ```
-venv\Scripts\python.exe -c "import tarocut,subprocess,json; p=r'C:\Users\marip\Videos\<arquivo>.m4a'; r=subprocess.run([tarocut.FFPROBE,'-v','error','-show_entries','format=duration','-of','json',p],capture_output=True,text=True); print(round(float(json.loads(r.stdout)['format']['duration']),2))"
+venv\Scripts\python.exe -c "import tarocut,subprocess,json; p=r'C:\Users\marip\Videos\export\prévias\<arquivo>.m4a'; r=subprocess.run([tarocut.FFPROBE,'-v','error','-show_entries','format=duration','-of','json',p],capture_output=True,text=True); print(round(float(json.loads(r.stdout)['format']['duration']),2))"
 ```
 
 - **diferença até 0,15 s** — é o encoder. MEDIDO no IMG_0246: o `.m4a` deu

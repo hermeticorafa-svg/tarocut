@@ -29,6 +29,7 @@ mesmos comandos.
 | `tarocut.py` | tudo: CLI, pipeline, marcação, geometria do corte, render |
 | `alinhar.py` | wav2vec2 — fronteiras de palavra (o Whisper erra os tempos) |
 | `gui.py` | janela Tk; só dispara comandos e mostra estado |
+| `pastas.py` | onde cai o que se entrega: `export/prévias` e `export/finais`, dentro da pasta dos brutos. Módulo à parte porque a janela também precisa dele e não pode importar o `tarocut.py` |
 | `editor.py` | servidor do editor: a sessão, os gestos, o que a tela pergunta |
 | `editor.html` | a tela: a transcrição em cima, a onda embaixo, o motor de áudio |
 | `teste_editor.py` | as promessas do editor que quebram em silêncio |
@@ -38,12 +39,15 @@ mesmos comandos.
 | `midias/` | foto/gráfico avulso (não carta) que o roteiro à mão pode pôr na tela — `catalogo_midias()` em `tarocut.py`, não é módulo próprio |
 | `rosto.py` | onde o rosto anda — é dele que sai o reenquadramento |
 | `lexico.py` | gera `lexicon/terms.txt` a partir do livro do Yala |
+| `fila.py` | o estado da `/fila`: põe na fila, marca o próximo e confere no DISCO o que cada rodada entregou, sem acreditar no relatório dela. Só ele escreve `work/fila.json`, e ele recusa abrir um vídeo enquanto outro estiver preparando — dois `transcribe` não cabem nos 7,9 GB |
 | `.claude/commands/revisar.md` | o passe de julgamento: o que o Claude lê e o que ele tem de conferir depois |
 | `.claude/commands/preparar.md` | run + revisar + conferir + audio num comando só, pronto pro editor de texto |
+| `.claude/commands/fila.md` | vários vídeos no `/preparar`, um de cada vez, cada um num agente que começa do zero. Agente e não sessão nova da barra lateral por MEDIÇÃO: a rotina do app que abre sessão roda em modo "perguntar" e parou no primeiro comando (01/10/2026) |
 | `.claude/commands/anotar.md` | o passe do OUVIDO: absorve as anotações que o Rafael faz ouvindo o `.m4a`, e pergunta se alguma delas ensina algo ao programa |
 | `config.toml` | **todos** os números do gosto de corte |
 | `material/padroes-edicao.md` | medições contra os vídeos editados à mão |
 | `material/licoes-do-ouvido.md` | o que o ouvido do Rafael pegou e o programa não, uma linha por achado do `/anotar`. Existe para a SEGUNDA ocorrência do mesmo defeito ser reconhecida como segunda — um caso não é medição |
+| `preparar-improvements-2026-10-04.md` | em inglês, para o Rafael: o que se mediu nos 22 vídeos editados, por que o `/preparar` errava e o que mudou em 04/10/2026 |
 | `correcoes-pendentes.md` | **histórico, não pendências.** O nome mente: as 8 correções de 01/09 estão todas feitas, e o arquivo virou o registro de por que cada uma foi feita |
 
 Estado por vídeo em `work/<video>/`: `meta.json`, `audio.wav`, `words.json`,
@@ -54,8 +58,28 @@ seção por rodada), `anotacoes.json`, `respostas.json`, `montagem.json`,
 `correcoes.json`, `cartas-roteiro.json` (a carta principal, o roteiro
 escrito à mão e o checkbox "pronto para exportação" do modo cartas — a
 `gui.py` lê a mesma chave `pronto` e pinta a linha do vídeo de verde claro;
-é organização, não decide corte nenhum) e `legendas.json` (o texto de cada
-cartão que uma pessoa reescreveu).
+é organização, não decide corte nenhum), `legendas.json` (o texto de cada
+cartão que uma pessoa reescreveu) e `relatorio.md` (o relatório final do
+`/preparar` quando ele roda pela `/fila`; numa sessão comum ele fica só na
+conversa).
+
+**O que se entrega não mora em `work/` nem solto junto do bruto.** Mora em
+`export/prévias/` (o `.m4a` do `audio`, a prévia lo-res do `exportar
+--previa` e o `.srt` dela) e `export/finais/` (o `.mov` do `exportar` com o
+`.srt`, e o do `render`), dentro da pasta dos brutos. A pasta dos brutos é a
+lista de entrada da janela e do `lote`, e até 25/09/2026 o `audio` e o
+`exportar` gravavam ali: o `2 de espadas_final.mov` aparecia na janela como
+vídeo a analisar, e o `lote` o teria processado como bruto. Os 36 arquivos
+daquele dia foram movidos à mão, inclusive 5 que moravam em `work/`.
+
+Quem decide o caminho é `pastas.onde`, uma vez só — o `audio` grava por ela
+e o editor procura o `.m4a` por ela (o `previa_no_disco` ficaria calado,
+dizendo que não há prévia, se os dois discordassem). É módulo à parte por
+MEDIÇÃO, não por gosto: aberta como o `tarocut.bat` abre (`pythonw`, sem
+console), a janela tem `sys.stdout = None`, e importar o `tarocut.py` morre
+com AttributeError na linha que acerta o encoding. A exceção é o `cartas`
+(menção achada na fala), comando de laboratório que nem a janela nem o
+editor chamam: a prévia dele continua em `work/<video>/cartas_previa.mp4`.
 
 As três camadas de decisão humana empilham nesta ordem, que é a ordem em
 que foram tomadas: `transcript.md` (apagar texto) → `anotacoes.json` (o
@@ -102,6 +126,19 @@ sobrevive a `run --force` de propósito. **`respostas.json` é da mesma
 família** e vale a mesma regra: um diz o que sai, o outro diz o que a
 pessoa decidiu sobre cada pendência — inclusive as que ficam, que não
 deixam marca em lugar nenhum.
+
+**Vídeo editado à mão não se reanalisa, e o `analyze` recusa.** O
+`analyze` reescreve o `stream.json` inteiro e não é reproduzível; tudo o
+que o editor guarda por palavra (`montagem.json` `tokens`,
+`correcoes.json`) e a legenda reescrita (`legendas.json`) ficariam sem
+chão, e o vídeo pararia de exportar até alguém refazer o trabalho. Pedido
+do Rafael (04/10/2026): "não me faça perder o que eu já editei".
+`edicao_a_mao` lista o que há de decisão no vídeo, e o `analyze` recusa
+quando há — inclusive dentro do `run` e do `lote`, que de propósito não
+repassam `--apesar-da-edicao`. Os trechos de tempo do `montagem.json`
+(`cortes`/`restauros`) não contam: sobrevivem à reanálise, e o passe de
+julgamento os escreve no meio do laço de `analyze --force`. Pesquisa em
+vídeo editado se faz numa cópia fora de `work/`.
 
 **`jdump` grava trocando o arquivo, não sobrescrevendo.** `open(w)` TRUNCA
 antes de escrever: um travamento no meio — ou um `render` lendo no instante
@@ -751,6 +788,74 @@ alto do envelope" descrito no `cmd_conferir`.
 
 **`align` é etapa separada por medição:** 72% dos fins de palavra do Whisper
 caem tarde (mediana +27 ms). Cortar pelos tempos do Whisper come o "s" final.
+
+**A régua do `/preparar` são os 22 vídeos com `pronto` no modo cartas.**
+Desde 04/10/2026 a pergunta "o `/preparar` melhorou?" tem resposta medida:
+o que ele entregou (stream + anotações) contra o que o Rafael terminou
+(montagem, correções, legendas reescritas), cartão de legenda por cartão
+e segundo por segundo. Antes das mudanças daquele dia: 54% dos 1.213
+cartões intocados, 30% com 1-2 palavras mexidas, 16% com mais; 141 s de
+fala cortada que ele devolveu, 440 s mantidos que ele cortou. O passo a
+passo, para quem não programa, está em
+`preparar-improvements-2026-10-04.md`. Mudança de regra se mede contra
+essa régua, rodando o `analyze` numa cópia — nunca em `work/`. Depois das
+mudanças daquele dia (mesmos `words.json`, 22 vídeos): fala cortada que
+ele devolveu 141 → 98 s; sobra 440 → 427 s; silêncio de 0,7 s+ que fica
+48 → 35; cartões intocados 55% → 55%. O cartão não se mexe porque 40%
+deles têm erro de RECONHECIMENTO, que regra de corte não alcança.
+Cuidado ao medir: a régua foi feita corrigindo a saída do `small`, então
+ela pune qualquer transcrição que escreva diferente dele ("tá"/"está"),
+e as anotações do passe de julgamento foram escritas para a transcrição
+antiga.
+
+**Retomada colapsada: fica a REFEITA, sai a de antes.** Quando ela refaz a
+frase, o Whisper escreve uma vez só; o alinhador encaixa as palavras na
+tentativa abandonada, e a versão boa sobra como áudio sem texto que o
+`resolve_suspeitos` recupera. O `marca_ecos` cortava sempre o recuperado —
+a versão boa. MEDIDO nas 78 dos 22 vídeos editados: o Rafael desfez 30
+(69 s de fala, a maior fonte isolada de fala perdida). Hoje, quando o
+recuperado repete `[cacoete].retomada_min` palavras coladas antes dele,
+sai a cópia de antes (`retomada_antes`): 60 de 78 certas, contra 32. A
+pendência `texto reconstruido` diz qual cópia saiu, para o passe de
+julgamento confirmar a troca em vez de redescobri-la.
+
+**Silêncio dentro de palavra não é pausa para ninguém, e agora sai.**
+Palavra que o alinhador recusa volta ao tempo do Whisper, que estica a
+palavra por cima da pausa vizinha ("Então," com 0,96 s, 0,6 s de
+silêncio). O `analyze` só media lacuna ENTRE palavras, e o silêncio
+chegava inteiro ao vídeo: 574 bordas mudas em 52 mil palavras, 7,7 min,
+98% em palavra recusada; 106 dos 150 silêncios de 0,7 s+ que sobravam nos
+vídeos preparados moravam assim. `encolhe_ao_som` tira da palavra a borda
+muda maior que `[silencio].borda_muda`, antes de medir qualquer lacuna —
+o vão que sobra passa pelas regras de sempre.
+
+**O "ééééé" de 200 letras por cima de fala se resolve DEPOIS do Whisper,
+não no prompt — e isso foi medido.** O exemplo "é... éé..." do
+`initial_prompt` é o que põe o Whisper em laço: "ééé…" por cima de 25 s de
+aula no "as de espadas" (26 s no "9 de espadas", 16 s na "rainha de
+copas"), e a mesma passagem sem o exemplo sai inteira. Mas tirar o
+exemplo (e pôr o nome da carta no prompt) saiu PIOR pela cadeia toda,
+contra os editados à mão, com o mesmo código: 46% de cartões intocados
+contra 48%, 19 s a mais de sobra, erro de palavra 11,7% → 14,7%. O prompt
+ficou como era. Quem resolve o laço é o `_texto_nao_cabe`: palavra
+cortada por TEXTO num tempo que o texto não explica vai para a
+re-transcrição isolada (sem prompt) em vez de sair no escuro, e o trecho
+longo recuperado volta partido nas pausas, como a ponta do vídeo.
+`encurta_alongamento` deixa no máximo três letras repetidas em tudo o que
+vai para a tela (transcript, editor, legenda).
+
+**Testado e RECUSADO: Whisper `large-v3-turbo`.** Erra ~20% menos palavra
+por troca, mas limpa as retomadas ("de uma forma até… de uma forma até")
+que este programa precisa ver escritas para cortar, e a re-transcrição de
+lacuna fica 4x mais lenta. Pela cadeia toda, 4 vídeos: 38% de cartões
+intocados contra 48% do `small`. O modelo ficou baixado no cache do
+Hugging Face; nada o usa.
+
+**`run` e `lote` rodam cada etapa num processo próprio**
+(`etapa_isolada`). Os modelos se empilhavam no mesmo processo e o
+`mkl_malloc` matava ora o `transcribe`, ora o `analyze`; e quando o
+`analyze` morria calado o `draft` seguinte escrevia por cima de um
+`stream.json` velho. Hoje a etapa que falha para a fila ali.
 
 **Menos emendas é melhor que corte mais justo.** Cada emenda é um pulo na
 posição da cabeça dela. `minimo`, `ilha_minima` e `snap` existem para isso.

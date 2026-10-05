@@ -43,8 +43,19 @@ ERROS = {
     "se propor": ["se propô"],
 }
 
+# O "Ás" falado depressa vira "ars", "ásio", "ágil", "was" - vistos no "as
+# de paus" e no "as de espadas" (04/10/2026), e o Rafael reescreveu na
+# legenda cada um. Nenhum dos quatro e portugues antes de "de <naipe>".
+# "ar de <naipe>" fica DE FORA de proposito: "ar" e o elemento de Espadas
+# nesta aula, e "o ar de espadas" pode ser exatamente isso.
+for _n in ("Copas", "Espadas", "Ouros", "Paus"):
+    ERROS[f"Ás de {_n}"] = [f"{e} de {_n}" for e in ("ars", "ásio", "asio",
+                                                     "ágil", "agil", "was")]
+
 # Nomes de arquivo do baralho vem sem acento em alguns casos.
-ACENTO = {"A Justica": "A Justiça"}
+ACENTO = {"A Justica": "A Justiça",
+          "As de Copas": "Ás de Copas", "As de Espadas": "Ás de Espadas",
+          "As de Ouros": "Ás de Ouros", "As de Paus": "Ás de Paus"}
 
 # Rede de seguranca: uma palavra comum do portugues NUNCA pode virar
 # "erro conhecido", senao o corretor reescreve o texto inteiro. Foi o que

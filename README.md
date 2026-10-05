@@ -29,6 +29,22 @@ colar lá.
 As marcas na lista: `✎` transcript editado à mão, `★` anotações do Claude,
 `✂` ajustado no editor, `♪` prévia em áudio já gerada, `▶` já renderizado.
 
+### Onde cai o que sai
+
+Na pasta dos vídeos ficam **só os brutos** — é ela que vira a lista da
+janela. O que o tarocut entrega vai para `export\`, dentro dela:
+
+| pasta | o que tem |
+|---|---|
+| `Vídeos\export\prévias\` | o `.m4a` do áudio cortado, e a prévia lo-res com cartas (`.mp4` e o `.srt` dela) |
+| `Vídeos\export\finais\` | o vídeo pronto (`_final.mov` com o `.srt` ao lado, ou o `_cortado.mov` do render sem carta) |
+
+Na janela, **Mostrar** troca o que a lista mostra: *Vídeos brutos* (o
+padrão, e onde ela sempre abre), *Prévias* ou *Finais*. Nas duas últimas,
+duplo clique abre o arquivo, e *Abrir pasta* abre a pasta no Windows. Os
+botões de etapa só funcionam em *Vídeos brutos* — eles agem sobre o vídeo,
+não sobre o arquivo que saiu dele.
+
 ---
 
 ## O fluxo
@@ -38,6 +54,13 @@ numa janela nova do Claude Code — sobra o `transcript.md` pronto pro seu
 editor de texto. Veja `.claude/commands/preparar.md`. Os passos abaixo são
 o mesmo fluxo, um a um, para quando quiser rodar (ou entender) cada um na
 mão.
+
+Vários vídeos: `/fila rainha de copas, rei de paus` põe os vídeos numa fila
+e roda o `/preparar` em um de cada vez, cada um num agente que começa do
+zero. Abra numa conversa nova, como o `/preparar`: ela tem de ficar aberta
+até o fim, e o computador não pode dormir. `/fila` sozinho mostra a fila; `/fila o que falta` lista os
+vídeos que ainda não passaram pelo `/preparar`. Veja
+`.claude/commands/fila.md`.
 
 **1. Passada mecânica** — transcreve e propõe os cortes que dão para decidir
 sozinho: pausas, alongamentos, gaguejadas, repetição literal.
@@ -228,7 +251,8 @@ metade.
 venv\Scripts\python.exe tarocut.py audio "C:\Users\marip\Videos\IMG_0247.MOV"
 ```
 
-Gera um `.m4a` só com o áudio cortado, já normalizado. **~50 s para um vídeo
+Gera um `.m4a` só com o áudio cortado, já normalizado, em
+`Vídeos\export\prévias\`. **~50 s para um vídeo
 de 4 min, contra alguns minutos do render de vídeo** (varia com a máquina e
 o que mais está rodando nela — o `render` usa a GPU Intel por padrão), e
 3 MB em vez de 286 MB. Com `-vn` o ffmpeg nem toca no vídeo, então o `audio`
@@ -347,9 +371,10 @@ Dois botões exportam, e os dois escrevem o `.srt` junto (desmarque `.srt
 junto` se não quiser):
 
 - **prévia lo-res** — 360p/15fps com o **áudio final**. Minutos, e é ela que
-  se olha para aprovar a dança das cartas.
+  se olha para aprovar a dança das cartas. Sai em `Vídeos\export\prévias\`,
+  como `<vídeo>_previa_cartas.mp4`.
 - **vídeo final** — resolução do original, o mesmo áudio, as cartas
-  bakeadas. Sai ao lado do arquivo de origem, como `<vídeo>_final.mov`.
+  bakeadas. Sai em `Vídeos\export\finais\`, como `<vídeo>_final.mov`.
 
 Pela linha de comando é o mesmo:
 
@@ -364,7 +389,8 @@ venv\Scripts\python.exe tarocut.py exportar "C:\Users\marip\Videos\IMG_0247.MOV"
 venv\Scripts\python.exe tarocut.py render "C:\Users\marip\Videos\IMG_0247.MOV"
 ```
 
-Sai um `.mov` cortado, com o volume corrigido, pronto pro CapCut. (O
+Sai um `.mov` cortado, com o volume corrigido, pronto pro CapCut, em
+`Vídeos\export\finais\`, como `<vídeo>_cortado.mov`. (O
 `exportar` faz a mesma coisa quando o roteiro de cartas esta vazio, e
 ainda escreve o `.srt`.)
 
@@ -423,6 +449,18 @@ venv\Scripts\python.exe tarocut.py lote "C:\Users\marip\Videos" --ate render
 
 Cada etapa tem cache: rodar de novo não retranscreve. Use `--force` para
 refazer do zero.
+
+Desde 04/10/2026, duas proteções valem para o `run` e para o `lote`:
+
+- **Vídeo que você já editou no editor não é reanalisado.** Se o vídeo tem
+  palavras decididas, texto corrigido, legenda reescrita ou "pronto para
+  exportação", a etapa `analyze` recusa e diz o que está protegendo — nada
+  é alterado. Reanalisar trocaria as palavras por baixo do seu trabalho, e
+  o vídeo pararia de exportar até você refazer tudo.
+- **Cada etapa roda num processo próprio.** Antes, os modelos se
+  acumulavam na memória e a transcrição ou a análise morria no meio. Se uma
+  etapa falha, o `run` para ali e diz qual foi — rode de novo e ele
+  recomeça do ponto em que parou.
 
 ---
 

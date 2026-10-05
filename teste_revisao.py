@@ -614,6 +614,123 @@ def teste_parte_ponta():
         "nenhuma frase se perde no caminho (as tres estao la)")
 
 
+def teste_retomada():
+    """Quando ela refaz a frase, o Whisper escreve uma vez so; o alinhador
+    poe essas palavras na tentativa abandonada, e a versao BOA sobra como
+    trecho recuperado. Ate 04/10/2026 o `marca_ecos` cortava sempre o
+    recuperado - a versao boa - e deixava a tentativa tocando. Nos 22
+    videos editados a mao o Rafael desfez 30 de 78 desses cortes (69 s de
+    fala).
+
+    Os tres casos abaixo sao de verdade: "que nao esta dominando" do "7 de
+    paus" (fica o recuperado), "decisoes sobre / É... sobre..." da
+    "cavaleira de espadas" (rabisco: sai o recuperado) e "de... de uma
+    exploracao" do "3 de paus" (repete o que vem DEPOIS: e a tentativa,
+    sai o recuperado)."""
+    print()
+    print("== qual copia da retomada fica (marca_ecos)")
+    cc = tc.cfg()["cacoete"]
+
+    f = [tok("palavra", "distante,", 159.9, 160.4),
+         tok("palavra", "que", 160.4, 160.6),
+         tok("palavra", "não", 160.6, 160.9),
+         tok("palavra", "está", 160.9, 161.2),
+         tok("palavra", "dominando", 161.2, 161.9),
+         tok("hesitacao", "que não está dominando.", 161.9, 164.5, False,
+             "fala nao transcrita"),
+         tok("palavra", "a", 165.0, 165.2),
+         tok("palavra", "cena", 165.2, 165.6)]
+    tc.marca_ecos(f, cc)
+    diz(f[5]["cut"] is False,
+        "a frase refeita (recuperada) fica - e a versao boa")
+    diz(all(f[k]["cut"] for k in (1, 2, 3, 4)),
+        "a tentativa de antes sai inteira")
+    diz(f[0]["cut"] is False and f[6]["cut"] is False,
+        "e nada fora dela: 'distante,' e 'a cena' ficam")
+    diz(all(str(f[k]["why"]).startswith(tc.CORTE_POR_TEXTO)
+            for k in (1, 2, 3, 4)),
+        "o motivo do corte continua sendo de TEXTO (a pergunta 'texto nao "
+        "explica o tempo' ainda alcanca)")
+    pend = tc.pendencias(f, tc.cfg(), set())
+    diz(any(q["rot"] == "texto reconstruido" and "retomada" in q["desc"]
+            for q in pend),
+        "a troca vira pergunta, dizendo qual copia saiu")
+
+    f = [tok("palavra", "das", 145.5, 145.7),
+         tok("palavra", "decisões", 145.7, 146.2),
+         tok("palavra", "sobre", 146.2, 146.6),
+         tok("hesitacao", "É... sobre...", 146.7, 148.1, False,
+             "fala nao transcrita"),
+         tok("palavra", "o", 148.2, 148.3),
+         tok("palavra", "território", 148.3, 148.9)]
+    tc.marca_ecos(f, cc)
+    diz(f[3]["cut"] is True and not any(f[k]["cut"] for k in (0, 1, 2)),
+        "recuperado que e rabisco ('É... sobre...') sai, e o de antes fica")
+
+    f = [tok("palavra", "3", 245.4, 245.6),
+         tok("palavra", "de", 245.6, 245.7),
+         tok("palavra", "paus,", 245.7, 246.0),
+         tok("palavra", "que", 246.0, 246.2),
+         tok("palavra", "é", 246.2, 246.4),
+         tok("hesitacao", "que é o elemento que é o...", 246.4, 252.2,
+             False, "fala nao transcrita")]
+    tc.marca_ecos(f, cc)
+    diz(f[5]["cut"] is True and not any(f[k]["cut"] for k in range(5)),
+        "recuperado que gagueja por dentro ('que e ... que e') e rabisco: "
+        "sai ele, nao a copia de antes")
+
+    f = [tok("palavra", "você", 133.5, 133.8),
+         tok("hesitacao", "de... de uma exploração...", 134.5, 138.0, False,
+             "fala nao transcrita"),
+         tok("palavra", "de", 138.6, 138.7),
+         tok("palavra", "uma", 138.7, 138.9),
+         tok("palavra", "exploração", 138.9, 139.6)]
+    tc.marca_ecos(f, cc)
+    diz(f[1]["cut"] is True and not any(f[k]["cut"] for k in (0, 2, 3, 4)),
+        "recuperado que repete o que vem DEPOIS e a tentativa: sai ele")
+
+
+def teste_borda_muda():
+    """Palavra recusada pelo alinhador volta para o tempo do Whisper, que
+    estica a palavra por cima da pausa vizinha. Silencio dentro de palavra
+    nao e pausa para ninguem, e chegava inteiro ao video: nos 40 videos
+    preparados, 106 de 150 silencios de 0,7 s ou mais que sobravam no corte
+    moravam dentro de uma palavra."""
+    print()
+    print("== silencio colado na borda da palavra (encolhe_ao_som)")
+    import numpy as np
+    C = tc.cfg()
+    hop, folga = 0.02, C["corte"]["folga_palavra"]
+    voz = np.zeros(500, dtype=bool)      # 10 s
+    voz[50:70] = True                    # 1,0-1,4 s: "Entao,"
+    voz[150:160] = True                  # 3,0-3,2 s: palavra sem borda muda
+    voz[300:320] = True                  # 6,0-6,4 s: depois de 0,6 s mudos
+    ws = [{"w": "Então,", "s": 1.0, "e": 2.0},      # 0,6 s mudos no fim
+          {"w": "que", "s": 3.0, "e": 3.3},          # 0,1 s: respiro, fica
+          {"w": "frustração,", "s": 5.4, "e": 6.4},  # 0,6 s mudos no comeco
+          {"w": "está", "s": 8.0, "e": 8.6}]         # inteira sem voz
+    n = tc.encolhe_ao_som(ws, voz, hop, C)
+    diz(abs(ws[0]["e"] - (1.4 + folga)) < 1e-6 and ws[0]["s"] == 1.0,
+        f"o silencio do fim sai da palavra, menos a folga ({ws[0]['e']})")
+    diz(abs(ws[2]["s"] - (6.0 - folga)) < 1e-6 and ws[2]["e"] == 6.4,
+        f"o do comeco tambem ({ws[2]['s']})")
+    diz((ws[1]["s"], ws[1]["e"]) == (3.0, 3.3),
+        "borda muda menor que `borda_muda` nao e tocada")
+    diz((ws[3]["s"], ws[3]["e"]) == (8.0, 8.6),
+        "palavra inteira sem voz fica onde esta: nao ha para onde encolher")
+    diz(n == 2 and ws[0].get("encolhida") == [1.0, 2.0],
+        "o tempo de antes fica gravado na palavra")
+
+    # palavra ARRASTADA e da poda de cauda, que corta arrasto e silencio de
+    # uma vez; encolher antes a fazia parecer normal e os dois ficavam.
+    voz2 = np.zeros(200, dtype=bool)
+    voz2[50:90] = True                   # 1,0-1,8 s: "daaas" arrastado
+    ws2 = [{"w": "das", "s": 1.0, "e": 2.4}]   # 0,6 s mudos no fim
+    tc.encolhe_ao_som(ws2, voz2, hop, C, med=0.08)
+    diz((ws2[0]["s"], ws2[0]["e"]) == (1.0, 2.4),
+        "palavra arrastada fica inteira para a poda de cauda")
+
+
 def main():
     alvos = sys.argv[1:] or CALIBRACAO
     teste_gaguejada()
@@ -621,6 +738,8 @@ def main():
     teste_ponta()
     teste_ponta_densidade()
     teste_parte_ponta()
+    teste_retomada()
+    teste_borda_muda()
     teste_vocabulario()
     teste_respostas()
     teste_texto_explica_o_tempo()

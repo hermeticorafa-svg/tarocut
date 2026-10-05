@@ -15,11 +15,14 @@ import re
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk, filedialog, messagebox
+
+import pastas
 
 ROOT = Path(__file__).resolve().parent
 WORK = ROOT / "work"
@@ -28,10 +31,27 @@ if not PY.exists():
     PY = Path(sys.executable)
 
 EXTS = {".mov", ".mp4", ".mkv", ".m4v", ".avi"}
-# as saidas do proprio tarocut vivem na mesma pasta dos brutos: nao sao entrada
-IGNORAR = ("_cortado", "_tarocut", "_previa")
+# O que o tarocut entrega mora em export/ desde 25/09/2026 (pastas.py). Isto
+# fica para o que sobrou solto na pasta dos brutos de antes disso, ou saiu
+# por um --out: saida nao e entrada. O `_final` faltava, e o
+# "2 de espadas_final.mov" aparecia na lista como video a analisar.
+IGNORAR = ("_cortado", "_tarocut", "_previa", "_final")
 
 PASTA_PADRAO = ROOT.parent
+
+# O que a lista mostra: a pasta escolhida (os brutos, como sempre foi) ou uma
+# das pastas de export/ dentro dela. Os brutos sao o padrao e a janela sempre
+# abre neles - e so ali que os botoes de etapa tem video em que agir.
+BRUTOS = "brutos"
+MODOS = ((BRUTOS, "Vídeos brutos"), (pastas.PREVIAS, "Prévias"),
+         (pastas.FINAIS, "Finais"))
+COLS_BRUTOS = ("dur", "etapa", "corte", "marcas")
+COLS_SAIDAS = ("tipo", "quando", "tamanho")
+LEGENDA_BRUTOS = ("✎ transcript editado     ★ anotações do Claude     "
+                  "✂ ajustado no editor     ♪ prévia em áudio     "
+                  "▶ renderizado")
+LEGENDA_SAIDAS = ("duplo clique abre o arquivo     os botões de etapa "
+                  "valem em Vídeos brutos")
 
 
 # ----------------------------------------------------------------- estado
@@ -84,9 +104,13 @@ def estado(video):
         marcas += "★ "               # passe de julgamento feito
     if (d / "montagem.json").exists():
         marcas += "✂ "               # ajustado no editor
-    if (Path(video).parent / f"{Path(video).stem}_previa.m4a").exists():
+    v = Path(video)
+    if pastas.onde(v, v.stem, pastas.AUDIO).exists():
         marcas += "♪ "               # ja existe previa em audio
-    if (d / f"{Path(video).stem}_cortado.mov").exists():
+    # o `render` e o `exportar` entregam o mesmo video pronto, com e sem
+    # carta, e os dois caem em export/finais
+    if any(pastas.onde(v, v.stem, s).exists()
+           for s in (pastas.FINAL, pastas.CORTADO)):
         etapa = "renderizado"
         marcas += "▶ "
     c = d / "cuts.json"
@@ -118,6 +142,39 @@ def videos_de(pasta):
     except OSError:
         return []
     return sorted(vs, key=lambda p: p.name.lower())
+
+
+def saidas_de(pasta):
+    """Os arquivos de uma pasta de export/, por nome - o .mov e o .srt do
+    mesmo video ficam um embaixo do outro. Tudo o que estiver la, e nao so
+    o que o tarocut sabe gerar: a lista mostra a pasta como ela esta."""
+    try:
+        fs = [p for p in Path(pasta).iterdir()
+              if p.is_file() and p.name.lower() != "desktop.ini"]
+    except OSError:
+        return []
+    return sorted(fs, key=lambda p: p.name.lower())
+
+
+def tamanho(n):
+    if n < 1e6:
+        return f"{max(1, round(n / 1e3))} KB"
+    if n < 1e9:
+        return f"{n / 1e6:.0f} MB"
+    return f"{n / 1e9:.1f} GB".replace(".", ",")
+
+
+def descreve(p):
+    """(tipo, quando, tamanho) de um arquivo entregue."""
+    try:
+        st = p.stat()
+    except OSError:
+        return "", "", ""
+    ext = p.suffix.lower()
+    tipo = ("vídeo" if ext in EXTS else "áudio" if ext in (".m4a", ".wav")
+            else "legenda" if ext == ".srt" else ext.lstrip("."))
+    return (tipo, time.strftime("%d/%m/%Y %H:%M", time.localtime(st.st_mtime)),
+            tamanho(st.st_size))
 
 
 # ------------------------------------------------------------ subprocesso
@@ -205,6 +262,7 @@ class App(tk.Tk):
         self.em = tkfont.nametofont("TkDefaultFont").measure("0")
 
         self.pasta = tk.StringVar(value=str(PASTA_PADRAO))
+        self.modo = tk.StringVar(value=BRUTOS)
         self.forcar = tk.BooleanVar(value=False)
         self.status = tk.StringVar(value="pronto")
         self.fila = queue.Queue()
@@ -254,20 +312,36 @@ class App(tk.Tk):
                    ).grid(row=0, column=2, padx=6)
         ttk.Button(topo, text="Atualizar", command=self.recarrega
                    ).grid(row=0, column=3)
+        ttk.Label(topo, text="Mostrar:").grid(row=1, column=0, padx=(0, 6),
+                                              pady=(6, 0), sticky="w")
+        modos = ttk.Frame(topo)
+        modos.grid(row=1, column=1, columnspan=3, sticky="ew", pady=(6, 0))
+        for valor, texto in MODOS:
+            ttk.Radiobutton(modos, text=texto, value=valor,
+                            variable=self.modo, command=self.troca_modo
+                            ).pack(side="left", padx=(0, 12))
+        ttk.Button(modos, text="Abrir pasta", command=self.abre_pasta
+                   ).pack(side="right")
 
         # ---- lista
         quadro = ttk.Frame(self, padding=(10, 0))
         quadro.grid(row=1, column=0, sticky="nsew")
         quadro.columnconfigure(0, weight=1)
         quadro.rowconfigure(0, weight=1)
-        cols = ("dur", "etapa", "corte", "marcas")
-        self.lista = ttk.Treeview(quadro, columns=cols, show="tree headings",
+        # Um Treeview so para os dois jeitos de olhar: as colunas de um e do
+        # outro existem juntas, e `displaycolumns` escolhe quais aparecem.
+        self.lista = ttk.Treeview(quadro, columns=COLS_BRUTOS + COLS_SAIDAS,
+                                  displaycolumns=COLS_BRUTOS,
+                                  show="tree headings",
                                   selectmode="browse", height=12)
         self.lista.heading("#0", text="Vídeo")
         self.lista.heading("dur", text="Duração")
         self.lista.heading("etapa", text="Etapa")
         self.lista.heading("corte", text="Corte")
         self.lista.heading("marcas", text="")
+        self.lista.heading("tipo", text="Tipo")
+        self.lista.heading("quando", text="Gerado em")
+        self.lista.heading("tamanho", text="Tamanho")
         # largura de cada coluna medida no texto mais largo que ela mostra,
         # que e o que sobrevive a mudanca de fonte e de escala da tela
         f = tkfont.nametofont("TkDefaultFont")
@@ -283,8 +357,22 @@ class App(tk.Tk):
                           anchor="w", stretch=False)
         self.lista.column("corte", width=larg("100%"), anchor="center",
                           stretch=False)
-        self.lista.column("marcas", width=larg("✎ ★ ♪ ▶"), anchor="w",
+        # as cinco marcas juntas: a amostra tinha quatro, e o `▶` saia
+        # cortado justo no video que tem tudo feito
+        self.lista.column("marcas", width=larg("✎ ★ ✂ ♪ ▶"), anchor="w",
                           stretch=False)
+        self.lista.column("tipo", width=larg("legenda"), anchor="w",
+                          stretch=False)
+        self.lista.column("tamanho", width=larg("0000 MB"), anchor="e",
+                          stretch=False)
+        # O Treeview nao redistribui largura quando `displaycolumns` muda: as
+        # colunas das saidas somando menos que as dos brutos deixavam uma
+        # faixa vazia na direita. A data fica com a diferenca.
+        def soma(cols):
+            return sum(int(self.lista.column(c, "width")) for c in cols)
+        self.lista.column("quando", anchor="center", stretch=False, width=max(
+            larg("00/00/0000 00:00"),
+            soma(COLS_BRUTOS) - soma(("tipo", "tamanho"))))
         # mesmo verde claro que o editor pinta no checkbox do modo cartas -
         # o mesmo alerta visual dos dois lados.
         self.lista.tag_configure("pronto", background="#d9f2d4")
@@ -292,15 +380,11 @@ class App(tk.Tk):
         sb = ttk.Scrollbar(quadro, orient="vertical", command=self.lista.yview)
         sb.grid(row=0, column=1, sticky="ns")
         self.lista.configure(yscrollcommand=sb.set)
-        self.lista.bind("<Double-1>", lambda e: self.abre_transcript())
+        self.lista.bind("<Double-1>", lambda e: self.duplo_clique())
 
-        ttk.Label(quadro, foreground="#666",
-                  text="✎ transcript editado     "
-                       "★ anotações do Claude     "
-                       "✂ ajustado no editor     "
-                       "♪ prévia em áudio     "
-                       "▶ renderizado"
-                  ).grid(row=1, column=0, sticky="w", pady=(4, 0))
+        self.legenda = ttk.Label(quadro, foreground="#666",
+                                 text=LEGENDA_BRUTOS)
+        self.legenda.grid(row=1, column=0, sticky="w", pady=(4, 0))
 
         # ---- botoes
         bar = self.bar = ttk.Frame(self, padding=(10, 8))
@@ -389,20 +473,51 @@ class App(tk.Tk):
             self.pasta.set(p)
             self.recarrega()
 
+    def brutos(self):
+        return self.modo.get() == BRUTOS
+
+    def pasta_mostrada(self):
+        """A pasta que a lista mostra agora: a escolhida, ou uma das de
+        export/ dentro dela - pela mesma conta com que o tarocut grava."""
+        if self.brutos():
+            return Path(self.pasta.get())
+        return pastas.pasta(self.pasta.get(), self.modo.get())
+
+    def troca_modo(self):
+        """So muda o que se olha. Nada no disco muda."""
+        b = self.brutos()
+        self.lista.configure(displaycolumns=COLS_BRUTOS if b else COLS_SAIDAS)
+        self.lista.heading("#0", text="Vídeo" if b else "Arquivo")
+        self.legenda.configure(text=LEGENDA_BRUTOS if b else LEGENDA_SAIDAS)
+        self.recarrega()
+        self._travar(bool(self.job))
+
     def recarrega(self):
         sel = self.selecionado()
         self.lista.delete(*self.lista.get_children())
-        for v in videos_de(self.pasta.get()):
-            etapa, dur, corte, marcas, pronto = estado(v)
-            self.lista.insert("", "end", iid=str(v), text=v.name,
-                              values=(dur, etapa, corte, marcas),
-                              tags=("pronto",) if pronto else ())
+        onde = self.pasta_mostrada()
+        if self.brutos():
+            for v in videos_de(onde):
+                etapa, dur, corte, marcas, pronto = estado(v)
+                self.lista.insert("", "end", iid=str(v), text=v.name,
+                                  values=(dur, etapa, corte, marcas),
+                                  tags=("pronto",) if pronto else ())
+        else:
+            for f in saidas_de(onde):
+                self.lista.insert("", "end", iid=str(f), text=f.name,
+                                  values=("", "", "", "") + descreve(f))
         if sel and self.lista.exists(str(sel)):
             self.lista.selection_set(str(sel))
             self.lista.see(str(sel))
         if not self.job:
             n = len(self.lista.get_children())
-            self.status.set(f"{n} vídeo(s) em {self.pasta.get()}")
+            if self.brutos():
+                self.status.set(f"{n} vídeo(s) em {onde}")
+            elif onde.is_dir():
+                self.status.set(f"{n} arquivo(s) em {onde}")
+            else:
+                self.status.set(f"{onde} ainda não existe: nasce com o "
+                                f"primeiro arquivo que sair para ela")
 
     def selecionado(self):
         s = self.lista.selection()
@@ -501,6 +616,33 @@ class App(tk.Tk):
         threading.Thread(target=bomba, daemon=True).start()
         self.status.set(f"editor aberto no navegador: {v.name}")
 
+    def duplo_clique(self):
+        if self.brutos():
+            self.abre_transcript()
+        else:
+            self.abre_arquivo()
+
+    def abre_arquivo(self):
+        """A previa ou o final, no programa que o Windows usa para ele."""
+        f = self.selecionado()
+        if not f:
+            return
+        try:
+            os.startfile(str(f))
+        except OSError as e:
+            messagebox.showinfo("tarocut", f"não consegui abrir {f.name}: {e}")
+
+    def abre_pasta(self):
+        p = self.pasta_mostrada()
+        if not p.is_dir():
+            # nao cria: a pasta escolhida pode ser qualquer uma, e um clique
+            # para OLHAR nao deixa export/ vazio espalhado por ai
+            messagebox.showinfo("tarocut", f"{p} ainda não existe: ela nasce "
+                                           f"com o primeiro arquivo que sair "
+                                           f"para ela.")
+            return
+        os.startfile(str(p))
+
     def abre_transcript(self):
         v = self.exige_video()
         if not v:
@@ -537,8 +679,12 @@ class App(tk.Tk):
     # -------------------------------------------------------------- saida
 
     def _travar(self, rodando):
+        # Fora dos brutos a lista mostra arquivos entregues, nao videos: um
+        # botao de etapa ali rodaria sobre um .m4a, e o "ainda nao foi
+        # analisado" que voltaria seria mentira sobre o video de verdade.
+        livre = not rodando and self.brutos()
         for b in self.botoes:
-            b.configure(state="disabled" if rodando else "normal")
+            b.configure(state="normal" if livre else "disabled")
         self.b_cancela.configure(state="normal" if rodando else "disabled")
 
     def _escreve(self, texto, tag=None, sobrescreve=False):

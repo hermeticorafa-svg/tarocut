@@ -174,6 +174,22 @@ Como decidir cada tipo:
   "Mãe! Mais do que..." recuperado virou "alguém grita Mãe! interrompendo"
   no `motivo`, e o áudio real era a Mariana fazendo um "oooh" de voz
   fofinha.
+  **Texto sem sentido não prova que não houve fala.** Nos 22 vídeos
+  editados à mão, das 50 palavras que este passe cortou e o Rafael
+  devolveu, as maiores eram leitura reconstruída sem sentido ("Adora!",
+  "de uma montantisma longe de mim") por cima de fala real que o
+  reconhecedor ouviu mal. Antes de mandar sair uma leitura estranha,
+  pergunte se o *tempo* dela é de cacoete (meio segundo de vogal) ou de
+  frase (dois segundos de sílabas): frase mal lida fica, e vira linha
+  `ouvido` no `respostas.json`.
+- **texto reconstruído com `<== retomada: ficou esta, saiu a de antes`** —
+  ela refez a frase, o Whisper escreveu uma vez só, e o programa ficou com
+  a versão recuperada (a refeita, que emenda na continuação) e cortou a
+  cópia de antes. Era o contrário até 04/10/2026, e estava errado em 40%
+  dos casos. O seu trabalho aqui é **confirmar a troca**, não desfazê-la:
+  responda `fica` se a versão recuperada é a frase completa. Só desfaça
+  se o recuperado for rabisco ("é... do que a...") — aí a boa é a de antes,
+  e o conserto é restauro em `montagem.json`.
 - **som alto sem texto** (`[??]`) — o microfone ouviu e ninguém leu.
   Mantido de propósito para você decidir. Sai ou fica.
 - **retomada?** — o programa achou a mesma dupla de palavras repetida

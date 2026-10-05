@@ -122,9 +122,8 @@ Rei de Paus
 9 de Espadas
 9 de Ouros
 9 de Paus
-As de Copas
-As de Espadas
-As de Ouros
-As de Paus
+Ás de Copas | ars de Copas | ásio de Copas | asio de Copas | ágil de Copas | agil de Copas | was de Copas
+Ás de Espadas | ars de Espadas | ásio de Espadas | asio de Espadas | ágil de Espadas | agil de Espadas | was de Espadas
+Ás de Ouros | ars de Ouros | ásio de Ouros | asio de Ouros | ágil de Ouros | agil de Ouros | was de Ouros
+Ás de Paus | ars de Paus | ásio de Paus | asio de Paus | ágil de Paus | agil de Paus | was de Paus
 
-# guia: 64289 caracteres lidos de guia-taro-de-yala.md
